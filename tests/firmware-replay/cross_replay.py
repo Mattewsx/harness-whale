@@ -40,11 +40,21 @@ def reply_page(session,page,text):
     send(0x1b,v.pack('QIIIIH',m.epoch,session,rev,page,2,len(data))+data)
 reply_page(m.keys['beta'],0,'别的会话')
 lines.append('assert 21 2 0')
-reply_page(sid,0,'第一段。\n下一行')
-lines+=['assert 22 2 0','key 1','assert 21 2 0']
+reply_page(sid,0,'一。\n二。\n三。\n四。\n五。\n六。\n七。')
+lines+=['assert 22 2 0','scroll 0','key 1','scroll 1','key 1','scroll 2','key 0','scroll 1','key 1','key 1','assert 21 2 0']
 reply_page(sid,1,'末页')
 lines+=['assert 22 2 0']
 
+# Backward crossing lands at the bottom of the previous chunk.
+lines += ['key 0','assert 21 2 0']
+reply_page(sid,0,'一。\n二。\n三。\n四。\n五。\n六。\n七。')
+lines += ['assert 22 2 0','scroll 2','key 2','assert 1 2 0','key 1','key 2','assert 0 2 1','key 257','key 0','key 2','assert 21 2 0']
+reply_page(sid,0,'第一条回复')
+# A new final reply arriving while the task home is open must load automatically.
+rev=10;send(0x19,v.pack('QIIB',m.epoch,sid,rev,len(preview))+preview)
+lines+=['assert 21 2 0']
+reply_page(sid,0,'自动更新')
+lines+=['assert 22 2 0']
 # Archiving the focused task while its final reply is open closes the reader.
 m.set_visibility('alpha',True,10000)
 for kind,body in link.changes():send(kind,body)
@@ -68,7 +78,7 @@ lines.append('assert 1 8 0')
 # A pending device question must disappear if its owning task disappears.
 m.question(dict(sessionId='s8',runId='r',question='继续吗',options=['是','否'],requestId='archived-question'),('127.0.0.1',1))
 for kind,body in link.changes():send(kind,body)
-lines+=['key 2','assert 8 8 0']
+lines+=['key 2','assert 0 8 0','key 2','assert 8 8 0']
 m.set_visibility('s8',True,13000)
 for kind,body in link.notices()+link.changes():send(kind,body)
 lines.append('assert 1 7 0')
@@ -80,5 +90,5 @@ assert submits==['tx 22 '+(q.identity+b'\4\0').hex()],submits
 assert 'tx 25 '+q.identity.hex() in r.stdout
 print('PASS: Python bridge -> actual C firmware dispatcher; corrupt metadata rejected, same-title tasks, page identity, blocked partial submit, one answer only, disconnect/reconnect result query')
 
-assert 'tx 1a '+v.pack('QIII',m.epoch,sid,rev,1).hex() in r.stdout
+assert 'tx 1a '+v.pack('QIII',m.epoch,sid,9,1).hex() in r.stdout
 print('PASS: task preview -> reader -> next page -> task list; wrong-session reply rejected')
