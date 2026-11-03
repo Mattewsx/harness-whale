@@ -116,6 +116,7 @@ class Workspace:
         self.delivered = None
         self.visibility = {}
         self.reply_cache = OrderedDict()
+        self.history_pages = {}
         self.questions = OrderedDict()
         self.by_request = {}
         self.next_id = 0
@@ -132,6 +133,11 @@ class Workspace:
         return not isinstance(key, str) or (self.roster is not None and key not in self.roster) or self.visibility.get(key, (0, False))[1]
 
     def set_roster(self, ids):
+        if self.roster is not None:
+            for key in ids - self.roster:
+                stamp, hidden = self.visibility.get(key, (0, False))
+                if hidden:
+                    self.visibility[key] = (stamp, False)
         self.roster = frozenset(ids)
         for key in self.keys.keys() - self.roster:
             self.evict(key)
@@ -154,6 +160,7 @@ class Workspace:
         if sid is None:
             return
         self.sessions.pop(sid, None)
+        self.history_pages.pop(sid, None)
         for ref, question in list(self.questions.items()):
             if IDENTITY.unpack(ref)[1] == sid:
                 if question.status == 4 and self.transport:
@@ -167,6 +174,30 @@ class Workspace:
             if ref[0] == sid:
                 del self.reply_cache[ref]
         self.revision += 1
+
+    def restore_history(self, key, history, reply_id, pages):
+        if self.is_hidden(key):
+            return
+        sid = self.keys.get(key)
+        if sid is None:
+            self.update({"sessionId": key, "runId": "history", "title": history.title,
+                         "state": history.state, "elapsed": history.elapsed,
+                         "visibleAt": self.visibility.get(key, (0, False))[0] + 1})
+            sid = self.keys[key]
+        row = self.sessions[sid]
+        # A live event can arrive while the worker is decompressing the journal.
+        if row.get("runId") == "history":
+            row.update(state=history.state, elapsed=history.elapsed, title=history.title)
+            self.revision += 1
+        elif not row.get("title") and history.title:
+            row["title"] = history.title
+            self.revision += 1
+        if pages and row.get("replyId") != reply_id and (not row.get("replyId") or sid in self.history_pages):
+            row["replyId"] = reply_id
+            row["replyPreview"] = " ".join(history.reply.split())[:20]
+            row["_reply"] = self.allocate()
+            self.history_pages[sid] = pages
+            self.revision += 1
 
     def reply_page(self, event, addr):
         sid=self.keys.get(event.get("sessionId"))
@@ -201,6 +232,13 @@ class Workspace:
         stamp = event.get("sentAt", 0)
         if stamp < previous.get("sentAt", 0):
             return
+        if sid in self.history_pages:
+            if event.get("replyId"):
+                self.history_pages.pop(sid)
+            else:
+                event = {**event, "replyId": previous["replyId"], "replyPreview": previous["replyPreview"]}
+        if previous.get("title") and not event.get("title"):
+            event = {**event, "title": previous["title"]}
         rid = previous.get("_rid") if previous.get("runId") == run else self.allocate()
         if previous and rid != previous["_rid"]:
             for q in self.questions.values():
@@ -429,6 +467,13 @@ class Link:
             if epoch!=m.epoch or not rev or row.get("_reply")!=rev:
                 return [(0x32,pack("BHBB",kind,0,4,0))]
             key=(sid,rev,page)
+            if sid in m.history_pages:
+                self.pending_page = None
+                pages = m.history_pages[sid]
+                if page >= len(pages):
+                    return [(0x32,pack("BHBB",kind,0,4,0))]
+                txt = pages[page]
+                return [(0x1B,pack("QIIIIH",m.epoch,sid,rev,page,len(pages),len(txt))+txt)]
             self.pending_page=key
             if key not in m.reply_cache and row["_addr"] and m.transport:
                 request={"kind":"whale-read-reply","sessionId":row["sessionId"],"replyId":row["replyId"],"page":page}

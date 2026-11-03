@@ -21,12 +21,14 @@ import urllib.request
 
 try:
     from . import whale_v2
+    from .whale_history import journal_path, read_session_history, reply_pages
     from .whale_pairing import pair_passport, PairingDeclined
     from .harness_ble_protocol import (
         Balance, Currency, State, make_frame, make_question_frame, normalize_state, snapshot_from_mapping,
     )
 except ImportError:  # Direct execution: python tools/harness_ble_bridge.py
     import whale_v2
+    from whale_history import journal_path, read_session_history, reply_pages
     from whale_pairing import pair_passport, PairingDeclined
     from harness_ble_protocol import (
         Balance, Currency, State, make_frame, make_question_frame, normalize_state, snapshot_from_mapping,
@@ -463,21 +465,63 @@ def workspace_roster(path: Path) -> set[str]:
     return members - ids(store["global"]["archivedSessionIds"])
 
 
+def load_history(root, key, previous):
+    path = journal_path(root, key)
+    if path is None:
+        return None, None
+    stat = path.stat()
+    signature = (path, stat.st_size, stat.st_mtime_ns)
+    if signature == previous:
+        return signature, None
+    history = read_session_history(path, key)
+    if history is not None:
+        reply_id, pages = reply_pages(history.reply)
+        return signature, (history, reply_id, pages)
+    return None, None
+
+
+async def sync_workspace(model, home, retries):
+    path = home / "storages" / "workspace.json"
+    roster = await asyncio.to_thread(workspace_roster, path)
+    workspace = model.workspace
+    if workspace.roster != roster:
+        workspace.set_roster(roster)
+        for key in retries.keys() - roster:
+            del retries[key]
+        if model.current.get("sessionId") not in roster:
+            model.current = {"state":"idle","tool":"none"}
+            model.final_until = 0
+        if model.pending and model.pending.get("sessionId") not in roster:
+            model.pending = None
+        model.changed.set()
+    for key in sorted(roster):
+        next_check, signature = retries.get(key, (0, None))
+        if workspace.is_hidden(key) or next_check > time.monotonic():
+            continue
+        sid = workspace.keys.get(key)
+        row = workspace.sessions.get(sid, {})
+        if row.get("replyId") and row.get("title") and sid not in workspace.history_pages:
+            continue
+        signature, result = await asyncio.to_thread(load_history, home / "sessions", key, signature if row else None)
+        if result is None:
+            retries[key] = time.monotonic() + 5, signature
+            continue
+        # Reading an inactive session may take longer than a concurrent archive.
+        if await asyncio.to_thread(workspace_roster, path) != roster:
+            return
+        if not workspace.is_hidden(key):
+            workspace.restore_history(key, *result)
+            retries[key] = time.monotonic() + 5, signature
+            model.changed.set()
+
+
 async def refresh_workspace(model):
     here = Path(__file__).resolve().parent
     home = here.parent if here.name == "harness-whale-bridge" else Path.home()/".dsh"
-    path = home/"storages"/"workspace.json"
+    retries = {}
     while True:
         try:
-            roster = await asyncio.to_thread(workspace_roster, path)
-            if model.workspace.roster != roster:
-                model.workspace.set_roster(roster)
-                if model.current.get("sessionId") not in roster:
-                    model.current = {"state":"idle","tool":"none"}
-                    model.final_until = 0
-                if model.pending and model.pending.get("sessionId") not in roster:
-                    model.pending = None
-                model.changed.set()
+            await sync_workspace(model, home, retries)
         except (OSError, ValueError, KeyError, TypeError):
             pass
         await asyncio.sleep(1)

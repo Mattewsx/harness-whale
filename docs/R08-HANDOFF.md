@@ -11,9 +11,10 @@
 
 ## 接手续跑
 
-- 电脑端在本仓库根目录执行 `python -m unittest discover -s tests -v`。插件回放需要支持 TypeScript 类型剥离的 Node.js。
+- 电脑端在独立 Python 环境安装 `installer/requirements-bridge.txt` 中的依赖，再在仓库根目录执行 `python -m unittest discover -s tests -v`。插件回放需要支持 TypeScript 类型剥离的 Node.js。
 - 固件端以 ESP-IDF 5.5.3 运行 AI Passport 仓库的 `tools/validate.sh --all`。跨端回放见 [运行说明](../tests/firmware-replay/RUN.txt)。
 - 安装电脑端可运行 `python installer/install_companion.py --non-interactive --skip-key`，然后重启 DSH。日常设备列表按工作区成员减去归档项筛选，再排除子代理。
+- R09 桥接器也会从 DSH 的 v4 本地会话记录恢复未打开的主会话、标题和最近最终回复。归档或删除会话会一并移除设备条目与正文缓存。设备沿用原有蓝牙协议。
 - 已验收范围包括应用分区升级并保留蓝牙配对、回复阅读、归档时从阅读页退回列表、实体按键答题，以及日常工作区与实际 GATT 快照成员一致。
 
 ## 正式发布前
