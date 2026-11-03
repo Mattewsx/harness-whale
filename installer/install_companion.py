@@ -46,6 +46,8 @@ def source_resource(name: str) -> Path:
         return packaged
     project = Path(__file__).resolve().parents[1]
     candidates = {
+        "whale_pairing.py": project / "harness" / "bridge" / "whale_pairing.py",
+        "whale_v2.py": project / "harness" / "bridge" / "whale_v2.py",
         "index.ts": project / "harness" / "plugin" / "index.ts",
         "harness_ble_bridge.py": project / "harness" / "bridge" / "harness_ble_bridge.py",
         "harness_ble_protocol.py": project / "harness" / "bridge" / "harness_ble_protocol.py",
@@ -166,9 +168,15 @@ def install_payload(dsh_root: Path, *, dry_run: bool = False) -> tuple[Path, Pat
     if not dry_run:
         plugin_dest.parent.mkdir(parents=True, exist_ok=True)
         bridge_dest.parent.mkdir(parents=True, exist_ok=True)
+        for old in (plugin_dest, bridge_dest, protocol_dest, bridge_dir / "whale_v2.py", bridge_dir / "whale_pairing.py"):
+            if old.exists():
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                shutil.copy2(old, old.with_name(f"{old.name}.whale-backup-{stamp}"))
         shutil.copy2(plugin_source, plugin_dest)
         shutil.copy2(bridge_source, bridge_dest)
         shutil.copy2(protocol_source, protocol_dest)
+        shutil.copy2(source_resource("whale_pairing.py"), bridge_dir / "whale_pairing.py")
+        shutil.copy2(source_resource("whale_v2.py"), bridge_dir / "whale_v2.py")
     return plugin_dest, bridge_dest, protocol_dest
 
 
@@ -205,17 +213,6 @@ def run(args: argparse.Namespace) -> int:
     for profile in profile_paths(dsh_root):
         if patch_profile(profile, plugin_url, dry_run=args.dry_run):
             changed_profiles.append(profile)
-
-    api_key = args.api_key
-    if api_key is None and not args.skip_key and not args.non_interactive:
-        api_key = getpass.getpass("请输入自己的 DeepSeek API Key（直接回车可跳过余额）：").strip()
-    if api_key:
-        ok, message = validate_api_key(api_key)
-        print(f"[{'成功' if ok else '提示'}] {message}")
-        if ok is False:
-            print("未保存无效的 API Key。")
-        elif not args.dry_run:
-            set_user_api_key(api_key)
 
     print(f"[完成] Harness 插件：{plugin_dest}")
     print(f"[完成] BLE 转发源码：{bridge_dest}")

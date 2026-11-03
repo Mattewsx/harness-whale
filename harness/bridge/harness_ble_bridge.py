@@ -12,6 +12,7 @@ import asyncio
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import logging
+from pathlib import Path
 import os
 import time
 from typing import Any
@@ -19,10 +20,14 @@ import urllib.error
 import urllib.request
 
 try:
+    from . import whale_v2
+    from .whale_pairing import pair_passport, PairingDeclined
     from .harness_ble_protocol import (
         Balance, Currency, State, make_frame, make_question_frame, normalize_state, snapshot_from_mapping,
     )
 except ImportError:  # Direct execution: python tools/harness_ble_bridge.py
+    import whale_v2
+    from whale_pairing import pair_passport, PairingDeclined
     from harness_ble_protocol import (
         Balance, Currency, State, make_frame, make_question_frame, normalize_state, snapshot_from_mapping,
     )
@@ -102,6 +107,7 @@ def fetch_balance(api_key: str) -> Balance | None:
 
 class StatusModel:
     def __init__(self) -> None:
+        self.workspace = whale_v2.Workspace()
         self.current: dict[str, Any] = {"state": "offline", "tool": "none"}
         self.pending: dict[str, Any] | None = None
         self.updated_at = 0.0
@@ -138,6 +144,8 @@ class StatusModel:
         self.changed.set()
 
     def set_balance(self, value: Balance | None) -> None:
+        self.workspace.balance_old = value is None and self.workspace.balance is not None
+        if value is not None: self.workspace.balance = value
         if value != self.balance:
             self.balance = value
             self.changed.set()
@@ -239,10 +247,11 @@ class HarnessDatagram(asyncio.DatagramProtocol):
         self.model = model
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.model.workspace.transport = transport
         self.model.datagram_transport = transport  # type: ignore[assignment]
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        if addr[0] not in {"127.0.0.1", "::1"} or len(data) > 8192:
+        if addr[0] not in {"127.0.0.1", "::1"} or len(data) > 60000:
             return
         try:
             document = json.loads(data.decode("utf-8"))
@@ -251,14 +260,43 @@ class HarnessDatagram(asyncio.DatagramProtocol):
             return
         if isinstance(document, dict):
             kind = document.get("kind")
-            if kind == "harness-question":
-                self.model.set_question(document, addr)
+            if kind == "whale-roster-check":
+                # Local read-only diagnostic, with no session IDs, titles or reply text.
+                report = {"kind":"whale-roster-check","projected":len(self.model.workspace.sessions),
+                          "lastGattSnapshot":self.model.workspace.delivered}
+                if self.model.datagram_transport:
+                    self.model.datagram_transport.sendto(json.dumps(report).encode(), addr)
+            elif kind == "whale-visibility":
+                items = document.get("items")
+                if not isinstance(items,list): return
+                for item in items:
+                    if not isinstance(item,dict): continue
+                    key = item.get("key")
+                    self.model.workspace.set_visibility(key,item.get("hidden"),item.get("stamp"))
+                    if isinstance(key,str) and self.model.workspace.is_hidden(key):
+                        if self.model.current.get("sessionId")==key:
+                            self.model.current={"state":"idle","tool":"none"}
+                            self.model.final_until=0
+                        if self.model.pending and self.model.pending.get("sessionId")==key:
+                            self.model.pending=None
+                self.model.changed.set()
+            elif kind == "whale-reply-page":
+                self.model.workspace.reply_page(document,addr)
+            elif kind == "whale-result":
+                self.model.workspace.resolve(document.get("requestId"), document.get("status"), document.get("option",65535))
+            elif kind == "harness-question":
+                self.model.workspace.question(document, addr)
+                if not self.model.workspace.is_hidden(document.get("sessionId")):
+                    self.model.set_question(document, addr)
             elif kind == "harness-question-cancel":
+                self.model.workspace.resolve(document.get("requestId"),2)
                 self.model.clear_question(str(document.get("requestId") or ""))
             elif kind == "harness-balance-refresh":
                 self.model.request_balance_refresh()
             else:
-                self.model.merge(document)
+                self.model.workspace.update(document,addr)
+                if not self.model.workspace.is_hidden(document.get("sessionId")):
+                    self.model.merge(document)
 
 
 async def balance_loop(model: StatusModel, interval: float) -> None:
@@ -273,6 +311,7 @@ async def balance_loop(model: StatusModel, interval: float) -> None:
             model.set_balance(value)
             LOG.info("DeepSeek balance refreshed (%s)", value.currency.name if value else "unavailable")
         except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+            model.workspace.balance_old = model.workspace.balance is not None
             LOG.warning("balance refresh failed: %s", type(exc).__name__)
         try:
             await asyncio.wait_for(model.balance_refresh.wait(), timeout=interval)
@@ -333,18 +372,36 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                                mtu=int(getattr(client, "mtu_size", 23) or 23),
                                packetsSent=packets_sent)
 
+                if client.services.get_service(whale_v2.SERVICE):
+                    await pair_passport(client)
+                    phase = "negotiating"
+                    def record_write(ready):
+                        nonlocal packets_sent, phase
+                        packets_sent += 1
+                        if ready:
+                            phase = "v2.2"
+                    relay = asyncio.create_task(whale_v2.serve(client, model.workspace, record_write))
+                    try:
+                        while not relay.done():
+                            send_telemetry(telemetry,telemetry_port,connected=True,state=phase,device=device_name,packetsSent=packets_sent)
+                            await asyncio.wait({relay},timeout=2)
+                        await relay
+                    finally:
+                        relay.cancel()
+                        await asyncio.gather(relay,return_exceptions=True)
+                    continue
                 def on_notify(_: Any, data: bytearray) -> None:
                     if len(data) >= 2 and data[0] == 0x07 and data[1] >= 0x10:
                         LOG.warning("device rejected Harness packet: status=0x%02X", data[1])
                     if len(data) >= 2 and data[0] == 0x08 and 0x40 <= data[1] < 0x44:
-                        model.answer_question(data[1] - 0x40)
+                        pass  # Legacy devices lack question identity; display only.
 
                 await client.start_notify(NOTIFY_UUID, on_notify)
                 question_revision = -1
                 while client.is_connected:
                     model.changed.clear()
                     if question_revision != model.question_revision:
-                        await write_frame(client, model.question_frame())
+                        await write_frame(client, make_question_frame([]))
                         question_revision = model.question_revision
                     await write_frame(client, model.next_frame())
                     packets_sent += 1
@@ -363,7 +420,7 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
             send_telemetry(telemetry, telemetry_port, connected=False,
                            state="reconnecting", device=device_name,
                            error=type(exc).__name__, packetsSent=packets_sent)
-            await asyncio.sleep(3)
+            await asyncio.sleep(60 if isinstance(exc, PairingDeclined) else 3)
 
 
 async def demo_loop(model: StatusModel) -> None:
@@ -391,9 +448,46 @@ async def demo_loop(model: StatusModel) -> None:
             await asyncio.sleep(4)
 
 
+def workspace_roster(path: Path) -> set[str]:
+    """Read only the committed Workspace v2 projection; preserve last good data on partial writes."""
+    store = json.loads(path.read_text(encoding="utf-8-sig"))
+    if store["unit"] != {"name": "workspace", "version": 2} or store["global"]["initialized"] is not True:
+        raise ValueError("workspace registry not ready")
+    def ids(values):
+        if not isinstance(values, list) or any(not isinstance(x,str) or not x for x in values):
+            raise ValueError("invalid workspace membership")
+        return set(values)
+    members = set()
+    for wid in ids(store["global"]["workspaceIds"]):
+        members.update(ids(store["tables"]["workspaces"][wid]["sessionIds"]))
+    return members - ids(store["global"]["archivedSessionIds"])
+
+
+async def refresh_workspace(model):
+    here = Path(__file__).resolve().parent
+    home = here.parent if here.name == "harness-whale-bridge" else Path.home()/".dsh"
+    path = home/"storages"/"workspace.json"
+    while True:
+        try:
+            roster = await asyncio.to_thread(workspace_roster, path)
+            if model.workspace.roster != roster:
+                model.workspace.set_roster(roster)
+                if model.current.get("sessionId") not in roster:
+                    model.current = {"state":"idle","tool":"none"}
+                    model.final_until = 0
+                if model.pending and model.pending.get("sessionId") not in roster:
+                    model.pending = None
+                model.changed.set()
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        await asyncio.sleep(1)
+
+
 async def async_main(args: argparse.Namespace) -> None:
     loop = asyncio.get_running_loop()
     model = StatusModel()
+    if not args.demo:
+        model.workspace.set_roster(set())
     transport, _ = await loop.create_datagram_endpoint(
         lambda: HarnessDatagram(model), local_addr=("127.0.0.1", args.port))
     telemetry, _ = await loop.create_datagram_endpoint(
@@ -405,8 +499,9 @@ async def async_main(args: argparse.Namespace) -> None:
     try:
         if args.demo:
             tasks.append(asyncio.create_task(demo_loop(model)))
-        if not args.no_balance:
-            tasks.append(asyncio.create_task(balance_loop(model, args.balance_interval)))
+        else:
+            tasks.append(asyncio.create_task(refresh_workspace(model)))
+        # Battery remains device-local; this release does not poll account balances.
         if args.dry_run:
             while True:
                 model.changed.clear()

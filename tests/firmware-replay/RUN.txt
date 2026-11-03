@@ -1,0 +1,7 @@
+From this directory, set FW to the absolute path of the matching ai-passport checkout.
+Use a native C compiler, then run the Python driver:
+
+cc -std=c11 -Istubs -I"$FW/main" fw_replay.c "$FW/main/whale_wire.c" -o fw_replay.exe
+python cross_replay.py
+
+The hardware functions are stubs. Frame parsing, screen state transitions and key dispatch use the firmware sources.

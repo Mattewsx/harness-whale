@@ -1,3 +1,5 @@
+> **R08 开发分支**：当前固件、测试入口和发布前待办见 [R08 交接说明](docs/R08-HANDOFF.md)。
+
 <div align="center">
 
 # 🐋 Harness Whale Companion
