@@ -1,7 +1,7 @@
-From this directory, set FW to the absolute path of the matching ai-passport checkout.
-Use a native C compiler, then run the Python driver:
+Run from the repository root with a native C compiler (not the ESP cross compiler):
 
-cc -std=c11 -Istubs -I"$FW/main" fw_replay.c "$FW/main/whale_wire.c" -o fw_replay.exe
-python cross_replay.py
+cc -std=c11 -Itests/firmware-replay/stubs -Idevice-firmware/main tests/firmware-replay/fw_replay.c device-firmware/main/whale_wire.c device-firmware/main/whale_reply_cache.c -o tests/firmware-replay/fw_replay.exe
+python tests/firmware-replay/cross_replay.py
 
-The hardware functions are stubs. Frame parsing, screen state transitions and key dispatch use the firmware sources.
+Python bridge frames drive the production C dispatcher and keys with hardware stubs.
+The reply cache module is required. This test does not prove BLE radio or display timing.

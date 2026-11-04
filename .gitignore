@@ -18,6 +18,7 @@ device-firmware/sdkconfig.old
 SHA256SUMS.txt
 /tests/firmware-replay/fw_replay.exe
 /tests/firmware-replay/fw_replay.pdb
+/plugin-check.mjs
 
 # IDE / OS
 .idea/

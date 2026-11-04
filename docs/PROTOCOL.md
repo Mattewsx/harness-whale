@@ -1,62 +1,31 @@
-# BLE 协议
+# AI Passport BLE 协议 2.2
 
-协议实现在 `harness/bridge/harness_ble_protocol.py`，固件对应解析在 `device-firmware/components/core/services/src/harness_status.c`。
+当前链路以 Python [`whale_v2.py`](../harness/bridge/whale_v2.py) 和 C [`whale_wire.c`](../device-firmware/main/whale_wire.c) 为准。`harness_ble_protocol.py` 中的 v1 帧和余额字段为旧版兼容实现，不代表 R10.1 的传输格式。
 
-## GATT
+| 项目 | UUID |
+| --- | --- |
+| Service | `13b50200-663a-48c5-a224-37c1c2569080` |
+| Write | `13b50201-663a-48c5-a224-37c1c2569080` |
+| Notify | `13b50202-663a-48c5-a224-37c1c2569080` |
 
-| 方向 | UUID | 用途 |
-|---|---|---|
-| 电脑 → 设备 | `54524145-4341-5244-0000-000000000010` | 状态帧、问题帧 |
-| 设备 → 电脑 | `54524145-4341-5244-0000-000000000011` | 按键选择通知 |
+整数为小端。碎片头采用 `<BBHBBH`：版本 2、消息类型、16 位序号、碎片索引、碎片总数、消息体总长度。当前每个 ATT 帧 20 字节，其中头部 8 字节、数据最多 12 字节。控制与批量消息独立重组；越界、乱序、超时及过期序号被拒绝。
 
-## 通用帧头
+| 消息 | 用途 |
+| --- | --- |
+| `0x01/0x02` | 协议和能力协商 |
+| `0x10` | 请求会话列表窗口 |
+| `0x11/0x12/0x13` | 快照开始、条目、完成和校验 |
+| `0x14` | 会话状态更新 |
+| `0x16/0x17` | 完整标题请求和返回 |
+| `0x18` | 单次运行的显示细节 |
+| `0x19` | 最近回复修订及摘要 |
+| `0x1A/0x1B` | 指定回复分段请求及返回 |
+| `0x20/0x21` | 问题与选项 |
+| `0x22/0x23/0x24/0x25` | 单选提交、结果、选项读取与结果查询 |
+| `0x30/0x31/0x32` | 心跳、回执与错误 |
 
-```text
-byte 0      frame_version = 1
-byte 1      message_type
-byte 2..3   payload_length, little-endian
-byte 4..    payload
-```
+回复请求体是 `<QIII`：epoch、会话、修订、分段索引；响应是 `<QIIIIH` 加 UTF-8 文本，另带总分段数和字节长度。分段是传输细节，不是多条历史回答，UI 不显示分段页码。仅当前请求的会话、修订与分段可进入阅读窗口。
 
-`message_type=0x07` 是状态，`0x08` 是单选问题。
+状态包含离线、待命、思考、执行、等待、完成、错误、停止、问题。进度只在有真实 Todo 总数时显示。余额协议兼容字段不会在 R10.1 UI 展示。字体覆盖 GB2312 一级汉字和固定界面文本，标题、选项和正文经过清洗/安全 UTF-8 截断；不支持字符可能显示替代符号。
 
-## 状态 payload v2
-
-固定区使用 little-endian：
-
-```text
-u8  payload_version = 2
-u8  state
-u8  tool
-u8  flags
-u32 seq
-u32 elapsed_seconds
-u16 todo_done
-u16 todo_total
-u32 balance_minor
-u8  currency
-u8  title_utf8_length
-u8[] title_utf8, 最多 72 bytes
-```
-
-状态值：`0 offline`、`1 idle`、`2 thinking`、`3 tool`、`4 waiting`、`5 done`、`6 error`、`7 stopped`、`8 question`。
-
-工具值：`0 none`、`1 terminal`、`2 read`、`3 edit`、`4 search`、`5 web`、`6 task`、`255 other`。
-
-flags：bit 0 表示包含余额，bit 1 表示余额可用，bit 2 表示新任务。currency：`0 none`、`1 CNY`、`2 USD`。
-
-## 问题 payload v1
-
-```text
-u8 question_version = 1
-u8 option_count, 最大 4
-repeat option_count:
-  u8 label_utf8_length
-  u8[] label_utf8, 每项最多 36 bytes
-```
-
-超过一页的选择由桥接器拆成“3 个真实选项 + 1 个翻页项”。固件通知 `0x40 + visible_index`，桥接器再映射回完整选项数组。
-
-## 文本兼容
-
-标题和选项在电脑端先按 GB2312 可表示范围清洗，再按 UTF-8 字节上限安全截断，避免半个多字节字符和设备缺字。固件内含 16 px 与 24 px 中文字库。
+端到端兼容性以 [Python→C 回放](../tests/firmware-replay/RUN.txt) 验证，不用文档代替源代码中的消息长度、边界及能力检查。

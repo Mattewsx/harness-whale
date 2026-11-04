@@ -9,6 +9,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "whale_reply_cache.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -37,6 +38,8 @@ static void button(bsp_btn_t key, bsp_btn_ev_t ev, void *unused) {
         whale_post(&(whale_event_t){.kind = WE_KEY, .value = (uint32_t)key | ((unsigned)ev << 8)});
 }
 static void page(whale_page_t v) {
+    if (v != REPLY_READ && v != REPLY_LOAD && v != REPLY_FAILED)
+        a.read_pending = false;
     view_revision++;
     a.view = v;
     a.page_at = a.now;
@@ -118,11 +121,69 @@ static bool has_reply(void) {
     return a.count && a.replies[a.selected].session == a.rows[a.selected].session &&
            a.replies[a.selected].revision;
 }
+static void reply_failed(void) {
+    a.read_pending = false;
+    a.read_error = true;
+    if (!a.read_used)
+        page(REPLY_FAILED);
+    dirty = true;
+}
+static void accept_reply(const char *text, size_t size, uint32_t count) {
+    size_t top = whale_line_offset(a.answer, a.scroll);
+    if (!a.read_used) {
+        memcpy(a.answer, text, size);
+        a.answer[size] = 0;
+        a.read_first = a.read_page;
+        a.read_sizes[0] = size;
+        a.read_used = 1;
+        page(REPLY_READ);
+    } else if (a.read_back) {
+        if (a.read_used == 3) {
+            a.answer[strlen(a.answer) - a.read_sizes[2]] = 0;
+            a.read_used--;
+        }
+        memmove(a.answer + size, a.answer, strlen(a.answer) + 1);
+        memcpy(a.answer, text, size);
+        memmove(a.read_sizes + 1, a.read_sizes, a.read_used * sizeof a.read_sizes[0]);
+        a.read_sizes[0] = size;
+        a.read_used++;
+        a.read_first = a.read_page;
+        a.scroll = whale_scroll_at(a.answer, top + size);
+        if (a.scroll > 0)
+            a.scroll--;
+    } else {
+        if (a.read_used == 3) {
+            size_t removed = a.read_sizes[0];
+            memmove(a.answer, a.answer + removed, strlen(a.answer) - removed + 1);
+            top = top > removed ? top - removed : 0;
+            memmove(a.read_sizes, a.read_sizes + 1, 2 * sizeof a.read_sizes[0]);
+            a.read_used--;
+            a.read_first++;
+        }
+        size_t length = strlen(a.answer);
+        memcpy(a.answer + length, text, size);
+        a.answer[length + size] = 0;
+        a.read_sizes[a.read_used++] = size;
+        a.scroll = whale_scroll_at(a.answer, top) + 1;
+    }
+    int max = whale_home_scroll_max(a.answer);
+    if (a.scroll > max)
+        a.scroll = max;
+    a.read_count = count;
+    a.read_pending = a.read_error = false;
+    dirty = true;
+}
 static void read_part(uint32_t number, bool backwards) {
     a.read_page = number;
     a.read_back = backwards;
+    char cached[WHALE_REPLY_BYTES + 1];
+    uint32_t count;
+    if (whale_reply_cache_get(a.epoch, a.read_session, a.read_revision, number, cached, &count)) {
+        accept_reply(cached, strlen(cached), count);
+        return;
+    }
     if (!a.ready) {
-        page(REPLY_FAILED);
+        reply_failed();
         return;
     }
     uint8_t b[20];
@@ -130,7 +191,13 @@ static void read_part(uint32_t number, bool backwards) {
     put32(b + 8, a.read_session);
     put32(b + 12, a.read_revision);
     put32(b + 16, number);
-    page(whale_send(0x1a, b, sizeof b) ? REPLY_LOAD : REPLY_FAILED);
+    a.read_pending = whale_send(0x1a, b, sizeof b);
+    a.read_error = false;
+    a.read_started = a.now;
+    if (!a.read_pending)
+        reply_failed();
+    else if (!a.read_used)
+        page(REPLY_LOAD);
 }
 static void open_reply(void) {
     if (!has_reply())
@@ -138,6 +205,9 @@ static void open_reply(void) {
     a.read_session = a.rows[a.selected].session;
     a.read_revision = a.replies[a.selected].revision;
     a.read_count = 0;
+    a.read_used = 0;
+    a.read_pending = a.read_error = false;
+    a.answer[0] = 0;
     read_part(0, false);
 }
 static bool reply_home(void) {
@@ -303,21 +373,23 @@ static void key(uint32_t code) {
         return;
     }
     if (a.view == REPLY_READ) {
+        if (a.read_pending)
+            return;
+        if (a.read_error && d > 0) {
+            read_part(a.read_page, a.read_back);
+            return;
+        }
         int max = whale_home_scroll_max(a.answer);
         if (d > 0 && a.scroll < max) {
-            a.scroll += HOME_REPLY_LINES;
-            if (a.scroll > max)
-                a.scroll = max;
+            a.scroll++;
         } else if (d < 0 && a.scroll > 0) {
-            a.scroll -= HOME_REPLY_LINES;
-            if (a.scroll < 0)
-                a.scroll = 0;
+            a.scroll--;
         } else if (d > 0 && has_reply() && a.replies[a.selected].revision != a.read_revision)
             open_reply();
-        else if (d > 0 && a.read_page + 1 < a.read_count)
-            read_part(a.read_page + 1, false);
-        else if (d < 0 && a.read_page)
-            read_part(a.read_page - 1, true);
+        else if (d > 0 && a.read_first + a.read_used < a.read_count)
+            read_part(a.read_first + a.read_used, false);
+        else if (d < 0 && a.read_first)
+            read_part(a.read_first - 1, true);
         else if (d < 0)
             page(HOME);
         return;
@@ -434,6 +506,15 @@ static void apply_message(whale_msg_t msg) {
         uint32_t old = a.count ? a.rows[a.selected].session : 0;
         bool resumed = !a.ready;
         bool new_epoch = a.epoch && a.epoch != stage.epoch;
+        if (new_epoch)
+            whale_reply_cache_clear();
+        for (unsigned i = 0; i < a.count; i++) {
+            bool retained = false;
+            for (unsigned j = 0; j < stage.taken; j++)
+                retained |= a.rows[i].session == stage.rows[j].session;
+            if (!retained)
+                whale_reply_cache_forget(a.rows[i].session, 0);
+        }
         memcpy(a.rows, stage.rows, stage.taken * sizeof(whale_row_t));
         if (!stage.taken)
             a.selected = 0;
@@ -463,6 +544,8 @@ static void apply_message(whale_msg_t msg) {
             a.answer[0] = a.prompt[0] = a.title[0] = 0;
             memset(a.labels, 0, sizeof a.labels);
             a.read_session = a.read_revision = 0;
+            a.read_used = 0;
+            a.read_pending = false;
             page(LIST);
         }
         if (new_epoch && (a.view == REPLY_READ || a.view == REPLY_LOAD || a.view == REPLY_FAILED))
@@ -488,8 +571,8 @@ static void apply_message(whale_msg_t msg) {
         snprintf(a.title, sizeof a.title, "请在电脑查看全文");
         return;
     }
-    if (msg.type == 0x32 && n == 5 && a.view == REPLY_LOAD && p[0] == 0x1a) {
-        page(REPLY_FAILED);
+    if (msg.type == 0x32 && n == 5 && reply_home() && a.read_pending && p[0] == 0x1a) {
+        reply_failed();
         return;
     }
     if (!a.ready || n < 8 || w64(p) != a.epoch)
@@ -518,21 +601,29 @@ static void apply_message(whale_msg_t msg) {
                whale_text(p + 17, p[16])) {
         for (int i = 0; i < a.count; i++)
             if (a.rows[i].session == w32(p + 8)) {
+                whale_reply_cache_forget(w32(p + 8), w32(p + 12));
                 a.replies[i].session = w32(p + 8);
                 a.replies[i].revision = w32(p + 12);
                 memcpy(a.replies[i].preview, p + 17, p[16]);
                 a.replies[i].preview[p[16]] = 0;
+                if (i == a.selected && reply_home() && a.read_revision != w32(p + 12)) {
+                    if (w32(p + 12))
+                        open_reply();
+                    else {
+                        a.answer[0] = 0;
+                        a.read_used = 0;
+                        page(HOME);
+                    }
+                }
             }
-    } else if (msg.type == 0x1b && a.view == REPLY_LOAD && n >= 26 &&
+    } else if (msg.type == 0x1b && reply_home() && a.read_pending && n >= 26 &&
                w32(p + 8) == a.read_session && w32(p + 12) == a.read_revision &&
                w32(p + 16) == a.read_page && w32(p + 20) > a.read_page && w16(p + 24) == n - 26 &&
-               n - 26 <= 384 && valid_reply_text(p + 26, n - 26)) {
-        a.read_count = w32(p + 20);
-        memcpy(a.answer, p + 26, n - 26);
-        a.answer[n - 26] = 0;
-        page(REPLY_READ);
-        if (a.read_back)
-            a.scroll = whale_home_scroll_max(a.answer);
+               (!a.read_used || w32(p + 20) == a.read_count) && n - 26 <= 384 &&
+               valid_reply_text(p + 26, n - 26)) {
+        whale_reply_cache_put(a.epoch, a.read_session, a.read_revision, a.read_page, w32(p + 20),
+                              p + 26, n - 26);
+        accept_reply((const char *)p + 26, n - 26, w32(p + 20));
     } else if (msg.type == 0x18 && n == 17 && p[16] <= 5) {
         for (int i = 0; i < a.count; i++)
             if (a.rows[i].session == w32(p + 8) && a.rows[i].run == w32(p + 12))
@@ -655,6 +746,8 @@ static void service(whale_event_t e) {
         break;
     case WE_DOWN:
         a.linked = a.ready = stage.active = request_snap = false;
+        if (a.read_pending)
+            reply_failed();
         memset(&rx, 0, sizeof rx);
         if (a.view == SENDING || a.view == CHECKING)
             query();
@@ -707,7 +800,7 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "R10 / protocol 2.2; minimum free heap: %lu",
+    ESP_LOGI("whale", "R10.1 / protocol 2.2; minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
     xTaskCreate(battery_task, "whale_soc", 3072, NULL, 2, NULL);
     last_input = ms();
@@ -722,8 +815,8 @@ void app_main(void) {
             a.soc = -1;
             a.battery_level = 0;
         }
-        if (a.view == REPLY_LOAD && a.now - a.page_at >= 8000)
-            page(REPLY_FAILED);
+        if (reply_home() && a.read_pending && a.now - a.read_started >= 8000)
+            reply_failed();
         if (a.view == LOADING && (a.now - load_progress >= 2000 || a.now - load_started >= 8000))
             page(LOAD_FAILED);
         if (a.view == SENDING && a.now - a.page_at >= 5000)
@@ -739,6 +832,7 @@ void app_main(void) {
         }
         if (a.view == UNBINDING && a.now - unbind_at >= 500) {
             if (whale_unbind()) {
+                whale_reply_cache_clear();
                 memset(&a, 0, sizeof a);
                 a.soc = -1;
                 a.next = UINT32_MAX;

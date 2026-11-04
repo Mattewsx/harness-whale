@@ -29,8 +29,13 @@ int main(void) {
     lv_display_set_buffers(display, buffer, NULL, sizeof buffer, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, flush);
     whale_ui_init();
-    whale_app_t a = {.view = HOME, .soc = 94, .linked = true, .ready = true,
-                     .count = 1, .total = 1, .now = 1000};
+    whale_app_t a = {.view = HOME,
+                     .soc = 94,
+                     .linked = true,
+                     .ready = true,
+                     .count = 1,
+                     .total = 1,
+                     .now = 1000};
     a.rows[0] = (whale_row_t){.session = 1, .state = 5, .elapsed = 461, .at = 1000};
     strcpy(a.rows[0].title, "A completed task");
     a.replies[0].session = 1;
