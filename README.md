@@ -1,4 +1,4 @@
-> **R08 开发分支**：当前固件、测试入口和发布前待办见 [R08 交接说明](docs/R08-HANDOFF.md)。
+> **v0.09 发布分支**：仓库组成、发布物校验与已知限制见 [R09 发布基线](docs/R09-HANDOFF.md)。
 
 <div align="center">
 
@@ -8,7 +8,7 @@
 
 个人 Demo · BLE 直连 · 无需局域网 · 可在设备上完成简单单选
 
-[![Release](https://img.shields.io/github/v/release/1ikeMcFlurry/harness-whale-companion?display_name=tag&style=flat-square)](https://github.com/1ikeMcFlurry/harness-whale-companion/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Mattewsx/harness-whale?display_name=tag&style=flat-square)](https://github.com/Mattewsx/harness-whale/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB?style=flat-square&logo=python&logoColor=white)](#电脑端要求)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-5.5-E7352C?style=flat-square&logo=espressif&logoColor=white)](#从源码构建固件)
 [![Demo](https://img.shields.io/badge/status-personal_demo-5AB9EA?style=flat-square)](#项目定位)
@@ -22,6 +22,8 @@
 ## 项目定位
 
 这是一个个人制作的硬件 Demo（概念验证），用来展示“AI Agent 状态副屏”这一玩法。它适合学习、复现、改造和社区交流，目前不是一套面向量产或长期运维的完整产品。
+
+本项目衍生自 [1ikeMcFlurry/harness-whale-companion](https://github.com/1ikeMcFlurry/harness-whale-companion)，在其基础上继续开发 R06–R09。上游代码版权归原作者所有，本仓库新增部分以 [MIT](LICENSE) 授权。
 
 固件会把硬件变成 Harness 专用状态屏，只保留本 Demo 所需的界面与交互。源码树仍包含开发板原工程的部分板级支持模块，以保证固件可以完整构建；运行时入口由 `PRODUCT_HARNESS_ONLY=1` 限制为 Harness 模式。
 
@@ -65,7 +67,7 @@ flowchart LR
 | 按键 | 3 个 ADC 按键：上 / 下 / 确认 |
 | 连接 | BLE |
 
-这份固件包含特定开发板的屏幕、按键、电源和分区配置，并不是任意 ESP32-C3 开发板都能直接烧录。使用其他板子时，请先修改 [`board_config.h`](device-firmware/components/platform/platform_esp32/include/platform/board_config.h) 和显示驱动配置，再自行构建。
+这份固件包含特定开发板的屏幕、按键、电源和分区配置，并不是任意 ESP32-C3 开发板都能直接烧录。使用其他板子时，请先修改 [`bsp_pins.h`](device-firmware/components/bsp/include/bsp_pins.h) 和显示驱动配置，再自行构建。
 
 ## 电脑端要求
 
@@ -81,11 +83,11 @@ flowchart LR
 先克隆仓库，或使用 GitHub 的 **Code → Download ZIP** 下载代码：
 
 ```powershell
-git clone https://github.com/1ikeMcFlurry/harness-whale-companion.git
-cd harness-whale-companion
+git clone https://github.com/Mattewsx/harness-whale.git
+cd harness-whale
 ```
 
-再从 [Releases](https://github.com/1ikeMcFlurry/harness-whale-companion/releases/latest) 下载唯一的固件文件 `Harness-Whale-ESP32C3-8MB.bin`，放到 `installer\firmware\`。校验清单已经包含在代码仓库中。
+再从 [Releases](https://github.com/Mattewsx/harness-whale/releases/latest) 下载唯一的固件文件 `Harness-Whale-ESP32C3-8MB.bin`，放到 `installer\firmware\`。校验清单已经包含在代码仓库中。
 
 ### 2. 安装 Harness Companion
 
@@ -148,16 +150,17 @@ python -m venv .flash-venv
 cd device-firmware
 idf.py set-target esp32c3
 idf.py build
-python scripts\release.py
+python tools\archive_firmware.py create build
 ```
 
 主要入口：
 
-- 专用运行时：`device-firmware/components/app/src/app.c`
-- Harness UI：`device-firmware/components/ui/presentation/src/ui_harness.c`
-- 状态协议解析：`device-firmware/components/core/services/src/harness_status.c`
-- BLE GATT：`device-firmware/components/platform/platform_esp32/src/ble_config.c`
-- 板级引脚：`device-firmware/components/platform/platform_esp32/include/platform/board_config.h`
+- 专用运行时：`device-firmware/main/whale_app.c`
+- Harness UI：`device-firmware/main/whale_ui.c`
+- 状态协议解析：`device-firmware/main/whale_wire.c`
+- BLE GATT：`device-firmware/main/whale_ble.c`
+- 回复缓存：`device-firmware/main/whale_reply_cache.c`
+- 板级引脚：`device-firmware/components/bsp/include/bsp_pins.h`
 
 ## 交给豆包或其他 AI 自动部署
 

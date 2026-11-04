@@ -27,6 +27,23 @@ def end(turn, reason="completed"):
 
 
 class HistoryRoster(unittest.IsolatedAsyncioTestCase):
+    async def test_only_latest_completed_reply_is_sent(self):
+        self.registry(["a"])
+        latest = "latest answer\n" * 60
+        self.journal("a", [assistant(1, "first old answer"), end(1),
+                           assistant(2, "second old answer"), end(2),
+                           assistant(3, latest), end(3)])
+        await self.sync()
+        sid = self.workspace.keys["a"]
+        row = self.workspace.sessions[sid]
+        wire = Link(self.workspace)
+        wire.receive(2, pack("BBIHHB", 2, 2, 511, 20, 20, 0))
+        parts = self.workspace.history_pages[sid]
+        transmitted = b"".join(wire.receive(0x1A, pack("QIII", self.workspace.epoch,
+            sid, row["_reply"], i))[0][1][26:] for i in range(len(parts)))
+        self.assertEqual(transmitted.decode(), latest.strip())
+        self.assertNotIn(b"old answer", transmitted)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

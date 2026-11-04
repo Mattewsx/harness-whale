@@ -24,8 +24,8 @@
 ## 1. 获取代码
 
 ```powershell
-git clone https://github.com/1ikeMcFlurry/harness-whale-companion.git
-cd harness-whale-companion
+git clone https://github.com/Mattewsx/harness-whale.git
+cd harness-whale
 ```
 
 如果没有 Git，可以从 GitHub 使用 **Code → Download ZIP** 并解压。后续命令都在仓库根目录运行。
@@ -83,7 +83,7 @@ python installer\install_companion.py
 
 从以下 Release 页面下载 `Harness-Whale-ESP32C3-8MB.bin`：
 
-https://github.com/1ikeMcFlurry/harness-whale-companion/releases/latest
+https://github.com/Mattewsx/harness-whale/releases/latest
 
 把文件放到：
 

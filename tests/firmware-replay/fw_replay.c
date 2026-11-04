@@ -18,6 +18,8 @@ int whale_home_scroll_max(const char *s){
 bool whale_send(uint8_t type,const uint8_t *b,size_t n){
     printf("tx %02x ",type);for(size_t i=0;i<n;i++)printf("%02x",b[i]);puts("");return true;
 }
+size_t whale_line_offset(const char *s,int line){const char *start=s;while(*s && line>0)if(*s++=='\n')line--;return s-start;}
+int whale_scroll_at(const char *s,size_t offset){int line=0;for(size_t i=0;s[i] && i<offset;i++)if(s[i]=='\n')line++;return line;}
 int main(void){
     char line[4096];unsigned val;
     while(fgets(line,sizeof(line),stdin)){
