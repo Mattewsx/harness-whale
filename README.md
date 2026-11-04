@@ -1,117 +1,50 @@
-> **v0.09 发布分支**：仓库组成、发布物校验与已知限制见 [R09 发布基线](docs/R09-HANDOFF.md)。
-
-<div align="center">
-
 # 🐋 Harness Whale Companion
 
-**把 DeepSeek Harness 的运行状态装进一块会动的 ESP32-C3 小副屏**
+把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-个人 Demo · BLE 直连 · 无需局域网 · 可在设备上完成简单单选
+当前版本：**v0.10.1 / 固件 R10.1 / 协议 2.2**。[下载](https://github.com/Mattewsx/harness-whale/releases/tag/v0.10.1) · [发布与验收](docs/R10.1-HANDOFF.md) · [部署指南](docs/AI_DEPLOYMENT.md)
 
-[![Release](https://img.shields.io/github/v/release/Mattewsx/harness-whale?display_name=tag&style=flat-square)](https://github.com/Mattewsx/harness-whale/releases/latest)
-[![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB?style=flat-square&logo=python&logoColor=white)](#电脑端要求)
-[![ESP-IDF](https://img.shields.io/badge/ESP--IDF-5.5-E7352C?style=flat-square&logo=espressif&logoColor=white)](#从源码构建固件)
-[![Demo](https://img.shields.io/badge/status-personal_demo-5AB9EA?style=flat-square)](#项目定位)
+![R10.1 界面预览](docs/images/r101-preview.png)
 
-![设备界面](docs/images/device-ui.png)
+上图使用正式 UI、字体与角色素材通过 LVGL 渲染，非设备实拍；标题、正文和电量为测试数据。
 
-![鲸鱼娘状态动效](docs/images/whale-girl-states.gif)
+## 功能与按键
 
-</div>
+- 列表只显示 DSH 工作区中未归档的主会话，排除子代理；归档或删除后同步移除。
+- 任务主页显示大幅鲸鱼娘、标题、状态、用时、连接状态和设备电量。
+- 表达待命、思考、执行、等待、完成、错误、停止等工作状态，支持普通单选作答。
+- 每个会话只读最近一次最终回复；新回复替换旧内容，没有历史回答切换。
+- 回复通过上下键连续滚动，没有页码。约 13 KB 内存缓存 32 个传输分段，重复展开已有缓存不再请求。断电清空缓存，超长正文中被淘汰的部分需重新获取。
+- 仅在存在真实 Todo 数据时显示进度；账户余额已隐藏，无需提供 API Key。
 
-## 项目定位
+| 界面 | ↑ | ↓ | 确认 |
+| --- | --- | --- | --- |
+| 任务主页 | 阅读完整标题 | 展开最近回复 | 打开列表，或处理待答问题 |
+| 回复 | 上滚；到开头后收起 | 下滚，或重试读取 | 收起回复 |
+| 会话列表 | 上一个 | 下一个 | 打开任务 |
+| 普通单选 | 上一个选项 | 下一个选项 | 确认当前选择 |
 
-这是一个个人制作的硬件 Demo（概念验证），用来展示“AI Agent 状态副屏”这一玩法。它适合学习、复现、改造和社区交流，目前不是一套面向量产或长期运维的完整产品。
+任务主页和回复界面长按 ↓ 进入列表，长按确认进入连接管理。多选、自由输入和复杂补充仍在电脑上完成。
 
-本项目衍生自 [1ikeMcFlurry/harness-whale-companion](https://github.com/1ikeMcFlurry/harness-whale-companion)，在其基础上继续开发 R06–R09。上游代码版权归原作者所有，本仓库新增部分以 [MIT](LICENSE) 授权。
+## 硬件与电脑要求
 
-固件会把硬件变成 Harness 专用状态屏，只保留本 Demo 所需的界面与交互。源码树仍包含开发板原工程的部分板级支持模块，以保证固件可以完整构建；运行时入口由 `PRODUCT_HARNESS_ONLY=1` 限制为 Harness 模式。
+预编译固件针对 **FoloToy AI Passport：ESP32-C3、8 MB Flash、240 × 320 屏幕、三按键**。不要直接刷入其他 ESP32-C3 板卡；引脚以 [BSP](device-firmware/components/bsp/include/bsp_pins.h) 为准。
 
-## 它能做什么
+安装流程已在 Windows 10/11 64 位验证，要求 Python 3.10～3.13、蓝牙和 DeepSeek Harness。USB 数据线用于刷机，日常同步使用 BLE。
 
-- 显示当前状态：离线、待命、思考、执行工具、等待、等待选择、完成、错误、已停止。
-- 显示当前任务标题、持续时间、Todo 进度和工具类型。
-- 显示 DeepSeek API 余额；任务结束后立即刷新，并在 3 秒、10 秒、30 秒补拉，另有 5 分钟兜底刷新。
-- 金额过长时循环滚动显示，人民币格式为 `123.45元`。
-- 用不同的 Q 萌慵懒鲸鱼娘动效表达不同状态。
-- 普通单选题可直接在设备上用上/下/确认三键回答。
-- 插件内可用 `/whale` 查看桥接器与硬件连接状态。
-- 电脑和设备通过 BLE 连接，不要求同一 Wi-Fi，也不依赖 2.4 GHz 网络。
+## 安装与升级
 
-## 为什么仍然需要桥接器
-
-需要，但用户不用手动启动它。
-
-DeepSeek Harness 运行在电脑上，ESP32-C3 设备通过 BLE 接收数据；两端不能直接调用彼此的运行时 API。仓库中的 Python 桥接器负责把本机插件事件转换成紧凑 BLE 数据帧，并把设备按键选择送回插件。安装完成后，Harness 插件会自动启动和管理桥接器。
-
-```mermaid
-flowchart LR
-    A[DeepSeek Harness] -->|事件| B[TypeScript 插件]
-    B -->|仅本机 UDP| C[Python BLE 桥接器]
-    C -->|BLE| D[ESP32-C3 状态副屏]
-    D -->|单选结果| C
-    C --> B
-    C -.余额查询.-> E[DeepSeek API]
-```
-
-插件不会把 Prompt、模型回答、文件内容、工具参数或 API Key 发给设备。详见 [架构说明](docs/ARCHITECTURE.md) 与 [BLE 协议](docs/PROTOCOL.md)。
-
-## 硬件要求
-
-当前已测试配置：
-
-| 部件 | 要求 |
-|---|---|
-| 主控 | ESP32-C3，8 MB Flash |
-| 屏幕 | ST7789P3，240 × 320 |
-| 按键 | 3 个 ADC 按键：上 / 下 / 确认 |
-| 连接 | BLE |
-
-这份固件包含特定开发板的屏幕、按键、电源和分区配置，并不是任意 ESP32-C3 开发板都能直接烧录。使用其他板子时，请先修改 [`bsp_pins.h`](device-firmware/components/bsp/include/bsp_pins.h) 和显示驱动配置，再自行构建。
-
-## 电脑端要求
-
-- Windows 10/11 64 位（当前一键安装流程的实测平台）。
-- Python 3.10～3.13，安装时勾选 **Add Python to PATH**。
-- 电脑有可用蓝牙，并已安装 DeepSeek Harness。
-- 烧录固件时使用可传输数据的 USB 线。
-
-## 最快安装方式
-
-### 1. 下载代码与固件
-
-先克隆仓库，或使用 GitHub 的 **Code → Download ZIP** 下载代码：
+下载同一版本的源码与附件，避免用旧 manifest 校验新固件：
 
 ```powershell
-git clone https://github.com/Mattewsx/harness-whale.git
+git clone --branch v0.10.1 https://github.com/Mattewsx/harness-whale.git
 cd harness-whale
+python installer\install_companion.py --non-interactive --skip-key
 ```
 
-再从 [Releases](https://github.com/Mattewsx/harness-whale/releases/latest) 下载唯一的固件文件 `Harness-Whale-ESP32C3-8MB.bin`，放到 `installer\firmware\`。校验清单已经包含在代码仓库中。
+安装器创建独立 `.venv`，安装插件与桥接器，并更新受管 DSH profile 块。安装后完全退出并重启 DSH，输入 `/whale` 查看连接。已安装当前桥接器的 R09/R10 用户仅升级设备即可；R10.1 未改变电脑端生产代码或 BLE 协议。
 
-### 2. 安装 Harness Companion
-
-在仓库根目录打开 PowerShell：
-
-```powershell
-python installer\install_companion.py
-```
-
-安装器会：
-
-1. 把插件安装到 `~/.dsh/plugins/harness-whale-companion/`；
-2. 把桥接器安装到 `~/.dsh/harness-whale-bridge/`；
-3. 创建独立 Python 虚拟环境并安装 BLE 依赖；
-4. 自动更新 Harness 的 `cordis.patch.yml`；
-5. 静默询问 DeepSeek API Key，用于余额显示。
-
-API Key 可以直接回车跳过；跳过后其余状态功能仍可使用，设备余额显示为 `--`。不要把 Key 放进命令行、截图、Issue 或 Git 提交。
-
-安装后完全退出并重新启动 Harness。输入 `/whale` 可以查看桥接器和设备连接状态。
-
-### 3. 烧录固件
-
-烧录会整片擦除设备上的旧固件、NVS、配置和存档，请先确认设备允许被覆盖。
+从 [v0.10.1 Release](https://github.com/Mattewsx/harness-whale/releases/tag/v0.10.1) 下载 `Harness-Whale-ESP32C3-8MB.bin`，放入 `installer/firmware/`：
 
 ```powershell
 python -m venv .flash-venv
@@ -119,100 +52,50 @@ python -m venv .flash-venv
 .\.flash-venv\Scripts\python.exe installer\flash_firmware.py
 ```
 
-脚本会自动识别串口、校验 SHA-256、擦除 Flash，并把完整镜像从 `0x0` 写入。烧录后 BLE 名称为 `HARNESS-WHALE`。
+标准安装器校验 SHA-256 后整片擦除并从 **0x0** 写入。旧固件、NVS、设置与配对会被清除。刷写前确认目标串口与数据影响。
 
-## 设备上的单选交互
+已有相同分区布局的鲸鱼固件时，可按 [升级步骤](docs/UPGRADE.md) 使用 `Harness-Whale-ESP32C3-app-0x10000.bin` 保留配对。应用镜像只写 **0x10000**，不可交给完整镜像安装器，也不可从 0x0 写入。
 
-当 Harness 请求普通单选时：
+## 构建与验证
 
-- 上键 / 下键：切换选项；
-- 确认键：提交当前选项；
-- 2～4 个选项：一页显示；
-- 5 个及以上：每页显示 3 个实际选项和 1 个翻页项。
+激活 ESP-IDF **5.5.3** 后执行：
 
-为了保持小屏交互简单，多选、自由文本和复杂的“其他”补充仍回到电脑完成。电脑与设备同时等待时，任意一端先回答，另一端会自动取消，避免重复提交。
-
-## 自定义固件路径
-
-若不想把 `.bin` 放到 `installer\firmware\`，请把 `installer\firmware\manifest.json` 复制到 `.bin` 同一目录，再显式指定固件：
-
-```powershell
-python -m venv .flash-venv
-.\.flash-venv\Scripts\python.exe -m pip install -r installer\requirements-flash.txt
-.\.flash-venv\Scripts\python.exe installer\flash_firmware.py --firmware D:\path\to\Harness-Whale-ESP32C3-8MB.bin
-```
-
-## 从源码构建固件
-
-安装 ESP-IDF 5.5，并进入已激活 ESP-IDF 环境：
-
-```powershell
+```sh
 cd device-firmware
-idf.py set-target esp32c3
-idf.py build
-python tools\archive_firmware.py create build
+./tools/validate.sh
 ```
 
-主要入口：
+完整门禁包含主机回归、交叉编译和合并镜像校验。结果为 `device-firmware/build/FoloToy-AI-Passport-full.bin`；匹配 ELF/MAP 存于 `build/firmware/<sha256>/`。
 
-- 专用运行时：`device-firmware/main/whale_app.c`
-- Harness UI：`device-firmware/main/whale_ui.c`
-- 状态协议解析：`device-firmware/main/whale_wire.c`
-- BLE GATT：`device-firmware/main/whale_ble.c`
-- 回复缓存：`device-firmware/main/whale_reply_cache.c`
-- 板级引脚：`device-firmware/components/bsp/include/bsp_pins.h`
+电脑端测试从仓库根目录执行：
 
-## 交给豆包或其他 AI 自动部署
+```sh
+python -m pip install -r installer/requirements-bridge.txt
+python -m unittest discover -s tests -v
+python -m compileall -q harness installer tests
+npx --yes esbuild@0.25.10 harness/plugin/index.ts --bundle --platform=node --format=esm --outfile=plugin-check.mjs
+```
 
-仓库根目录的 [`AGENTS.md`](AGENTS.md) 和 [`docs/AI_DEPLOYMENT.md`](docs/AI_DEPLOYMENT.md) 是机器可读的确定性操作说明。可以把下面这段话直接交给能够操作本机终端的 AI：
+插件回放需支持 TypeScript 类型剥离的 Node.js 22.18+。另有 [跨语言回放](tests/firmware-replay/RUN.txt) 与 [LVGL 渲染回归](device-firmware/tests/whale_render/README.zh_CN.md)。根目录 `.github/workflows/checks.yml` 是整合 CI 入口；`device-firmware/.github/` 保留固件独立工程定义，不会自动成为本仓库工作流。
 
-> 请先完整阅读 AGENTS.md 和 docs/AI_DEPLOYMENT.md，然后从这个代码仓库部署 Harness Whale Companion，并从 Release 下载唯一的 .bin 固件。先做只读环境检查，再运行源码安装器；API Key 必须由我在终端中静默输入，禁止输出、记录或写入脚本。烧录前必须确认串口和整片擦除范围，只烧录目标 ESP32-C3，不要修改其他 Harness 插件。
+## 结构与隐私
 
-## 项目目录
+| 目录 | 用途 |
+| --- | --- |
+| `harness/plugin/` | DSH 事件、会话生命周期、普通单选代理 |
+| `harness/bridge/` | 本机 UDP、DSH 本地记录、BLE 协议与回复传输 |
+| `device-firmware/` | 应用、BSP、UI、字库和素材 |
+| `installer/` | 安装器、完整固件刷写器与校验清单 |
+| `tests/` | 电脑端回归与 Python→C 回放 |
 
-| 路径 | 内容 |
-|---|---|
-| `device-firmware/` | ESP-IDF 固件源码、UI、字库、鲸鱼娘资源 |
-| `harness/plugin/` | Harness TypeScript 插件 |
-| `harness/bridge/` | Python BLE 桥接器与协议 |
-| `installer/` | 源码安装器和固件烧录器 |
-| `tests/` | 协议与安装器测试 |
-| `docs/` | 架构、协议、AI 部署和排障说明 |
+UDP 仅绑定本机回环地址。BLE 传输会话标题、状态、问题选项和最近最终回复；回复可能包含敏感信息，请仅与自己的设备配对。设备缓存正文不写入 NVS。API Key 不进入 BLE/UDP 帧。旧版余额模块保留兼容，但本版隐藏余额，部署时使用 `--skip-key`。详见 [架构](docs/ARCHITECTURE.md) 和 [协议](docs/PROTOCOL.md)。
 
-## 常见问题
+## 发布文件与验证范围
 
-| 现象 | 处理方式 |
-|---|---|
-| `/whale` 显示 bridge offline | 完全退出并重启 Harness；确认 Python 3.10～3.13 可用；重新运行安装器。 |
-| 一直扫描不到设备 | 确认设备显示等待连接、Windows 蓝牙已开启；关闭其他占用该 BLE 连接的软件。 |
-| 余额一直是 `--` | 重新运行安装器并输入自己的 API Key；确认 Key 可访问余额接口。 |
-| 余额未在任务结束后变化 | 等待 3～30 秒补拉窗口；若仍未更新，检查 Harness 日志中的 `balance refresh`。 |
-| 任务标题不显示 | 更新到最新插件，重新启动 Harness，并新建或重命名一次任务。 |
-| 设备不能回答问题 | 当前只支持普通单选；多选、自由文本、补充说明请在电脑端完成。 |
-| 中文显示为方框 | 使用 Release 固件；自编译时不要移除 `lv_font_cn_16.c` 与 `lv_font_cn_24.c`。 |
+Release 包含完整镜像、应用升级镜像、匹配调试符号、`SHA256SUMS.txt` 和发布说明。源码由 GitHub 对应标签提供；二进制不进入 Git 历史。
 
-更多检查步骤见 [排障手册](docs/TROUBLESHOOTING.md)。
+R10.1 已通过构建、主机回归及实机启动/BLE/名单同步；用户确认最新回复、连续滚动、收起与重复展开正常。长时间稳定性、新回复实时替换及缓存请求次数仍需进一步实机验证，详见 [验收说明](docs/R10.1-HANDOFF.md)。这是个人 Demo，硬件兼容范围有限。
 
-## Release 文件
+## 来源与许可
 
-| 文件 | 用途 |
-|---|---|
-| `Harness-Whale-ESP32C3-8MB.bin` | ESP32-C3 8 MB 完整合并固件，烧录偏移 `0x0` |
-
-Release 只放 `.bin`。Harness 插件、桥接器、安装器、固件源码、manifest、AI 部署说明和测试全部在代码仓库中，便于直接审阅与更新。
-
-## 安全与隐私
-
-- UDP 只监听 `127.0.0.1`，不会开放局域网端口。
-- BLE 只发送状态、工具分类、计时、Todo、标题和余额，不发送 Prompt 或模型输出。
-- API Key 只由本机桥接器读取并直接请求余额接口，不进入 UDP/BLE 数据帧。
-- Windows 安装器把 Key 保存到当前用户环境变量；仓库、配置文件和设备中都不保存 Key。
-
-## 当前限制
-
-- 这是个人 Demo，安装和硬件兼容范围仍比较窄。
-- 一键安装目前只验证了 Windows 10/11 64 位。
-- 预编译固件只适用于上述已测试板级配置。
-- 仓库当前未声明统一许可证；第三方组件仍遵循其各自目录中的许可文件。
-
-欢迎把它当作 Agent 硬件交互的起点继续改造。
+基于 [1ikeMcFlurry/harness-whale-companion](https://github.com/1ikeMcFlurry/harness-whale-companion) 继续开发，复用 [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport) BSP，角色设计参考 [dsh-whale-musume](https://github.com/Sutera-Diffusus/dsh-whale-musume)。保留原作者版权与第三方组件各自许可；本仓库新增部分以 [MIT](LICENSE) 授权。

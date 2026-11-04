@@ -1,51 +1,41 @@
 # Harness Whale Companion — AI 操作说明
 
-## 项目性质
+这是 FoloToy AI Passport 与 DeepSeek Harness 的个人 BLE 陪伴 Demo。当前发布 v0.10.1，固件 R10.1、协议 2.2。先读 [README](README.md) 与任务相关说明；修改固件还须读 [固件 AGENTS](device-firmware/AGENTS.md)。
 
-这是一个个人硬件 Demo / 概念验证。目标是把 DeepSeek Harness 的运行状态通过本机插件、Python BLE 桥接器显示到特定 ESP32-C3 小屏设备，并允许设备回答普通单选题。
+## 安全与授权
 
-## 安全边界
+- 保留已有修改，先检查 `git status --short --branch`，在功能或发布分支工作。
+- 不读取、打印、记录、复制或提交 API Key、密码、Token、私钥；使用凭据管理器正常认证，不把凭据写入 remote URL。
+- 不提交本机身份、真实会话、`.dsh` 内容或原始日志，使用合成测试数据。
+- 不修改无关 DSH 插件、profile 或系统 Python，使用独立 `.venv`。
+- 本版隐藏余额，安装使用 `--non-interactive --skip-key`。如用户主动配置旧版余额接口，必须由用户在隐藏提示中输入 Key。
+- 构建、提交和发布不会授权刷机。刷写前只读识别串口，确认镜像、偏移及数据影响，并获得用户授权。
+- 标准 `installer/flash_firmware.py` 只支持完整镜像：校验后整片擦除并写入 0x0。相同布局的应用升级按 [UPGRADE](docs/UPGRADE.md) 写入 0x10000；两种镜像不得混用。
 
-1. 不得读取、打印、记录、复制或提交用户的 API Key、密码、Token、私钥。
-2. API Key 只能由用户在 `install_companion.py` 的隐藏输入提示中亲自输入。
-3. 不得把 API Key 作为 `--api-key` 命令行参数传递。
-4. 烧录会整片擦除目标 ESP32-C3。执行前必须只读确认目标串口，并向用户说明会删除旧固件、NVS、配置和存档。
-5. 不得修改无关的 Harness 插件、profile 或系统 Python；本项目使用自己的 `.venv`。
-6. 不得把本机 IP、用户名、日志、`.dsh` 内容或设备身份数据提交到 Git。
+## 产品约束
 
-## 推荐部署路线
-
-克隆或下载本代码仓库，从 GitHub Release 只下载 `Harness-Whale-ESP32C3-8MB.bin`，并放到 `installer/firmware/`。插件、桥接器、安装器、manifest 与部署说明都直接使用仓库内文件。
-
-完整步骤见 `docs/AI_DEPLOYMENT.md`。执行顺序必须是：环境检查 → 安装 Companion → 重启 Harness → 查询 `/whale` → 连接目标串口 → 固件校验 → 用户确认 → 烧录 → 验证。
+- BLE 连接本机电脑，无需 Wi-Fi；桥接器由插件自动启动。
+- 只显示未归档主会话，排除子代理；归档、删除同步移除条目和缓存。
+- 主页显示鲸鱼娘、标题、状态、用时和设备电量；进度仅在有真实 Todo 时显示。
+- 每会话只读最近一次最终回复，默认收起；↓ 展开，↑↓ 连续滚动，无页码，确认收起。
+- 内存缓存 32 个分段，约 13 KB，首段优先保留。断电、新修订、删除会话、桥接器 epoch 变化和解绑按范围清理缓存；正文不写 NVS。
+- 仅普通单选支持硬件作答，多选、自由文本与复杂补充回电脑。
+- BLE 名称 `HARNESS-WHALE`，诊断 `/whale`；插件 ID `harness-whale-companion` 保留安装兼容。
 
 ## 源码地图
 
-- `harness/plugin/index.ts`：监听 Harness 事件、发送状态、代理单选、启动桥接器。
-- `harness/bridge/harness_ble_bridge.py`：本机 UDP、余额请求、BLE 连接、设备回答回传。
-- `harness/bridge/harness_ble_protocol.py`：二进制状态和问题帧。
-- `installer/install_companion.py`：安装到当前用户的 `~/.dsh`，不需要管理员权限。
-- `installer/flash_firmware.py`：验证 manifest 和 SHA-256 后擦除并烧录。
-- `device-firmware/components/app/src/app.c`：固件 Harness-only 运行入口与按键回答。
-- `device-firmware/components/ui/presentation/src/ui_harness.c`：UI、中文字体、动效和滚动余额。
+- `harness/plugin/index.ts`：事件、会话生命周期、单选及桥接器管理。
+- `harness/bridge/harness_ble_bridge.py`：UDP、DSH 名单与本地记录、BLE 连接。
+- `harness/bridge/whale_v2.py`：当前 2.2 协议；`harness_ble_protocol.py` 保留旧版兼容和文本清洗。
+- `device-firmware/main/whale_app.c`：应用入口、状态机与按键。
+- `device-firmware/main/whale_ui.c`：LVGL 布局与动效。
+- `device-firmware/main/whale_reply_cache.c`：内存缓存。
+- `device-firmware/components/bsp/`：硬件支持。
 
-## 关键事实
+## 验证与发布
 
-- 电脑和设备用 BLE 连接，不需要同一局域网或 Wi-Fi。
-- 桥接器在架构上必需，但安装后由插件自动启动，用户不需要手动常驻一个终端。
-- BLE 名称：`HARNESS-WHALE`。
-- Harness 查询命令：`/whale`。
-- 只支持普通单选题在设备端作答；多选、自由文本和复杂补充返回电脑端。
-- 人民币金额格式为 `数字 + 元`，超宽时循环滚动。
-- 任务结束会触发立即、3 秒、10 秒、30 秒余额刷新，另有 300 秒定时兜底。
-- `PRODUCT_HARNESS_ONLY=1`，设备运行时只进入 Harness 功能；源码树中的其他板级模块是构建依赖，不代表运行时功能。
+电脑端运行 `python -m unittest discover -s tests -v`、`python -m compileall -q harness installer tests` 和 README 中的 esbuild 命令；插件回放需 Node.js 22.18+。
 
-## 变更后的最低验证
+固件激活 ESP-IDF 5.5.3，在 `device-firmware/` 运行 `./tools/validate.sh`。协议变更同步 Python `whale_v2.py`、C `whale_wire.*` 与跨语言回放；UI 变更运行原生 LVGL 测试。
 
-```powershell
-python -m unittest discover -s tests -v
-python -m compileall -q harness installer tests
-npx.cmd --yes esbuild harness/plugin/index.ts --bundle --platform=node --format=esm --outfile=NUL
-```
-
-若修改固件协议，还必须同步修改 C 端 `harness_status.*`、Python `harness_ble_protocol.py` 和对应测试。
+根目录工作流是整合 CI 入口。发布同步源码、manifest、版本说明和附件，验证源码来源及镜像/ELF 身份；二进制放 Release，不提交 Git，保留已发布标签。分别报告 Build、Host tests、Device tests、Unverified，不把无故障日志视为全部硬件验收。
