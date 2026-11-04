@@ -42,6 +42,9 @@ jobs:
   static:
     name: Firmware host checks
     runs-on: ubuntu-latest
+    env:
+      # Match the Clang frontend used by the validated native Windows tests.
+      CC: clang
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install verified workflow linter
