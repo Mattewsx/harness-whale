@@ -20,7 +20,7 @@ bad=bytearray(frames[0][1]);bad[24]=3
 for kind,body in [(17,bytes(bad)),*frames[1:]]:send(kind,body)
 lines.append('assert 0 0 0')
 for kind,body in frames:send(kind,body)
-lines+=['assert 0 2 0','key 1','key 2','assert 8 2 1']
+lines+=['assert 0 2 0','key 2','key 1','key 2','key 2','assert 8 2 1']
 for kind,body in link.receive(0x24,q.identity+b'\xff')+link.receive(0x24,q.identity+b'\0'):send(kind,body)
 lines+=['assert 10 2 1','key 1','key 1','key 1','assert 8 2 1','key 2','assert 8 2 1']
 for kind,body in link.receive(0x24,q.identity+b'\1'):send(kind,body)
@@ -30,30 +30,32 @@ for kind,body in link.snapshot():send(kind,body)
 m.resolve(q.request,0,4)
 for kind,body in link.receive(0x25,q.identity):send(kind,body)
 lines+=['assert 16 2 1']
+for kind,body in link.changes():send(kind,body)
 # Select a completed answer in the first session and read both pages.
-lines+=['key 2','key 0','key 2','assert 1 2 0']
+lines+=['key 2','key 2','key 0','assert 1 2 0']
 sid=m.keys['alpha'];rev=9;preview='真实回复'.encode()
 send(0x19,v.pack('QIIB',m.epoch,sid,rev,len(preview))+preview)
-lines+=['key 2','assert 21 2 0']
+lines+=['key 2','assert 0 2 0','key 1','assert 21 2 0']
 def reply_page(session,page,text):
     data=text.encode()
     send(0x1b,v.pack('QIIIIH',m.epoch,session,rev,page,2,len(data))+data)
 reply_page(m.keys['beta'],0,'别的会话')
 lines.append('assert 21 2 0')
 reply_page(sid,0,'一。\n二。\n三。\n四。\n五。\n六。\n七。')
-lines+=['assert 22 2 0','scroll 0','key 1','scroll 1','key 1','scroll 2','key 0','scroll 1','key 1','key 1','assert 21 2 0']
+lines+=['assert 22 2 0','scroll 0','key 1','scroll 1','key 0','scroll 0','key 1','key 1','assert 21 2 0']
 reply_page(sid,1,'末页')
 lines+=['assert 22 2 0']
 
 # Backward crossing lands at the bottom of the previous chunk.
 lines += ['key 0','assert 21 2 0']
 reply_page(sid,0,'一。\n二。\n三。\n四。\n五。\n六。\n七。')
-lines += ['assert 22 2 0','scroll 2','key 2','assert 1 2 0','key 1','key 2','assert 0 2 1','key 257','key 0','key 2','assert 21 2 0']
+lines += ['assert 22 2 0','scroll 1','key 2','assert 0 2 0','key 2','assert 1 2 0',
+          'key 1','key 2','assert 0 2 1','key 257','key 0','key 2','assert 0 2 0','key 1','assert 21 2 0']
 reply_page(sid,0,'第一条回复')
-# A new final reply arriving while the task home is open must load automatically.
+# A new final reply preserves the current reading position until the user advances.
 rev=10;send(0x19,v.pack('QIIB',m.epoch,sid,rev,len(preview))+preview)
-lines+=['assert 21 2 0']
-reply_page(sid,0,'自动更新')
+lines+=['assert 22 2 0','key 1','assert 21 2 0']
+reply_page(sid,0,'用户选择更新')
 lines+=['assert 22 2 0']
 # Archiving the focused task while its final reply is open closes the reader.
 m.set_visibility('alpha',True,10000)

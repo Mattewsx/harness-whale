@@ -16,6 +16,8 @@ device-firmware/sdkconfig.old
 *.map
 *.zip
 SHA256SUMS.txt
+/tests/firmware-replay/fw_replay.exe
+/tests/firmware-replay/fw_replay.pdb
 
 # IDE / OS
 .idea/
