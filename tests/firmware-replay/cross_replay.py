@@ -90,4 +90,4 @@ assert 'tx 25 '+q.identity.hex() in r.stdout
 print('PASS: Python bridge -> actual C firmware dispatcher; corrupt metadata rejected, same-title tasks, page identity, blocked partial submit, one answer only, disconnect/reconnect result query')
 
 assert 'tx 1a '+v.pack('QIII',m.epoch,sid,9,1).hex() in r.stdout
-print('PASS: task preview -> reader -> next page -> task list; wrong-session reply rejected')
+print('PASS: latest reply -> continuous scroll -> cached reopen; wrong-session and old replies rejected')
