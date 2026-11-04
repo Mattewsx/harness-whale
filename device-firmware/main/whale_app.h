@@ -34,8 +34,11 @@ typedef struct {
         char preview[81];
     } replies[8];
     uint32_t read_session, read_revision, read_page, read_count;
-    bool read_back;
-    char answer[385];
+    uint32_t read_first, read_started;
+    uint16_t read_sizes[3];
+    uint8_t read_used;
+    bool read_back, read_pending, read_error;
+    char answer[3 * 384 + 1];
     uint64_t epoch, balance;
     uint32_t cursor, next, seq, passkey, recovered, soc_at, page_at, now;
     uint16_t total;
@@ -52,5 +55,7 @@ void whale_ui_draw(const whale_app_t *app);
 #define HOME_REPLY_LINES 6
 int whale_scroll_max(const char *s);
 int whale_home_scroll_max(const char *s);
+size_t whale_line_offset(const char *s, int line);
+int whale_scroll_at(const char *s, size_t offset);
 bool whale_text_wide(const char *s);
 bool whale_displayable(const char *str);

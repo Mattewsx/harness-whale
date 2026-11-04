@@ -37,6 +37,7 @@ void whale_reply_cache_put(uint64_t epoch, uint32_t session, uint32_t revision, 
         return;
     unsigned target = 0;
     uint32_t oldest = 0;
+    bool has_body = false;
     for (unsigned i = 0; i < WHALE_REPLY_CACHE_SLOTS; i++) {
         if (!entries[i].count || (entries[i].epoch == epoch && entries[i].session == session &&
                                   entries[i].revision == revision && entries[i].part == part)) {
@@ -44,9 +45,11 @@ void whale_reply_cache_put(uint64_t epoch, uint32_t session, uint32_t revision, 
             break;
         }
         uint32_t age = tick - entries[i].used;
-        if (age >= oldest) {
+        bool body = entries[i].part != 0;
+        if ((body && !has_body) || (body == has_body && age >= oldest)) {
             oldest = age;
             target = i;
+            has_body = body;
         }
     }
     entries[target].epoch = epoch;

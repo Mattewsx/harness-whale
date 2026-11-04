@@ -69,6 +69,20 @@ int whale_home_scroll_max(const char *s) {
             lines++;
     return lines > HOME_REPLY_LINES ? lines - HOME_REPLY_LINES : 0;
 }
+size_t whale_line_offset(const char *s, int line) {
+    const char *start = s;
+    while (*s && line > 0)
+        if (*s++ == '\n')
+            line--;
+    return s - start;
+}
+int whale_scroll_at(const char *s, size_t offset) {
+    int line = 0;
+    for (size_t i = 0; s[i] && i < offset; i++)
+        if (s[i] == '\n')
+            line++;
+    return line;
+}
 bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     sent_type = type;
     sent_length = n;
@@ -80,6 +94,7 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     return send_ok;
 }
 static void setup(void) {
+    whale_reply_cache_clear();
     a = (whale_app_t){.soc = -1,
                       .next = UINT32_MAX,
                       .count = 2,
@@ -104,16 +119,20 @@ static void setup(void) {
     sends = answers = 0;
     send_ok = true;
 }
-static void reply(uint32_t sid, uint32_t rev, uint32_t part, const char *text) {
+static void reply_count(uint32_t sid, uint32_t rev, uint32_t part, uint32_t count,
+                        const char *text) {
     uint8_t p[410] = {0};
     put64(p, a.epoch);
     put32(p + 8, sid);
     put32(p + 12, rev);
     put32(p + 16, part);
-    put32(p + 20, 2);
+    put32(p + 20, count);
     put16(p + 24, strlen(text));
     memcpy(p + 26, text, strlen(text));
     apply_message((whale_msg_t){0x1b, p, 26 + strlen(text)});
+}
+static void reply(uint32_t sid, uint32_t rev, uint32_t part, const char *text) {
+    reply_count(sid, rev, part, 2, text);
 }
 static void preview(uint32_t sid, uint32_t rev) {
     uint8_t p[20] = {0};
@@ -157,24 +176,21 @@ static void test_detail_and_reading(void) {
     assert(a.view == REPLY_LOAD);
     reply(10, 30, 0, "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13");
     assert(a.view == REPLY_READ && a.scroll == 0);
-    key(BSP_BTN_DOWN);
-    assert(a.scroll == 6);
-    key(BSP_BTN_DOWN);
+    for (unsigned i = 0; i < 7; i++)
+        key(BSP_BTN_DOWN);
     assert(a.scroll == 7);
     key(BSP_BTN_DOWN);
-    assert(a.view == REPLY_LOAD && a.read_page == 1);
+    assert(a.view == REPLY_READ && a.read_pending && a.read_page == 1);
     reply(10, 30, 1, "last");
-    key(BSP_BTN_UP);
-    assert(a.view == REPLY_LOAD && a.read_page == 0);
-    reply(10, 30, 0, "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13");
-    assert(a.scroll == 7);
-    key(BSP_BTN_UP);
-    assert(a.scroll == 1);
-    key(BSP_BTN_UP);
+    assert(a.read_used == 2 && strstr(a.answer, "13last"));
+    unsigned before = sends;
+    while (a.scroll)
+        key(BSP_BTN_UP);
     assert(a.scroll == 0);
     key(BSP_BTN_UP);
     assert(a.view == HOME);
     key(BSP_BTN_DOWN);
+    assert(a.view == REPLY_READ && sends == before);
     key(BSP_BTN_OK);
     assert(a.view == HOME);
     reply(10, 30, 0, "late");
@@ -220,9 +236,8 @@ static void test_new_reply_and_lifecycle(void) {
     key(BSP_BTN_DOWN);
     reply(10, 30, 0, "reading");
     preview(10, 32);
-    assert(a.view == REPLY_READ && a.read_revision == 30 && !strcmp(a.answer, "reading"));
-    key(BSP_BTN_DOWN);
     assert(a.view == REPLY_LOAD && a.read_revision == 32);
+    assert(!a.answer[0]);
     reply(10, 30, 0, "stale");
     assert(a.view == REPLY_LOAD);
     reply(10, 32, 0, "updated");
@@ -238,6 +253,11 @@ static void test_new_reply_and_lifecycle(void) {
     setup();
     snapshot(false);
     assert(a.view == LIST);
+    setup();
+    key(BSP_BTN_DOWN);
+    reply(10, 30, 0, "latest");
+    preview(10, 0);
+    assert(a.view == HOME && !a.answer[0]);
 }
 static void test_failure_empty_battery_and_key_release(void) {
     setup();
@@ -276,11 +296,42 @@ static void test_failure_empty_battery_and_key_release(void) {
     service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_DOWN | (BSP_BTN_RELEASE << 8)});
     assert(!dim && a.selected == 0);
 }
+static void test_continuous_cache_and_offline(void) {
+    setup();
+    key(BSP_BTN_DOWN);
+    const char *text = "1\n2\n3\n4\n5\n6\n7\n8\n";
+    reply_count(10, 30, 0, 5, text);
+    for (unsigned part = 1; part < 5; part++) {
+        for (unsigned i = 0; i < 40 && !a.read_pending; i++)
+            key(BSP_BTN_DOWN);
+        assert(a.read_pending && a.read_page == part && a.view == REPLY_READ);
+        reply_count(10, 30, part, 5, text);
+        assert(!a.read_pending && a.view == REPLY_READ);
+    }
+    assert(a.read_used == 3 && a.read_first == 2);
+    unsigned before = sends;
+    for (unsigned i = 0; i < 100 && a.view == REPLY_READ; i++)
+        key(BSP_BTN_UP);
+    assert(a.view == HOME && sends == before);
+    service((whale_event_t){.kind = WE_DOWN});
+    key(BSP_BTN_DOWN);
+    assert(a.view == REPLY_READ && sends == before);
+    /* Retain opening text even when a long reply fills the bounded cache. */
+    for (unsigned i = 5; i < 80; i++)
+        whale_reply_cache_put(a.epoch, 10, 30, i, 80, (const uint8_t *)"body", 4);
+    char cached[385];
+    uint32_t count;
+    assert(whale_reply_cache_get(a.epoch, 10, 30, 0, cached, &count));
+    assert(!whale_reply_cache_get(a.epoch + 1, 10, 30, 0, cached, &count));
+    whale_reply_cache_forget(10, 31);
+    assert(!whale_reply_cache_get(a.epoch, 10, 30, 0, cached, &count));
+}
 int main(void) {
     test_detail_and_reading();
     test_navigation_and_questions();
     test_new_reply_and_lifecycle();
     test_failure_empty_battery_and_key_release();
-    puts("Whale R10 application state and input tests PASS");
+    test_continuous_cache_and_offline();
+    puts("Whale R10.1 application state and input tests PASS");
     return 0;
 }

@@ -165,7 +165,8 @@ static const char *next_line(const char *s, char *line) {
     line[bytes] = 0;
     return s;
 }
-static const char *title_line(const char *s, char *line, const lv_font_t *font, unsigned max_width) {
+static const char *title_line(const char *s, char *line, const lv_font_t *font,
+                              unsigned max_width) {
     unsigned bytes = 0, width = 0;
     while (*s) {
         const char *next = s;
@@ -192,6 +193,26 @@ static int scroll_max(const char *s, int visible) {
 }
 int whale_scroll_max(const char *s) { return scroll_max(s, 8); }
 int whale_home_scroll_max(const char *s) { return scroll_max(s, HOME_REPLY_LINES); }
+size_t whale_line_offset(const char *s, int line) {
+    const char *start = s;
+    char row[80];
+    while (line-- > 0 && *s)
+        s = next_line(s, row);
+    return s - start;
+}
+int whale_scroll_at(const char *s, size_t offset) {
+    const char *start = s;
+    char row[80];
+    int line = 0;
+    while (*s) {
+        const char *next = next_line(s, row);
+        if ((size_t)(next - start) > offset)
+            break;
+        s = next;
+        line++;
+    }
+    return line;
+}
 static void fulltext(const char *heading, const char *body, int offset) {
     char row[80];
     center(46, heading, PAPER, TEAL);
@@ -216,6 +237,7 @@ void whale_ui_draw(const whale_app_t *a) {
     whale_row_t empty = {.state = a->linked ? 1 : 0};
     const whale_row_t *r = a->count ? &a->rows[a->selected] : &empty;
     bool animate = a->battery_level != 2;
+    bool inline_reply = a->view == REPLY_READ || a->view == REPLY_LOAD || a->view == REPLY_FAILED;
     painted_pose = false;
     visible_panels = 0;
     panel(link_dot, 13, 11, 5, 5, a->ready ? 0x558c82 : 0x9ca5b2, LV_RADIUS_CIRCLE);
@@ -225,7 +247,7 @@ void whale_ui_draw(const whale_app_t *a) {
             : a->count  ? "正在重连"
                         : "等待连接",
             MUT, PAPER, LV_TEXT_ALIGN_LEFT);
-    if (a->count) {
+    if (a->count && !inline_reply) {
         snprintf(text, sizeof text, "%lu/%u", (unsigned long)a->cursor + a->selected + 1, a->total);
         text_at(111, 4, 47, 18, &lv_font_cn_12, text, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
     }
@@ -255,7 +277,6 @@ void whale_ui_draw(const whale_app_t *a) {
     if (!lv_color_eq(lv_obj_get_style_bg_color(battery_fill, 0), battery_color))
         lv_obj_set_style_bg_color(battery_fill, battery_color, 0);
     const char *foot = "长按确认返回";
-    bool inline_reply = a->view == REPLY_READ || a->view == REPLY_LOAD || a->view == REPLY_FAILED;
     if (a->view == HOME || inline_reply) {
         int n = r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
         if (r->hint)
@@ -306,9 +327,6 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(16, 105, 140, 20, &lv_font_cn_14, newer ? "最近回复 · 有更新" : "最近回复", NAV,
                     0xffffff, LV_TEXT_ALIGN_LEFT);
             if (a->view == REPLY_READ) {
-                snprintf(text, sizeof text, "%lu/%lu", (unsigned long)a->read_page + 1,
-                         (unsigned long)a->read_count);
-                text_at(160, 107, 64, 16, &lv_font_cn_12, text, MUT, 0xffffff, LV_TEXT_ALIGN_RIGHT);
                 const char *body = a->answer;
                 char line[80];
                 for (int j = 0; j < a->scroll && *body; j++)
@@ -323,14 +341,14 @@ void whale_ui_draw(const whale_app_t *a) {
                         a->view == REPLY_LOAD ? "正在读取最近回复…" : "暂时没能读取回复", MUT,
                         0xffffff, LV_TEXT_ALIGN_CENTER);
             }
-            const char *nav =
-                a->view == REPLY_LOAD                                    ? "正在读取"
-                : a->view == REPLY_FAILED                                ? "↓ 重试"
-                : newer && a->scroll >= whale_home_scroll_max(a->answer) ? "↓ 读取新回复"
-                : !a->read_page && !a->scroll                            ? "↑ 收起  ↓ 翻阅"
-                : a->read_page + 1 == a->read_count && a->scroll >= whale_home_scroll_max(a->answer)
-                    ? "↑ 上翻  已读完"
-                    : "↑↓ 翻阅";
+            const char *nav = a->view == REPLY_LOAD || a->read_pending ? "正在读取"
+                              : a->view == REPLY_FAILED                ? "↓ 重试"
+                              : a->read_error                          ? "↓ 重试"
+                              : !a->read_first && !a->scroll           ? "↑ 收起  ↓ 阅读"
+                              : a->read_first + a->read_used == a->read_count &&
+                                      a->scroll >= whale_home_scroll_max(a->answer)
+                                  ? "↑ 上翻  已读完"
+                                  : "↑↓ 阅读";
             panel(footer_line, 16, 292, 208, 1, 0xe9edf1, 0);
             text_at(16, 298, 132, 18, &lv_font_cn_12, nav, MUT, 0xffffff, LV_TEXT_ALIGN_LEFT);
             text_at(151, 298, 73, 18, &lv_font_cn_12, "确认 收起", MUT, 0xffffff,
@@ -461,7 +479,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 R10";
+            heading = "固件 R10.1";
             detail = "BLE 2.2";
             break;
         case LOADING:

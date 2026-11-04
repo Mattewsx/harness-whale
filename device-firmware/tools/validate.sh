@@ -34,7 +34,7 @@ run_static_checks() {
     "${test_dir}/test_whale_wire"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain \
-        tests/test_whale_app.c main/whale_wire.c -o "${test_dir}/test_whale_app"
+        tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c -o "${test_dir}/test_whale_app"
     "${test_dir}/test_whale_app"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
