@@ -1,0 +1,74 @@
+name: Release checks
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  companion:
+    name: Companion (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.18.0'
+      - run: python -m pip install -r installer/requirements-bridge.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q harness installer tests
+      - run: npx --yes esbuild@0.25.10 harness/plugin/index.ts --bundle --platform=node --format=esm --outfile=plugin-check.mjs
+      - name: Python to C firmware replay
+        if: runner.os == 'Linux'
+        run: |
+          cc -std=c11 -Itests/firmware-replay/stubs -Idevice-firmware/main tests/firmware-replay/fw_replay.c device-firmware/main/whale_wire.c device-firmware/main/whale_reply_cache.c -o tests/firmware-replay/fw_replay.exe
+          python tests/firmware-replay/cross_replay.py
+
+  static:
+    name: Firmware host checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install verified workflow linter
+        run: |
+          actionlint_bin="$(./device-firmware/tools/install-actionlint.sh "$RUNNER_TEMP/actionlint")"
+          echo "ACTIONLINT_BIN=${actionlint_bin}" >> "$GITHUB_ENV"
+      - run: '"$ACTIONLINT_BIN" .github/workflows/*.yml'
+      - run: cd device-firmware && ./tools/validate.sh --static
+
+  firmware:
+    name: ESP-IDF 5.5.3 and LVGL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.5.3
+          target: esp32c3
+          command: cd device-firmware && ./tools/validate.sh --firmware
+      - name: Production LVGL rendering regression
+        run: |
+          cmake -S device-firmware/tests/whale_render -B /tmp/whale-render -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/whale-render --parallel 2
+          ctest --test-dir /tmp/whale-render --output-on-failure
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-firmware-${{ github.run_id }}
+          path: device-firmware/build/FoloToy-AI-Passport-full.bin
+          if-no-files-found: error
+          retention-days: 7
