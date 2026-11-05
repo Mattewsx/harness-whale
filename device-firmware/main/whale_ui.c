@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Match the tested native renderer. LVGL 9.6 ignores the deprecated KB
+ * setting when its byte-sized setting exists, otherwise silently using 64 KiB. */
+_Static_assert(LV_MEM_SIZE == 32768, "Whale LVGL pool must match the tested 32 KiB budget");
+
 LV_FONT_DECLARE(lv_font_cn_12);
 LV_FONT_DECLARE(lv_font_cn_14);
 LV_FONT_DECLARE(lv_font_cn_16);
@@ -294,10 +298,12 @@ void whale_ui_draw(const whale_app_t *a) {
         int accent = r->state == 6                    ? RED
                      : r->state == 5                  ? 0x3a766a
                      : r->state == 4 || r->state == 8 ? 0x8c6b32
+                     : r->state <= 1 || r->state == 7 ? MUT
                                                       : TEAL;
         int tint = r->state == 6                    ? 0xf7e8e7
                    : r->state == 5                  ? 0xe5f0eb
                    : r->state == 4 || r->state == 8 ? 0xf6eddc
+                   : r->state <= 1 || r->state == 7 ? 0xe9ecf0
                                                     : 0xe7eef7;
         uint32_t sec = r->elapsed;
         if (a->ready && (r->state == 2 || r->state == 3 || r->state == 4 || r->state == 8))
@@ -361,8 +367,6 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(16, 35, 208, 25, &lv_font_cn_18, first, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
             if (two_lines)
                 text_at(16, 59, 208, 25, &lv_font_cn_18, second, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
-            if (two_lines || (r->flags & 4))
-                text_at(174, 87, 50, 16, &lv_font_cn_12, "↑ 全名", MUT, PAPER, LV_TEXT_ALIGN_RIGHT);
             panel(sea, 35, 109, 170, 150, 0xeaf0f6, LV_RADIUS_CIRCLE);
             pose_at(n, two_lines ? 34 : 22,
                     (two_lines ? 88 : 62) +
@@ -381,10 +385,131 @@ void whale_ui_draw(const whale_app_t *a) {
             if (!hours)
                 text_at(130, 272, 28, 16, &lv_font_cn_12, "用时", MUT, PAPER, LV_TEXT_ALIGN_LEFT);
             panel(footer_line, 16, 294, 208, 1, 0xe2e6e9, 0);
-            text_at(16, 299, 132, 17, &lv_font_cn_12, available ? "↓ 最近回复" : "暂无回复",
+            text_at(16, 299, 132, 17, &lv_font_cn_12,
+                    a->count ? (available ? "长按↑录音 ↓回复" : "长按↑ 录音") : "暂无回复",
                     available ? TEAL : MUT, PAPER, LV_TEXT_ALIGN_LEFT);
             text_at(151, 299, 73, 17, &lv_font_cn_12, r->question ? "确认 回答" : "确认 列表", MUT,
                     PAPER, LV_TEXT_ALIGN_RIGHT);
+        }
+    } else if (a->view == VOICE) {
+        unsigned v = a->voice_phase;
+        if (v == VOICE_PREVIEW) {
+            fulltext("核对语音文字", a->voice_text, a->scroll);
+            foot = "上下阅读  确认看操作";
+        } else if (v == VOICE_ACTIONS) {
+            center(46, "发送给当前会话", NAV, PAPER);
+            label(16, 85, 208, a->voice_title, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
+            const char *choices[] = {"发送这段文字", "重新录音", "取消并返回"};
+            for (unsigned i = 0; i < 3; i++)
+                label(16, 146 + i * 42, 208, choices[i], i == a->voice_choice ? PAPER : NAV,
+                      i == a->voice_choice ? NAV : 0xe5f0e9, LV_TEXT_ALIGN_CENTER);
+            foot = "上下选择  确认执行";
+        } else {
+            static const char *headings[] = {
+                "语音回复",   "正在准备",         "我在听",           "正在识别",
+                "核对文字",   "发送选项",         "正在发送",         "已发送",
+                "已排队",     "发送结果待核对",   "尚未发送",         "语音尚未就绪",
+                "识别未完成", "会话已归档或删除", "请先处理当前问题", "草稿已过期",
+                "没有听清",   "录音传输中断",     "电脑已断开",       "录音暂不可用"};
+            const char *detail = "确认开始  最长 60 秒";
+            int n = 11;
+            foot = "确认录音  ↑ 返回";
+            switch (v) {
+            case VOICE_PREPARE:
+                detail = "正在连接本地语音识别";
+                foot = "↑ 取消";
+                n = 2;
+                break;
+            case VOICE_RECORD:
+                snprintf(value, sizeof value, "%02lu:%02lu / 01:00",
+                         (unsigned long)a->voice_ms / 60000,
+                         (unsigned long)a->voice_ms / 1000 % 60);
+                detail = value;
+                foot = "确认结束  ↑ 取消";
+                n = 2;
+                break;
+            case VOICE_FINISH:
+                detail = "完成后先核对文字";
+                foot = "↑ 取消";
+                n = 2;
+                break;
+            case VOICE_SENDING:
+                detail = "等待电脑确认接收";
+                foot = "请稍候";
+                n = 2;
+                break;
+            case VOICE_SENT:
+                detail = "已送达当前会话";
+                foot = "确认返回";
+                n = 12;
+                break;
+            case VOICE_QUEUED:
+                detail = "当前任务结束后继续";
+                foot = "确认返回";
+                n = 12;
+                break;
+            case VOICE_UNKNOWN:
+                detail = "保留文字，只查询结果";
+                foot = "确认查询  ↑ 看文字";
+                n = 10;
+                break;
+            case VOICE_FAILED:
+                detail = "文字保留，可核对后重试";
+                foot = "确认看文字  ↑ 返回";
+                n = 13;
+                break;
+            case VOICE_UNSUPPORTED:
+                detail = "电脑启用本地语音识别";
+                foot = "确认重试  ↑ 返回";
+                n = 15;
+                break;
+            case VOICE_ASR_ERROR:
+                detail = "未发送，可重新录音";
+                foot = "确认重录  ↑ 返回";
+                n = 13;
+                break;
+            case VOICE_ARCHIVED:
+                detail = "文字不会发给其他会话";
+                foot = "确认回列表  ↑ 看文字";
+                n = 15;
+                break;
+            case VOICE_QUESTION:
+                detail = "按原来的问题方式作答";
+                foot = "确认去处理  ↑ 返回";
+                break;
+            case VOICE_EXPIRED:
+                detail = "请重新录音";
+                foot = "确认重录  ↑ 返回";
+                n = 15;
+                break;
+            case VOICE_EMPTY:
+                detail = "靠近设备，再说一次";
+                foot = "确认重录  ↑ 返回";
+                break;
+            case VOICE_BROKEN:
+                detail = "未发送，请重新录音";
+                foot = "确认重录  ↑ 返回";
+                n = 13;
+                break;
+            case VOICE_DISCONNECTED:
+                detail = a->voice_text[0] ? "文字已保留，等待重连" : "请等待电脑重新连接";
+                foot = "确认重试  ↑ 返回";
+                n = 15;
+                break;
+            case VOICE_MIC_ERROR:
+                detail = "请稍候再试";
+                foot = "确认重试  ↑ 返回";
+                n = 13;
+                break;
+            default:
+                break;
+            }
+            text_at(16, 40, 208, 20, &lv_font_cn_14, a->voice_title, MUT, PAPER,
+                    LV_TEXT_ALIGN_CENTER);
+            pose(n, 72);
+            center(206, v < sizeof headings / sizeof headings[0] ? headings[v] : "语音回复", NAV,
+                   PAPER);
+            center(244, detail, MUT, PAPER);
         }
     } else if (a->view == LIST) {
         center(40, "任务列表", NAV, PAPER);
@@ -396,15 +521,26 @@ void whale_ui_draw(const whale_app_t *a) {
         for (int j = start; j < start + 3 && j < a->count; j++) {
             const whale_row_t *t = &a->rows[j];
             int y = 73 + (j - start) * 68;
-            int bg = j == a->selected ? NAV : 0xe5f0e9;
-            snprintf(text, sizeof text, "%02lu  %s", (unsigned long)t->session,
-                     t->title[0] ? t->title : "未命名会话");
-            label(10, y, 220, text, j == a->selected ? PAPER : NAV, bg, LV_TEXT_ALIGN_LEFT);
-            label(10, y + 21, 220, t->question ? "等待选择" : states[t->state],
-                  j == a->selected ? GOLD : TEAL, bg, LV_TEXT_ALIGN_LEFT);
-            if (a->replies[j].session == t->session && a->replies[j].revision)
-                label(10, y + 41, 220, a->replies[j].preview, j == a->selected ? PAPER : MUT, bg,
-                      LV_TEXT_ALIGN_LEFT);
+            bool selected = j == a->selected;
+            bool waiting = t->question || t->state == 8 || t->state == 4;
+            bool error = t->state == 6 || (t->flags & 16);
+            bool fresh = t->state == 5 || (t->flags & 8);
+            int color = waiting ? (selected ? 0xffd68a : 0x876020)
+                        : error ? (selected ? 0xffb3b8 : RED)
+                        : fresh ? (selected ? 0xa5e5ca : 0x306d59)
+                        : t->state == 2 || t->state == 3 ? (selected ? 0xb4d5ff : 0x38689c)
+                                                        : (selected ? 0xc2ccda : MUT);
+            lv_obj_t *cards[] = {sea, sheet, status_box};
+            panel(cards[j - start], 10, y, 220, 61, selected ? NAV : 0xebeff3, 8);
+            text_at(18, y + 5, 204, 21, &lv_font_cn_16,
+                    t->title[0] ? t->title : "未命名会话", selected ? PAPER : NAV, -1,
+                    LV_TEXT_ALIGN_LEFT);
+            text_at(18, y + 33, 204, 19, &lv_font_cn_14,
+                  waiting ? "等你回答"
+                  : (t->flags & 16)            ? "出错 · 未读"
+                  : (t->flags & 8)             ? (t->state == 6 ? "出错 · 有新回复" : "有新回复")
+                                               : states[t->state],
+                  color, -1, LV_TEXT_ALIGN_LEFT);
         }
         foot = "上下选择  确认进主页";
     } else if (a->view == QUESTION) {
@@ -420,17 +556,11 @@ void whale_ui_draw(const whale_app_t *a) {
             label(12, 144 + 42 * j, 216, a->labels[j], j == a->focus ? PAPER : NAV,
                   j == a->focus ? NAV : 0xe5f0e9, LV_TEXT_ALIGN_LEFT);
         foot = whale_text_wide(a->labels[a->focus]) ? "确认展开全文" : "上下选择  确认提交";
-    } else if (a->view == TITLE || a->view == OPTION || a->view == PROMPT) {
-        fulltext(a->view == TITLE    ? "任务标题"
-                 : a->view == PROMPT ? "问题全文"
-                                     : "选项全文",
-                 a->view == TITLE    ? a->title
-                 : a->view == PROMPT ? a->prompt
-                                     : a->labels[a->focus],
+    } else if (a->view == OPTION || a->view == PROMPT) {
+        fulltext(a->view == PROMPT ? "问题全文" : "选项全文",
+                 a->view == PROMPT ? a->prompt : a->labels[a->focus],
                  a->scroll);
-        foot = a->view == OPTION   ? "上下滚动  确认提交"
-               : a->view == PROMPT ? "上下滚动  确认读选项"
-                                   : "上下滚动  长按返回";
+        foot = a->view == OPTION ? "上下滚动  确认提交" : "上下滚动  确认读选项";
     } else {
         const char *heading = "", *detail = "";
         int n = 10;
@@ -479,7 +609,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 R10.1";
+            heading = "固件 R11.4";
             detail = "BLE 2.2";
             break;
         case LOADING:

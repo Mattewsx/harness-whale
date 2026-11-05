@@ -51,6 +51,13 @@ int main(void) {
         printf("same page %d: %u pixels redrawn (expected 0)\n", a.view, pixels);
         errors += pixels != 0;
     }
+    a.view = LIST;
+    draw(&a);
+    strcpy(a.replies[0].preview, "PRIVATE REPLY MUST NOT APPEAR IN LIST");
+    assert(draw(&a) == 0); /* reply content cannot change the list */
+    a.rows[0].state = 6;
+    assert(draw(&a) > 0); /* status changes remain visible */
+    a.rows[0].state = 5;
     a.view = HOME;
     draw(&a);
     a.rows[0].elapsed++;
@@ -78,6 +85,11 @@ int main(void) {
         a.rows[0].state = i % 9;
         a.now += 100;
         draw(&a);
+    }
+    a.view = VOICE;
+    strcpy(a.voice_title, "Voice session");strcpy(a.voice_text,"Synthetic transcript line one\nAnother line");
+    for (unsigned phase=0;phase<=VOICE_MIC_ERROR;phase++) {
+        a.voice_phase=phase; draw(&a); assert(draw(&a)==0);
     }
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);

@@ -9,6 +9,7 @@ void xTaskCreate(void(*f)(void*),const char*c,int n,void*p,int i,void*q){}void v
 int nvs_flash_init(void){return 0;}int64_t esp_timer_get_time(void){return 0;}
 void whale_pair(bool y){}bool whale_unbind(void){return true;}void whale_ble_start(void){}
 void whale_ui_init(void){}void whale_ui_draw(const whale_app_t *app){}
+bool whale_audio_done(void){return true;}
 bool whale_displayable(const char *s){return true;}bool whale_text_wide(const char *s){return false;}int whale_scroll_max(const char *s){return 0;}
 // Fixture lines are separated by newlines and fit the screen width.
 int whale_home_scroll_max(const char *s){
@@ -35,3 +36,14 @@ int main(void){
         }
     }return 0;
 }
+
+void esp_fill_random(void *p, size_t n) { memset(p, 7, n); }
+bool whale_ble_audio_ready(void) { return true; }
+bool whale_ble_audio_send(const uint8_t *p, size_t n) { (void)p; (void)n; return true; }
+bool whale_voice_begin(const uint8_t id[24]) { (void)id; return true; }
+void whale_voice_stop(bool discard) { (void)discard; }
+void whale_voice_ack(const uint8_t id[24], uint32_t next) { (void)id; (void)next; }
+bool whale_voice_busy(void) { return false; }
+bool whale_voice_pending(void) { return false; }
+void whale_voice_run(void) {}
+uint32_t whale_voice_milliseconds(void) { return 0; }

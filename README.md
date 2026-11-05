@@ -2,7 +2,7 @@
 
 把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-当前版本：**v0.10.1 / 固件 R10.1 / 协议 2.2**。[下载](https://github.com/Mattewsx/harness-whale/releases/tag/v0.10.1) · [发布与验收](docs/R10.1-HANDOFF.md) · [部署指南](docs/AI_DEPLOYMENT.md)
+当前版本：**v1.2.0 / 固件 R11.4 / 协议 2.2**。[下载](https://github.com/Mattewsx/harness-whale/releases/tag/v1.2.0) · [发布与验收](docs/RELEASE-v1.2.0.zh_CN.md) · [部署指南](docs/AI_DEPLOYMENT.md)
 
 ![R10.1 界面预览](docs/images/r101-preview.png)
 
@@ -19,7 +19,7 @@
 
 | 界面 | ↑ | ↓ | 确认 |
 | --- | --- | --- | --- |
-| 任务主页 | 阅读完整标题 | 展开最近回复 | 打开列表，或处理待答问题 |
+| 任务主页 | 长按直接开始语音录音 | 展开最近回复 | 打开列表，或处理待答问题 |
 | 回复 | 上滚；到开头后收起 | 下滚，或重试读取 | 收起回复 |
 | 会话列表 | 上一个 | 下一个 | 打开任务 |
 | 普通单选 | 上一个选项 | 下一个选项 | 确认当前选择 |
@@ -37,14 +37,14 @@
 下载同一版本的源码与附件，避免用旧 manifest 校验新固件：
 
 ```powershell
-git clone --branch v0.10.1 https://github.com/Mattewsx/harness-whale.git
+git clone --branch v1.2.0 https://github.com/Mattewsx/harness-whale.git
 cd harness-whale
 python installer\install_companion.py --non-interactive --skip-key
 ```
 
 安装器创建独立 `.venv`，安装插件与桥接器，并更新受管 DSH profile 块。安装后完全退出并重启 DSH，输入 `/whale` 查看连接。已安装当前桥接器的 R09/R10 用户仅升级设备即可；R10.1 未改变电脑端生产代码或 BLE 协议。
 
-从 [v0.10.1 Release](https://github.com/Mattewsx/harness-whale/releases/tag/v0.10.1) 下载 `Harness-Whale-ESP32C3-8MB.bin`，放入 `installer/firmware/`：
+从 [v0.10.1 Release](https://github.com/Mattewsx/harness-whale/releases/tag/v1.2.0) 下载 `Harness-Whale-ESP32C3-8MB.bin`，放入 `installer/firmware/`：
 
 ```powershell
 python -m venv .flash-venv
@@ -55,6 +55,14 @@ python -m venv .flash-venv
 标准安装器校验 SHA-256 后整片擦除并从 **0x0** 写入。旧固件、NVS、设置与配对会被清除。刷写前确认目标串口与数据影响。
 
 已有相同分区布局的鲸鱼固件时，可按 [升级步骤](docs/UPGRADE.md) 使用 `Harness-Whale-ESP32C3-app-0x10000.bin` 保留配对。应用镜像只写 **0x10000**，不可交给完整镜像安装器，也不可从 0x0 写入。
+
+## 语音输入
+
+在 DSH 中启用本地语音识别（SenseVoice），等待模型准备完成。任务主页长按 ↑ 开始录音，确认键停止；检查识别文字，按确认打开操作，再明确选择发送。可重新录音或取消。文字只发往当前主会话，运行中的任务会排队接收。
+
+设备边录边通过蓝牙传输，停止后在电脑本地转文字，不上传云端语音服务。老版本升级后若语音尚未就绪，检查本地识别是否准备完成；蓝牙缓存旧服务时需电脑和设备两端解绑后重新配对。详情见 [R11 说明](device-firmware/docs/whale-r11.zh_CN.md) 和 [术语校正边界](docs/VOICE-TERMS.zh_CN.md)。
+
+会话列表只显示名称和彩色状态，待回答、未读错误、未读回复优先；查看对应内容后清除提醒。完成音为 85% 音量、150 毫秒。语音长时间稳定性和实际发送到会话仍未完成实机验收。
 
 ## 构建与验证
 
@@ -94,7 +102,7 @@ UDP 仅绑定本机回环地址。BLE 传输会话标题、状态、问题选项
 
 Release 包含完整镜像、应用升级镜像、匹配调试符号、`SHA256SUMS.txt` 和发布说明。源码由 GitHub 对应标签提供；二进制不进入 Git 历史。
 
-R10.1 已通过构建、主机回归及实机启动/BLE/名单同步；用户确认最新回复、连续滚动、收起与重复展开正常。长时间稳定性、新回复实时替换及缓存请求次数仍需进一步实机验证，详见 [验收说明](docs/R10.1-HANDOFF.md)。这是个人 Demo，硬件兼容范围有限。
+R10.1 已通过构建、主机回归及实机启动/BLE/名单同步；用户确认最新回复、连续滚动、收起与重复展开正常。长时间稳定性、新回复实时替换及缓存请求次数仍需进一步实机验证，详见 [验收说明](docs/RELEASE-v1.2.0.zh_CN.md)。这是个人 Demo，硬件兼容范围有限。
 
 ## 来源与许可
 

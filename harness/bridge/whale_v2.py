@@ -21,8 +21,8 @@ NOTIFY = "13b50202-663a-48c5-a224-37c1c2569080"
 HEADER = struct.Struct("<BBHBBH")
 IDENTITY = struct.Struct("<QIII")
 ROW = struct.Struct("<IIBBBIHHIB")
-CAPS = 511  # bit 7 optionally carries per-run display detail
-CONTROL = {0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
+CAPS = 2047  # bit 7 optionally carries per-run display detail
+CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
 END = 0xFFFFFFFF
 
 
@@ -124,6 +124,35 @@ class Workspace:
         self.transport = None
         self.balance = None
         self.balance_old = False
+        self.read_marks = {}
+        self.marks_path = None
+        self.voice = None
+
+    def load_marks(self, path):
+        self.marks_path = path
+        try:
+            value = json.loads(path.read_text(encoding='utf-8'))
+            if isinstance(value, dict):
+                self.read_marks = {k:v for k,v in list(value.items())[-512:] if isinstance(v,dict)}
+        except (OSError, ValueError): pass
+
+    def read_mark(self, sid, revision, kind):
+        row = self.sessions.get(sid, {})
+        field = 'reply' if kind == 1 else 'error'
+        current = row.get('_reply') if kind == 1 else row.get('_rid')
+        value = row.get('replyId') if kind == 1 else row.get('runId')
+        if kind not in (1,2) or not value or current != revision: return
+        key = hashlib.sha256(row['sessionId'].encode()).hexdigest()
+        self.read_marks.setdefault(key, {})[field] = value
+        self.revision += 1
+        if len(self.read_marks) > 512: del self.read_marks[next(iter(self.read_marks))]
+        if self.marks_path:
+            try:
+                self.marks_path.parent.mkdir(parents=True, exist_ok=True)
+                temp = self.marks_path.with_suffix('.tmp')
+                temp.write_text(json.dumps(self.read_marks), encoding='utf-8')
+                temp.replace(self.marks_path)
+            except OSError: pass
 
     def allocate(self):
         self.next_id += 1
@@ -304,7 +333,7 @@ class Workspace:
                     if len(self.questions) <= 256:
                         break
 
-    def row(self, sid):
+    def row(self, sid, attention=False):
         data = self.sessions[sid]
         snap = snapshot_from_mapping(data, seq=0)
         title = str(data.get("title") or "").encode()
@@ -319,6 +348,10 @@ class Workspace:
             0,
         )
         flags = bool(snap.todo_total) | (bool(qid) << 1) | ((short != title) << 2)
+        if attention:
+            seen = self.read_marks.get(hashlib.sha256(data['sessionId'].encode()).hexdigest(), {})
+            if data.get('replyId') and data['replyId'] != seen.get('reply'): flags |= 8
+            if int(snap.state) == 6 and data.get('runId') != seen.get('error'): flags |= 16
         return (
             ROW.pack(
                 sid,
@@ -348,16 +381,28 @@ class Link:
         self.results = {}
         self.balance = None
         self.detail = False
+        self.attention = False
         self.details = {}
         self.readable=False
         self.previews={}
         self.pending_page=None
         self.limit = 8
         self.revision = -1
+        self.order = []
 
-    def snapshot(self, cursor=0, limit=8):
+    def snapshot(self, cursor=0, limit=8, refresh_order=True):
         m = self.model
         keys = list(m.sessions)
+        if refresh_order and self.attention:
+            def priority(sid):
+                row = m.row(sid, True)
+                state, flags = row[8], row[10]
+                return (0 if state in (4, 8) else 1 if flags & 16 else
+                        2 if flags & 8 else 3 if state in (2, 3) else 4)
+            keys.sort(key=priority)  # stable within a priority; no heartbeat jitter
+        elif not refresh_order:
+            keys = [sid for sid in self.order if sid in m.sessions] + [sid for sid in keys if sid not in self.order]
+        self.order = keys
         self.limit = max(1, min(8, limit))
         last_start = max(0, (len(keys)-1)//self.limit) * self.limit
         self.cursor = cursor if 0 <= cursor < len(keys) else last_start
@@ -378,7 +423,7 @@ class Link:
             "total": len(keys), "window": len(ids),
             "digest": hashlib.sha256("\n".join(sorted(m.sessions[i]["sessionId"] for i in ids)).encode()).hexdigest()
         }
-        self.rows = {i: m.row(i) for i in ids}
+        self.rows = {i: m.row(i, self.attention) for i in ids}
         self.known = set(keys)
         self.details.clear()
         self.previews.clear()
@@ -408,10 +453,10 @@ class Link:
         out = []
         if m.revision != self.revision:
             if set(m.sessions) != self.known:
-                out.extend(self.snapshot(self.cursor, self.limit))
+                out.extend(self.snapshot(self.cursor, self.limit, refresh_order=False))
             else:
                 for sid, old in list(self.rows.items()):
-                    row = m.row(sid)
+                    row = m.row(sid, self.attention)
                     if row != old:
                         self.seq += 1
                         out.append((0x14, pack("QIB", m.epoch, self.seq, 0) + row))
@@ -450,6 +495,7 @@ class Link:
             major, minor, caps, rx, tx, status = struct.unpack("<BBIHHB", body)
             self.detail = bool(caps & 128)
             self.readable=bool(caps & 256)
+            self.attention=bool(caps & 1024)
             self.ready = (
                 (major, minor, status) == (2, 2, 0)
                 and caps & 63 == 63
@@ -457,6 +503,10 @@ class Link:
             )
             return []
         if not self.ready:
+            return []
+        if kind == 0x4a and self.attention and len(body) == 17:
+            epoch,sid,revision,which = struct.unpack('<QIIB',body)
+            if epoch == m.epoch: m.read_mark(sid,revision,which)
             return []
         if kind == 0x10 and len(body) == 14:
             _, cursor, limit, _ = struct.unpack("<QIBB", body)
@@ -551,6 +601,16 @@ HELLO_TIMEOUT_SECONDS = 8.0
 
 async def serve(client, model, on_write=None):
     """Write one ATT value at a time; service inbound control between bulk fragments."""
+    try:
+        from .whale_voice import VoiceBridge, AUDIO
+    except ImportError:
+        from whale_voice import VoiceBridge, AUDIO
+    import os
+    from pathlib import Path
+    if model.marks_path is None:
+        model.load_marks(Path(os.environ.get('LOCALAPPDATA') or Path.home()/'.local/share') / 'HarnessWhale' / 'read-marks.json')
+    if model.voice is None: model.voice = VoiceBridge(model)
+    voice = model.voice
     wire = Link(model)
     model.delivered = None
     sending_snapshot = None
@@ -566,6 +626,12 @@ async def serve(client, model, on_write=None):
             inbox.put_nowait(bytes(data))
 
     await client.start_notify(NOTIFY, notify)
+    try:
+        audio_char = client.services.get_characteristic(AUDIO)
+        if audio_char is not None:
+            await client.start_notify(AUDIO, lambda _, data: voice.feed(bytes(data)))
+            voice.audio_supported = True
+    except (AttributeError, KeyError): pass
     queues = [[], []]
     serial = [0, 0]
     inflight = [None, None]
@@ -579,52 +645,56 @@ async def serve(client, model, on_write=None):
     bulk_type = None
     refresh_after_page = False
     hello_deadline = time.monotonic() + HELLO_TIMEOUT_SECONDS
-    while client.is_connected:
-        if not wire.ready and inbox.empty() and time.monotonic() >= hello_deadline:
-            raise ConnectionError("R06+ handshake timed out; reconnecting")
-        if overflow:
-            raise ConnectionError("notification queue overflow")
-        while not inbox.empty():
-            msg = rx.accept(inbox.get_nowait())
-            if msg:
-                replies = wire.receive(*msg)
-                if (
-                    msg[0] in (0x24, 0x16)
-                    and replies
-                    and replies[0][0] in (0x20, 0x21, 0x17)
-                ):
-                    if bulk_type in (0x11, 0x12, 0x13, 0x14, 0x15):
-                        refresh_after_page = True
-                        inflight[1] = None
-                        queues[1].clear()
-                    queues[1][0:0] = replies
-                else:
-                    queue(replies)
-        queue(wire.notices())
-        if refresh_after_page and not queues[1] and inflight[1] is None:
-            queue(wire.snapshot(wire.cursor, wire.limit))
-            refresh_after_page = False
-        if not queues[1] and inflight[1] is None:
-            queue(wire.changes())
-        for lane in (0, 1):
-            if inflight[lane] is None and queues[lane]:
-                kind, body = queues[lane].pop(0)
-                if kind == 0x13:
-                    sending_snapshot = wire.snapshot_receipt if int.from_bytes(body[8:12], "little") == wire.snap else None
-                if lane:
-                    bulk_type = kind
-                serial[lane] = (serial[lane] + 1) & 65535
-                inflight[lane] = iter(fragments(kind, serial[lane], body))
-            if inflight[lane] is not None:
-                value = next(inflight[lane], None)
-                if value is None:
-                    inflight[lane] = None
-                else:
-                    await client.write_gatt_char(WRITE, value, response=True)
-                    if value[1] == 0x13 and value[4]+1 == value[5] and sending_snapshot is not None:
-                        model.delivered = {**sending_snapshot, "time": time.time()}
-                    if on_write is not None:
-                        on_write(wire.ready)
-                    break
-        else:
-            await asyncio.sleep(0.035)
+    try:
+        while client.is_connected:
+            if not wire.ready and inbox.empty() and time.monotonic() >= hello_deadline:
+                raise ConnectionError("R06+ handshake timed out; reconnecting")
+            if overflow:
+                raise ConnectionError("notification queue overflow")
+            while not inbox.empty():
+                msg = rx.accept(inbox.get_nowait())
+                if msg:
+                    replies = [] if wire.ready and voice.receive(*msg) else wire.receive(*msg)
+                    if (
+                        msg[0] in (0x24, 0x16)
+                        and replies
+                        and replies[0][0] in (0x20, 0x21, 0x17)
+                    ):
+                        if bulk_type in (0x11, 0x12, 0x13, 0x14, 0x15):
+                            refresh_after_page = True
+                            inflight[1] = None
+                            queues[1].clear()
+                        queues[1][0:0] = replies
+                    else:
+                        queue(replies)
+            queue(wire.notices())
+            if wire.ready: queue(voice.poll())
+            if refresh_after_page and not queues[1] and inflight[1] is None:
+                queue(wire.snapshot(wire.cursor, wire.limit, refresh_order=False))
+                refresh_after_page = False
+            if not queues[1] and inflight[1] is None:
+                queue(wire.changes())
+            for lane in (0, 1):
+                if inflight[lane] is None and queues[lane]:
+                    kind, body = queues[lane].pop(0)
+                    if kind == 0x13:
+                        sending_snapshot = wire.snapshot_receipt if int.from_bytes(body[8:12], "little") == wire.snap else None
+                    if lane:
+                        bulk_type = kind
+                    serial[lane] = (serial[lane] + 1) & 65535
+                    inflight[lane] = iter(fragments(kind, serial[lane], body))
+                if inflight[lane] is not None:
+                    value = next(inflight[lane], None)
+                    if value is None:
+                        inflight[lane] = None
+                    else:
+                        await client.write_gatt_char(WRITE, value, response=True)
+                        if value[1] == 0x13 and value[4]+1 == value[5] and sending_snapshot is not None:
+                            model.delivered = {**sending_snapshot, "time": time.time()}
+                        if on_write is not None:
+                            on_write(wire.ready)
+                        break
+            else:
+                await asyncio.sleep(0.035)
+    finally:
+        voice.disconnected()

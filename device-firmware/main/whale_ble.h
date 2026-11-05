@@ -1,6 +1,6 @@
 #pragma once
 #include "whale_wire.h"
-enum whale_event_kind { WE_FRAME, WE_LINK, WE_DOWN, WE_PAIR, WE_KEY };
+enum whale_event_kind { WE_FRAME, WE_LINK, WE_DOWN, WE_PAIR, WE_KEY, WE_VOICE };
 typedef struct {
     uint8_t kind, len, bytes[20];
     uint32_t value;
@@ -10,3 +10,6 @@ void whale_ble_start(void);
 bool whale_send(uint8_t type, const uint8_t *p, size_t n);
 void whale_pair(bool yes);
 bool whale_unbind(void);
+
+bool whale_ble_audio_ready(void);
+bool whale_ble_audio_send(const uint8_t *bytes, size_t length);

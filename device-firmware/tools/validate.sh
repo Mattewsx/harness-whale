@@ -32,10 +32,18 @@ run_static_checks() {
         tests/test_whale_wire.c main/whale_wire.c \
         -o "${test_dir}/test_whale_wire"
     "${test_dir}/test_whale_wire"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_whale_voice_window.c main/whale_voice_window.c -o "${test_dir}/test_whale_voice_window"
+    "${test_dir}/test_whale_voice_window"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/voice_stubs -Itests/whale_stubs -Imain \
+        tests/test_whale_voice.c main/whale_voice_window.c -o "${test_dir}/test_whale_voice"
+    "${test_dir}/test_whale_voice"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain \
         tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c -o "${test_dir}/test_whale_app"
     "${test_dir}/test_whale_app"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+        -Itests/whale_stubs -Imain tests/test_whale_audio.c -o "${test_dir}/test_whale_audio"
+    "${test_dir}/test_whale_audio"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"
@@ -78,6 +86,7 @@ run_static_checks() {
     done
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_battery_profile.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_whale_fonts.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_whale_memory.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
@@ -102,6 +111,7 @@ run_firmware_checks() (
     SDKCONFIG_DEFAULTS="${repo_root}/sdkconfig.defaults" \
         idf.py -B "${validation_build_dir}" \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
+    python3 tools/verify_whale_memory.py "${validation_build_dir}"
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     python3 tools/verify_firmware.py "${validation_build_dir}"

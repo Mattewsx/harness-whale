@@ -1,5 +1,6 @@
 #pragma once
 #include "whale_ble.h"
+#include "whale_voice.h"
 
 typedef enum {
     HOME,
@@ -19,13 +20,13 @@ typedef enum {
     CHECKING,
     UNSURE,
     RESULT,
-    TITLE,
     VERSION,
     LIST_LOAD,
     LIST_FAILED,
     REPLY_LOAD,
     REPLY_READ,
-    REPLY_FAILED
+    REPLY_FAILED,
+    VOICE
 } whale_page_t;
 typedef struct {
     whale_row_t rows[8];
@@ -43,11 +44,15 @@ typedef struct {
     uint32_t cursor, next, seq, passkey, recovered, soc_at, page_at, now;
     uint16_t total;
     uint8_t count, selected, focus, page, pages, options, all_options, result, currency, freshness;
-    bool linked, ready, meta, low_power, seen_battery, soc_stale, load_title, unsupported;
+    bool linked, ready, meta, low_power, seen_battery, soc_stale, unsupported;
     int soc, scroll, battery_level;
     uint8_t identity[20], received, parts;
     uint16_t option_ids[3];
-    char prompt[513], labels[3][257], title[513];
+    char prompt[513], labels[3][257];
+    bool voice_cap, voice_submitted, attention_cap;
+    uint8_t voice_phase, voice_choice, voice_identity[24];
+    uint32_t voice_session, voice_at, voice_ms;
+    char voice_title[73], voice_text[1801];
     whale_page_t view;
 } whale_app_t;
 void whale_ui_init(void);

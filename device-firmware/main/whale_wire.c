@@ -3,6 +3,14 @@
 
 bool whale_control(uint8_t t) {
     switch (t) {
+    case 0x40:
+    case 0x42:
+    case 0x43:
+    case 0x44:
+    case 0x45:
+    case 0x46:
+    case 0x47:
+    case 0x4a:
     case 1:
     case 2:
     case 0x10:
@@ -100,7 +108,7 @@ bool whale_text(const uint8_t *p, size_t n) {
     return true;
 }
 bool whale_parse_row(const uint8_t *p, size_t n, whale_row_t *row, uint32_t ms) {
-    if (n < 24 || p[23] > 72 || n != 24u + p[23] || p[8] > 8 || p[9] > 7 || (p[10] & ~7) ||
+    if (n < 24 || p[23] > 72 || n != 24u + p[23] || p[8] > 8 || p[9] > 7 || (p[10] & ~31) ||
         !w32(p) || !w32(p + 4) || w16(p + 15) > w16(p + 17) || !whale_text(p + 24, p[23]))
         return false;
     *row = (whale_row_t){.session = w32(p),

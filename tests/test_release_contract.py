@@ -1,4 +1,4 @@
-"""Bind a published firmware to its matching source and installation mode."""
+"""Check the recorded build inputs and the released installer's image mode."""
 import hashlib
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseContractTests(unittest.TestCase):
-    def test_published_source_matches_verified_build_inputs(self):
+    def test_firmware_source_matches_recorded_build_inputs(self):
         manifest = json.loads((ROOT / 'docs/release-source.json').read_text())
         self.assertIn('main/whale_reply_cache.c', manifest['sha256'])
         self.assertIn('partitions.csv', manifest['sha256'])
@@ -22,7 +22,7 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(manifest['offset'], '0x0')
         self.assertEqual(manifest['chip'], 'esp32c3')
         self.assertEqual(set(manifest['sha256']), {'Harness-Whale-ESP32C3-8MB.bin'})
-        self.assertEqual(manifest['version'], '0.10.1')
+        self.assertEqual(manifest['version'], '1.2.0')
 
 
 if __name__ == '__main__':
