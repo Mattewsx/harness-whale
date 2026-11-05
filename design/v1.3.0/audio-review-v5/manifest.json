@@ -1,0 +1,59 @@
+{
+  "status": "creative audition; approval pending",
+  "reference": "User: League of Legends Orianna (clockwork-girl direction)",
+  "reference_url": "https://www.leagueoflegends.com/zh-tw/champions/orianna/",
+  "reference_scope": "character concept and creative interpretation, not an acoustic comparison or voice clone",
+  "direction": "User requested a more mature young-adult feminine voice (少御), avoiding a childlike/loli sound; retain subtle clockwork coloration.",
+  "voice": {
+    "voice": "zh-CN-XiaoxiaoNeural",
+    "rate": "-6%",
+    "pitch": "-10Hz"
+  },
+  "source": "Edge online TTS of original three cue texts; no game/actor recordings",
+  "processing": {
+    "resonances_hz": [
+      1280,
+      2460
+    ],
+    "ring_hz": 109,
+    "ring_mix": 0.1,
+    "reflection_ms": [
+      7.5,
+      14
+    ],
+    "no_lexical_pitch_flattening": true
+  },
+  "samples": [
+    {
+      "event": "done",
+      "text": "忙完啦。",
+      "file": "clockwork-done.wav",
+      "seconds": 0.8876,
+      "pcm_bytes": 28404,
+      "peak_dbfs": -7.37,
+      "rms_dbfs": -20.0,
+      "sha256": "932e2edaf3cffc1af728117b93cc99d92bdbac585f381b993fe57d0499998f70"
+    },
+    {
+      "event": "question",
+      "text": "帮我选一下？",
+      "file": "clockwork-question.wav",
+      "seconds": 1.0584,
+      "pcm_bytes": 33868,
+      "peak_dbfs": -5.09,
+      "rms_dbfs": -20.0,
+      "sha256": "309197efb9ba29f2d24b5bafa65e687d4686a537d1d9541b1355b18282a7aa9b"
+    },
+    {
+      "event": "error",
+      "text": "遇到问题啦，来看看。",
+      "file": "clockwork-error.wav",
+      "seconds": 1.9962,
+      "pcm_bytes": 63878,
+      "peak_dbfs": -4.13,
+      "rms_dbfs": -20.0,
+      "sha256": "485b43f6874795cce2d5fd9ef13b36f766c9f240c7e291bc7d54bd86f93b4cc8"
+    }
+  ],
+  "resource_estimate_with_6_poses_and_5_chiptunes": 864838
+}

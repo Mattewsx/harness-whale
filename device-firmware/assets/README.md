@@ -67,3 +67,7 @@ Decoded 80-byte SHA-256:
 `fa7365671093ef449c5bdcfb4adb279e3d275f888109f50b6b2f21e9b96220d5`.
 This is a fuel-gauge profile, not a charging configuration or a generic profile
 for every 500 mAh cell; see the [hardware guide](../docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md#9-cw2017-fuel-gauge).
+
+## Whale companion v1.3 materials
+
+Approved six poses and two coffee props: `images/companion-v130/`. Approved four original chiptune cues and four fixed synthetic voice clips: `music/whale-cues-v130/`. Art origin, generation prompt, voice selection and review evidence remain in [`design/v1.3.0`](../../design/v1.3.0). Coffee PNGs are rasterizations of the reviewed SVG props. Voice clips use the approved Xiaoyi synthesis and offline clockwork processing, without sampled game-character audio. `tools/make_whale_companion.py` converts these sources into the Flash-backed `main/companion.rgb`, `main/cues.pcm` and offset descriptors; no network operation is required to rebuild them.

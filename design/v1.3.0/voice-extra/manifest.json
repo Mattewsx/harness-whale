@@ -1,0 +1,18 @@
+{
+  "text": "蓝牙已断开。",
+  "voice": {
+    "voice": "zh-CN-XiaoyiNeural",
+    "rate": "-12%",
+    "pitch": "+2Hz"
+  },
+  "processing": "same fixed clockwork processing as selected review 4",
+  "file": "voice-disconnect.wav",
+  "sample_rate": 16000,
+  "channels": 1,
+  "bits": 16,
+  "seconds": 1.3564,
+  "pcm_bytes": 43404,
+  "peak_dbfs": -6.07,
+  "rms_dbfs": -20.0,
+  "sha256": "bf31adf5fb12ddecf146fcd14404aa86f17b6f7cd2893b4eaa94038bbfca671a"
+}

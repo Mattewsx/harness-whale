@@ -1,0 +1,350 @@
+{
+  "stage": "1 - review prototype, not firmware",
+  "base": "v1.2.0 / whale-R11.4-2.2",
+  "new_pose_order": [
+    "idle",
+    "blink",
+    "hello",
+    "happy",
+    "feed",
+    "sleepy"
+  ],
+  "new_pose_size": [
+    196,
+    196
+  ],
+  "new_poses_rgb565a8_estimate": 691488,
+  "audio": [
+    {
+      "file": "audio/tone-disconnect.wav",
+      "duration_seconds": 0.44,
+      "pcm_bytes": 14080,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -5.0,
+      "rms_dbfs": -14.54
+    },
+    {
+      "file": "audio/tone-done.wav",
+      "duration_seconds": 0.15,
+      "pcm_bytes": 4800,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -7.15,
+      "rms_dbfs": -14.5
+    },
+    {
+      "file": "audio/tone-error.wav",
+      "duration_seconds": 0.37,
+      "pcm_bytes": 11840,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -9.28,
+      "rms_dbfs": -14.5
+    },
+    {
+      "file": "audio/tone-question.wav",
+      "duration_seconds": 0.43,
+      "pcm_bytes": 13760,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -5.0,
+      "rms_dbfs": -16.47
+    },
+    {
+      "file": "audio/voice-disconnect.wav",
+      "duration_seconds": 1.3564,
+      "pcm_bytes": 43404,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -6.07,
+      "rms_dbfs": -20.0
+    },
+    {
+      "file": "audio/voice-done.wav",
+      "duration_seconds": 0.6595,
+      "pcm_bytes": 21104,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -7.14,
+      "rms_dbfs": -20.0
+    },
+    {
+      "file": "audio/voice-error.wav",
+      "duration_seconds": 1.8435,
+      "pcm_bytes": 58992,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -4.03,
+      "rms_dbfs": -20.0
+    },
+    {
+      "file": "audio/voice-question.wav",
+      "duration_seconds": 0.9584,
+      "pcm_bytes": 30670,
+      "sample_rate": 16000,
+      "channels": 1,
+      "bits": 16,
+      "peak_dbfs": -5.45,
+      "rms_dbfs": -20.0
+    }
+  ],
+  "audio_pcm_bytes": 198650,
+  "new_pose_plus_pcm_estimate": 890138,
+  "budget_bytes": 1048576,
+  "budget_excludes": "new LVGL font glyphs and code; require actual firmware build",
+  "font": {
+    "chinese_characters_checked": 425,
+    "missing_chinese": [],
+    "source": "Source Han Sans SC Normal",
+    "firmware_font_check": "pending implementation; browser coverage is not LVGL coverage"
+  },
+  "speech_source": "zh-CN-XiaoyiNeural, rate -12%, pitch +2Hz; fixed local clockwork processing from review 4",
+  "files": [
+    {
+      "file": "assets/blink.png",
+      "bytes": 58594,
+      "sha256": "3bcb90e65db4515a2cf10740e90bb2e0e945f1d60d0cb276a725c5916291c171"
+    },
+    {
+      "file": "assets/coffee-cup.svg",
+      "bytes": 657,
+      "sha256": "dfcc4fb5e443709415c6bcf12367f6f56db45cc249a203b7872d180378948503"
+    },
+    {
+      "file": "assets/coffee-steam.svg",
+      "bytes": 313,
+      "sha256": "57289c6890229bd4765d0e8a4a37cdfdc42c604aec6c1ed43e37b13619c49f1a"
+    },
+    {
+      "file": "assets/cola-bubble.svg",
+      "bytes": 279,
+      "sha256": "5131055a5ca15e8af0bfe9eb1c5a03af3b820110fdcb09dbc67dae618e6756b0"
+    },
+    {
+      "file": "assets/cola-can.svg",
+      "bytes": 544,
+      "sha256": "a27a6d9a426c508101a0246a325ba9f864db2823be2e6a2dbd031b9534db5206"
+    },
+    {
+      "file": "assets/feed.png",
+      "bytes": 59536,
+      "sha256": "45d5077fe8782a648b837704779b74f010628770cf8a5e7a0da0c99df9e543a8"
+    },
+    {
+      "file": "assets/FONT-LICENSE.txt",
+      "bytes": 4463,
+      "sha256": "f55c2d43dd905011515f5e46ba78d180027e314ef8ccaaf53a9e88fe316767cd"
+    },
+    {
+      "file": "assets/happy.png",
+      "bytes": 60734,
+      "sha256": "c6d42a7aaa27db3459ce13fa023b0bf017a94d54a77c84c80acf656dea8cd1fd"
+    },
+    {
+      "file": "assets/hello.png",
+      "bytes": 59505,
+      "sha256": "9e81069abfa55be4e2359d05e90a4f6901e36f3185797450d1b438f674d3fbe3"
+    },
+    {
+      "file": "assets/hug-heart.svg",
+      "bytes": 326,
+      "sha256": "d6a060ee14a9bf525413aab0ef7bec695f1c8b589a8046bd17b915ab13396782"
+    },
+    {
+      "file": "assets/idle.png",
+      "bytes": 59157,
+      "sha256": "0281b215a43f09fbd8bdbd6dc068653dfa9d36a1524264a4c5a35105f063be57"
+    },
+    {
+      "file": "assets/sleepy.png",
+      "bytes": 60323,
+      "sha256": "a6fe065754274e435766766031a4f086e35d1d11b72178c8aaf4d31117608a70"
+    },
+    {
+      "file": "assets/whale-cn.woff2",
+      "bytes": 139020,
+      "sha256": "7a2efb3bfb0dedc9f2ff2d13ee61a21ba41348bfdb9cf0767b62f0366ef4b18a"
+    },
+    {
+      "file": "assets/work-done.png",
+      "bytes": 67143,
+      "sha256": "957d89adf06ecdc0b60417305f6879b22c6e827e292b1764e0c1bdef53cebf10"
+    },
+    {
+      "file": "assets/work-error.png",
+      "bytes": 68145,
+      "sha256": "60559aa1d384b6b73f6929907f0017c5b839fbde91e473d8b034c0692f1ca26b"
+    },
+    {
+      "file": "assets/work-idle.png",
+      "bytes": 52480,
+      "sha256": "412091d2371971ccabdfe870706f3697cc52457eeb4c1abe58a37740c7cec0af"
+    },
+    {
+      "file": "assets/work-question.png",
+      "bytes": 64522,
+      "sha256": "c97a1b1f2bce224a50fcd2830d3e52e746da38d26e86babc40b2b5f44a5cede8"
+    },
+    {
+      "file": "assets/work-stopped.png",
+      "bytes": 60031,
+      "sha256": "83730405973a55fe343c0bcd4eb6177538f694a1dace0af44ada355b79728737"
+    },
+    {
+      "file": "assets/work-thinking.png",
+      "bytes": 59838,
+      "sha256": "95ae27392b3568e82ce06d265b8b64ff1a12e39f338203a95d3d70e8979012b5"
+    },
+    {
+      "file": "audio/tone-disconnect.wav",
+      "bytes": 14124,
+      "sha256": "391cfc8f254b4a583ecbbd6c23a7804dd7d9d5f74eca13b49c40716d9049b807"
+    },
+    {
+      "file": "audio/tone-done.wav",
+      "bytes": 4844,
+      "sha256": "0e301ce22e5bbece2f4225273313b672a50c1596405b1a99e23fdb1df46717a5"
+    },
+    {
+      "file": "audio/tone-error.wav",
+      "bytes": 11884,
+      "sha256": "45e75a30b3e766a509cddf8d7f9a98c4140f4bd10f1e2c8cb326f0c0806f2a19"
+    },
+    {
+      "file": "audio/tone-question.wav",
+      "bytes": 13804,
+      "sha256": "b54aa861e6bf7361d2d1f1c826182e715b43b8d5fd4dbdd631af2cff124bda26"
+    },
+    {
+      "file": "audio/tone-stop.wav",
+      "bytes": 2924,
+      "sha256": "263c4446b67abd9e2f00ab890b4c8cd924ed3ad78558c88426f18f46241934ba"
+    },
+    {
+      "file": "audio/voice-disconnect.wav",
+      "bytes": 43448,
+      "sha256": "bf31adf5fb12ddecf146fcd14404aa86f17b6f7cd2893b4eaa94038bbfca671a"
+    },
+    {
+      "file": "audio/voice-done-raw.wav",
+      "bytes": 44110,
+      "sha256": "aed75df5de30db26d5603f4f5a2a6b5ce39c698554028f7950d576e10fad545d"
+    },
+    {
+      "file": "audio/voice-done.wav",
+      "bytes": 21148,
+      "sha256": "44dda3c89eeabd29ba7b06df556a16a9e7c3bf370df6bd7977f7bfc940ae4065"
+    },
+    {
+      "file": "audio/voice-error-raw.wav",
+      "bytes": 86274,
+      "sha256": "149359cf75cfe88de720dfcdd6272dce8e103690e94cfee32c2a68962ee01241"
+    },
+    {
+      "file": "audio/voice-error.wav",
+      "bytes": 59036,
+      "sha256": "746097db16a40990f3a0adda671b5ea6b5ea945956702141e42b1b55616e948f"
+    },
+    {
+      "file": "audio/voice-question-raw.wav",
+      "bytes": 58810,
+      "sha256": "89c8d7b2ff58db8944543c2e945798e50e0a761169d4e05192086d1e20756b14"
+    },
+    {
+      "file": "audio/voice-question.wav",
+      "bytes": 30714,
+      "sha256": "befdd17f9cb0574849db7441e11b20ea9b9aa25aeb14da3749b3e581f64f5b34"
+    },
+    {
+      "file": "source/companion-sheet.png",
+      "bytes": 2346691,
+      "sha256": "9018b217383d1e0bb06353c181a4c801f87da16b10b7949ed07b80a76a75c56d"
+    },
+    {
+      "file": "source/prompt.txt",
+      "bytes": 1774,
+      "sha256": "f101047e993f8142d87f280679c4d1c4efa5aa8618fb425b2e305f51737278e6"
+    },
+    {
+      "file": "audio-original/tone-disconnect.wav",
+      "bytes": 5804,
+      "sha256": "a4ba5896f768a014622bec674cac2f0e65596b88de2d6a057d7b7fed6f52547f"
+    },
+    {
+      "file": "audio-original/tone-done.wav",
+      "bytes": 4844,
+      "sha256": "524011b61cc2dd8f57234e836f8aa1a643ac2357119f94cfac322d516f20bf0a"
+    },
+    {
+      "file": "audio-original/tone-error.wav",
+      "bytes": 9804,
+      "sha256": "022b249ac47ba8af702c4f73f493cd0d5a89cee564a84c426ee59bd6302a7e63"
+    },
+    {
+      "file": "audio-original/tone-question.wav",
+      "bytes": 8524,
+      "sha256": "8751902ffcb22bebbda54463db704bc23b82812df080ee19c2fce81aad4dcff8"
+    },
+    {
+      "file": "audio-original/tone-stop.wav",
+      "bytes": 2924,
+      "sha256": "263c4446b67abd9e2f00ab890b4c8cd924ed3ad78558c88426f18f46241934ba"
+    },
+    {
+      "file": "audio-original/voice-done.wav",
+      "bytes": 19988,
+      "sha256": "78e4989ab70a576275eaad7cfa91f9295494cd953a41b7a177a02077cc86c910"
+    },
+    {
+      "file": "audio-original/voice-error.wav",
+      "bytes": 61558,
+      "sha256": "c5d4eb3b57c593be39f93f269c1d413ddca4b02d6f744252f6184d0a80a1a2ae"
+    },
+    {
+      "file": "audio-original/voice-question.wav",
+      "bytes": 34930,
+      "sha256": "2e9d38b4755651be84873761e6bc07e3c843a542bda7af17af5eae4389e6c6f8"
+    }
+  ],
+  "selection": {
+    "voice_label": "第 4 版发条少女声",
+    "voice_review": "audio-review-v4",
+    "voice_confirmed_by_user": true,
+    "modes": [
+      "effects",
+      "voice"
+    ],
+    "default_mode": "voice",
+    "voice_behavior": "Direct phrase for done/question/error/disconnect; user-initiated stop is silent in both modes; no leading effect before a phrase",
+    "speech_source": "zh-CN-XiaoyiNeural, rate -12%, pitch +2Hz; fixed local clockwork processing from review 4",
+    "effects_source": "audio-review-v2: original 8-bit event cues",
+    "files": {
+      "voice-done.wav": "audio-review-v4/clockwork-done.wav",
+      "voice-question.wav": "audio-review-v4/clockwork-question.wav",
+      "voice-error.wav": "audio-review-v4/clockwork-error.wav",
+      "voice-disconnect.wav": "voice-extra/voice-disconnect.wav",
+      "tone-done.wav": "audio-review-v2/chiptune-done.wav",
+      "tone-question.wav": "audio-review-v2/chiptune-question.wav",
+      "tone-error.wav": "audio-review-v2/chiptune-error.wav",
+      "tone-disconnect.wav": "audio-review-v2/chiptune-disconnect.wav"
+    }
+  },
+  "interaction_effects": [
+    {
+      "file": "assets/coffee-cup.svg",
+      "svg_source_bytes": 657
+    },
+    {
+      "file": "assets/coffee-steam.svg",
+      "svg_source_bytes": 313
+    }
+  ]
+}

@@ -3,6 +3,9 @@
 
 bool whale_control(uint8_t t) {
     switch (t) {
+    case 0x50:
+    case 0x51:
+    case 0x52:
     case 0x40:
     case 0x42:
     case 0x43:

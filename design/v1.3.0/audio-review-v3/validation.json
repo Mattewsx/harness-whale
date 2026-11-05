@@ -1,0 +1,30 @@
+{
+  "playedToCompletion": [
+    "a-original",
+    "a-light",
+    "a-medium",
+    "cue-a-light-done",
+    "cue-a-medium-done",
+    "cue-a-light-question",
+    "cue-a-medium-question",
+    "cue-a-light-error",
+    "cue-a-medium-error",
+    "b-original",
+    "b-light",
+    "b-medium",
+    "cue-b-light-done",
+    "cue-b-medium-done",
+    "cue-b-light-question",
+    "cue-b-medium-question",
+    "cue-b-light-error",
+    "cue-b-medium-error"
+  ],
+  "stopPassed": true,
+  "noHorizontalOverflowAt360": true,
+  "errors": [],
+  "externalRequests": [],
+  "subjectiveListening": "pending user review",
+  "deviceLoudness": "not tested",
+  "automationPlaybackRate": 4,
+  "note": "Accelerated playback verifies decode/completion; user auditions play at normal speed."
+}

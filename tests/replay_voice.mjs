@@ -57,8 +57,28 @@ try {
  let resumed=0
  ctx.agents.get=()=>undefined
  ctx.sessionController={resolveAgent:async id=>{assert.equal(id,'synthetic');resumed++;return {agent}}}
+ assert.equal((await call('/query',{...req,id:'e'.repeat(32)}))[1].status,'unknown')
+ assert.equal(resumed,0);assert.equal(deliveries,1)
+ assert.equal((await call('/submit',{...req,id:'e'.repeat(32),text:''}))[1].status,'invalid')
+ waiting=true;assert.equal((await call('/submit',{...req,id:'e'.repeat(32)}))[1].status,'question');waiting=false
+ assert.equal(resumed,0,'invalid or blocked requests must not activate sessions')
+ ctx.sessions={get:()=>agent.session}
+ assert.equal((await call('/query',req))[1].status,'accepted')
+ assert.equal((await call('/query',{...req,id:'e'.repeat(32)}))[1].status,'not_sent')
+ assert.equal(resumed,0,'receipt queries must not restore sessions')
  assert.equal((await call('/submit',{...req,id:'e'.repeat(32)}))[1].status,'queued')
  assert.equal(resumed,1);assert.equal(deliveries,2)
+ ctx.sessionController=undefined
+ assert.deepEqual((await call('/submit',{...req,id:'f'.repeat(32)}))[1],{status:'unavailable',reason:'controller_missing'})
+ ctx.sessionController={resolveAgent:async()=>{resumed++;return {error:{code:'gateway/internal'}}}}
+ assert.deepEqual((await call('/submit',{...req,id:'1'.repeat(32)}))[1],{status:'unavailable',reason:'host_activation_failed'})
+ assert.deepEqual((await call('/submit',{...req,id:'2'.repeat(32)}))[1],{status:'unavailable',reason:'open_on_computer'})
+ assert.equal((await call('/query',{...req,id:'2'.repeat(32)}))[1].status,'not_sent')
+ assert.equal(resumed,2,'failed host activation must not be retried by submit or query')
+ assert.equal(deliveries,2,'failed activation must never send')
+ ctx.agents.get=()=>agent
+ assert.equal((await call('/submit',{...req,id:'3'.repeat(32)}))[1].status,'queued')
+ assert.equal(deliveries,3,'desktop-opened live session recovers after a failed activation')
  assert.equal(validWave(Buffer.alloc(44)),false)
  console.log('Voice service: auth, concurrent dedup, durable receipt, target identity, archive, question and query-only PASS')
 }finally{service.close()}

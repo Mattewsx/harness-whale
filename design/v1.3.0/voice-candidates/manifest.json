@@ -1,0 +1,70 @@
+{
+  "status": "audition only, user selection pending",
+  "provider": "Edge online TTS via edge-tts; offline fixed playback on device",
+  "profiles": {
+    "a": {
+      "label": "A · 轻甜少女",
+      "voice": "zh-CN-XiaoyiNeural",
+      "rate": "-3%",
+      "pitch": "+18Hz",
+      "description": "晓伊音色，轻微提高音高，语速稍放缓。"
+    },
+    "b": {
+      "label": "B · 柔软陪伴",
+      "voice": "zh-CN-XiaoxiaoNeural",
+      "rate": "-5%",
+      "pitch": "+26Hz",
+      "description": "晓晓音色，音高略抬，保持轻柔舒缓的节奏。"
+    }
+  },
+  "samples": [
+    {
+      "profile": "a",
+      "event": "done",
+      "text": "忙完啦。",
+      "file": "a-done.wav",
+      "seconds": 1.512,
+      "sha256": "291232ed79c112010d38c8ba8c3e5fa7bb447fd51defbabe129408d2d42faf38"
+    },
+    {
+      "profile": "a",
+      "event": "question",
+      "text": "帮我选一下？",
+      "file": "a-question.wav",
+      "seconds": 1.776,
+      "sha256": "3de65ada74bebcc25c35ade74d167c23a0a5bf122caf2d241c76dc8cef35e96b"
+    },
+    {
+      "profile": "a",
+      "event": "error",
+      "text": "遇到问题啦，来看看。",
+      "file": "a-error.wav",
+      "seconds": 2.568,
+      "sha256": "3f899935992744da48e53e41a41d86e1f40c876b54453f97dd1b14e97e082965"
+    },
+    {
+      "profile": "b",
+      "event": "done",
+      "text": "忙完啦。",
+      "file": "b-done.wav",
+      "seconds": 1.488,
+      "sha256": "60261ee064b04480ce2e4eb73e0d92127ac42485d8b817db4dbcec0d2c45eb50"
+    },
+    {
+      "profile": "b",
+      "event": "question",
+      "text": "帮我选一下？",
+      "file": "b-question.wav",
+      "seconds": 1.656,
+      "sha256": "a09d81355f4c31c406ff409fbb190f08c205c1bf982d0dda1ad6c10c066be169"
+    },
+    {
+      "profile": "b",
+      "event": "error",
+      "text": "遇到问题啦，来看看。",
+      "file": "b-error.wav",
+      "seconds": 2.568,
+      "sha256": "c4257f9c281d658f30f4816510a8fdd519db2e5af603e87e2faa919b55812d48"
+    }
+  ]
+}

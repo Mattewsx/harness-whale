@@ -44,6 +44,9 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain tests/test_whale_audio.c -o "${test_dir}/test_whale_audio"
     "${test_dir}/test_whale_audio"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/settings_stubs -Imain \
+        tests/test_whale_settings.c -o "${test_dir}/test_whale_settings"
+    "${test_dir}/test_whale_settings"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"

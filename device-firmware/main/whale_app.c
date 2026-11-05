@@ -2,6 +2,7 @@
 #include "bsp_battery.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
+#include "bsp_pins.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -11,7 +12,9 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "whale_audio.h"
+#include "whale_cues.h"
 #include "whale_reply_cache.h"
+#include "whale_settings.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -19,6 +22,15 @@ static whale_app_t a = {.soc = -1, .next = UINT32_MAX};
 static whale_rx_t rx;
 static QueueHandle_t events;
 static QueueHandle_t cues;
+static whale_cues_t reminders;
+static uint32_t disconnected_at, seek_session, title_requested_at;
+static bool disconnect_pending;
+static bool seek_to_list, priority_list;
+static char title_prefix[73];
+static bool queue_cue(uint8_t kind) {
+    whale_audio_cmd_t cmd = {kind, a.sound_mode, whale_audio_generation()};
+    return cues && xQueueSend(cues, &cmd, 0) == pdTRUE;
+}
 static struct {
     uint32_t session, run;
 } sounded[16];
@@ -56,6 +68,8 @@ static struct {
 static uint32_t requested_cursor, load_started;
 static uint32_t ms(void) { return esp_timer_get_time() / 1000; }
 static void completion_cue(const whale_row_t *before, const whale_row_t *after) {
+    if (a.global_cap)
+        return; /* New bridges report all sessions, not only this page. */
     bool active = (before->state >= 2 && before->state <= 4) || before->state == 8;
     if (!active || after->state != 5 || !before->run || before->session != after->session ||
         before->run != after->run)
@@ -63,8 +77,7 @@ static void completion_cue(const whale_row_t *before, const whale_row_t *after) 
     for (unsigned i = 0; i < 16; i++)
         if (sounded[i].session == after->session && sounded[i].run == after->run)
             return;
-    uint8_t cue = 1;
-    if (!cues || xQueueSend(cues, &cue, 0) != pdTRUE) {
+    if (!queue_cue(3)) {
         ESP_LOGW("whale", "Completion cue queue unavailable");
         return;
     }
@@ -79,9 +92,21 @@ static void button(bsp_btn_t key, bsp_btn_ev_t ev, void *unused) {
         whale_post(&(whale_event_t){.kind = WE_KEY, .value = (uint32_t)key | ((unsigned)ev << 8)});
 }
 static void page(whale_page_t v) {
+    a.confirm_holding = false;
+    if (v != LIST_LOAD && v != LIST_FAILED) {
+        seek_session = 0;
+        seek_to_list = false;
+    }
+    if (v == MANAGE && a.view != SOUND && a.view != KEEP && a.view != REVOKE && a.view != VERSION &&
+        a.view != UNBIND_FAILED)
+        a.settings_return = a.view == LIST ? LIST : HOME;
     if (v != REPLY_READ && v != REPLY_LOAD && v != REPLY_FAILED)
         a.read_pending = false;
     view_revision++;
+    if (v != COMPANION)
+        a.companion_action = 0;
+    if (v == MANAGE)
+        a.menu_choice = 0;
     a.view = v;
     a.page_at = a.now;
     a.scroll = 0;
@@ -112,6 +137,7 @@ static void attention_read(uint8_t kind) {
     pending_reads[pending_read_next].used = true;
     pending_read_next = (pending_read_next + 1) % 16;
     r->flags &= ~(kind == 1 ? 8 : 16);
+    whale_cues_read(&reminders, r->session, kind == 1 ? 3 : 2);
     flush_reads();
 }
 static void voice_cancel(void) {
@@ -124,6 +150,7 @@ static void voice_cancel(void) {
     page(HOME);
 }
 static void voice_prepare(void) {
+    whale_audio_interrupt();
     if (!a.ready || !a.linked) {
         voice_page(VOICE_DISCONNECTED);
         return;
@@ -227,7 +254,10 @@ static void voice_key(unsigned k, bool hold) {
                 }
             }
             voice_cancel();
-            if (found) open_task(); else page(LIST);
+            if (found)
+                open_task();
+            else
+                page(LIST);
         } else if (a.voice_text[0] && (p == VOICE_FAILED || p == VOICE_DISCONNECTED))
             voice_page(VOICE_PREVIEW);
         else
@@ -248,11 +278,119 @@ static void snap(uint32_t cursor) {
 }
 static bool question_view(void) { return a.view >= LOADING && a.view <= UNSURE; }
 static void open_list(void) {
+    a.list_settings = !a.count;
+    priority_list = false;
+    seek_to_list = false;
+    seek_session = 0;
     if (a.ready && a.linked && a.attention_cap) {
         page(LIST_LOAD);
-        snap(0); /* refresh attention priority across all sessions */
+        if (a.global_cap && a.count) {
+            /* The bridge locates the current task in the globally sorted roster,
+             * including tasks beyond the first cached page. */
+            uint8_t b[12];
+            put64(b, a.epoch);
+            seek_session = a.rows[a.selected].session;
+            put32(b + 8, seek_session);
+            seek_to_list = true;
+            requested_cursor = a.cursor;
+            stage.active = false;
+            request_snap = true;
+            stage.deadline = a.now + 3000;
+            if (whale_send(0x52, b, sizeof b))
+                return;
+            seek_session = 0;
+            seek_to_list = false;
+        }
+        snap(0);
     } else {
         page(LIST); /* cached list remains available offline / with old bridges */
+    }
+}
+static void enter_companion(void) {
+    a.companion_choice = 0;
+    a.companion_action = 0;
+    a.companion_at = a.now;
+    page(COMPANION);
+}
+static void companion_work(uint32_t session, bool attention) {
+    if (a.view != COMPANION)
+        return;
+    if (attention) {
+        seek_session = 0;
+        seek_to_list = false;
+        a.list_settings = false;
+        priority_list = true;
+        if (a.ready && a.linked && a.attention_cap) {
+            page(LIST_LOAD);
+            snap(0); /* Work interruptions open the highest-priority items. */
+        } else {
+            a.selected = 0;
+            page(LIST);
+        }
+        return;
+    }
+    for (unsigned i = 0; i < a.count; i++)
+        if (a.rows[i].session == session) {
+            a.selected = i;
+            page(HOME);
+            return;
+        }
+    uint8_t b[12];
+    put64(b, a.epoch);
+    put32(b + 8, session);
+    seek_session = session;
+    page(LIST_LOAD);
+    /* A targeted snapshot locates tasks outside the currently cached page. */
+    stage.active = false;
+    request_snap = true;
+    stage.deadline = a.now + 3000;
+    if (!whale_send(0x52, b, sizeof b)) {
+        seek_session = 0;
+        open_list();
+    }
+}
+static void companion_tick(void) {
+    if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
+        a.companion_action = 0;
+        dirty = true;
+    }
+    bool idle =
+        !a.linked || (a.ready && a.global_cap && a.global_valid && a.now - a.global_at < 30000 &&
+                      !a.global_running && !a.global_waiting && !a.global_unread);
+    if (a.view == HOME && a.now - last_input >= 120000 && idle && !whale_voice_busy())
+        enter_companion();
+    if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
+        disconnect_pending = false;
+        whale_cues_update(&reminders, reminders.seq + 1, 0, disconnected_at, 4, 4, a.now);
+    }
+    bool recording = whale_voice_busy() || (a.view == VOICE && (a.voice_phase == VOICE_PREPARE ||
+                                                                a.voice_phase == VOICE_RECORD ||
+                                                                a.voice_phase == VOICE_FINISH));
+    if (reminders.batching && !recording && !whale_audio_busy() &&
+        a.now - reminders.since >= 1000) {
+        whale_cues_t copy = reminders;
+        uint8_t cue = whale_cues_take(&copy, a.now, false);
+        if (!cue || queue_cue(cue))
+            reminders = copy;
+    }
+    if (a.view == HOME && a.ready && a.count) {
+        const whale_row_t *r = &a.rows[a.selected];
+        if (a.title_session != r->session || a.title_run != r->run ||
+            strcmp(title_prefix, r->title)) {
+            a.title_session = r->session;
+            a.title_run = r->run;
+            a.full_title[0] = 0;
+            snprintf(title_prefix, sizeof title_prefix, "%s", r->title);
+            title_requested_at = a.now - 5000;
+        }
+        if ((r->flags & 4) && !a.full_title[0] && a.now - title_requested_at >= 5000) {
+            uint8_t b[16];
+            put64(b, a.epoch);
+            put32(b + 8, r->session);
+            put32(b + 12, r->run);
+            if (whale_send(0x16, b, sizeof b))
+                title_requested_at = a.now;
+        }
     }
 }
 static void ask_page(uint8_t idx) {
@@ -422,13 +560,19 @@ static bool valid_reply_text(const uint8_t *p, size_t n) {
     return true;
 }
 static bool voice_displayable(const uint8_t *p, size_t n) {
-    if (!valid_reply_text(p,n)) return false;
-    for (size_t i=0; i<n;) {
-        if (p[i]=='\n') { i++; continue; }
-        unsigned bytes=p[i]<128 ? 1 : p[i]<224 ? 2 : p[i]<240 ? 3 : 4;
-        char glyph[5]={0}; memcpy(glyph,p+i,bytes);
-        if (!whale_displayable(glyph)) return false;
-        i+=bytes;
+    if (!valid_reply_text(p, n))
+        return false;
+    for (size_t i = 0; i < n;) {
+        if (p[i] == '\n') {
+            i++;
+            continue;
+        }
+        unsigned bytes = p[i] < 128 ? 1 : p[i] < 224 ? 2 : p[i] < 240 ? 3 : 4;
+        char glyph[5] = {0};
+        memcpy(glyph, p + i, bytes);
+        if (!whale_displayable(glyph))
+            return false;
+        i += bytes;
     }
     return true;
 }
@@ -452,10 +596,65 @@ static void key(uint32_t code) {
         }
         return;
     }
+    if (a.view == COMPANION) {
+        if (hold) {
+            if (k == BSP_BTN_OK)
+                page(HOME);
+            else if (k == BSP_BTN_DOWN)
+                open_list();
+            return;
+        }
+        if (a.companion_action)
+            return;
+        if (k == BSP_BTN_UP)
+            a.companion_choice = (a.companion_choice + 4) % 5;
+        else if (k == BSP_BTN_DOWN)
+            a.companion_choice = (a.companion_choice + 1) % 5;
+        else if (k == BSP_BTN_OK) {
+            if (a.companion_choice == 4)
+                page(HOME);
+            else {
+                a.companion_action = a.companion_choice + 1;
+                a.action_at = a.now;
+            }
+        }
+        return;
+    }
+    if (a.view == SOUND && !hold) {
+        if (k == BSP_BTN_UP)
+            a.sound_choice = (a.sound_choice + 3) % 4;
+        else if (k == BSP_BTN_DOWN)
+            a.sound_choice = (a.sound_choice + 1) % 4;
+        else if (k == BSP_BTN_OK) {
+            if (a.sound_choice < 2) {
+                whale_audio_interrupt();
+                whale_audio_cmd_t cmd = {6, a.sound_choice, 0};
+                if (cues && xQueueSend(cues, &cmd, 0) == pdTRUE) {
+                    a.sound_mode = a.sound_choice;
+                    a.sound_saved = 0;
+                } else
+                    a.sound_saved = -1;
+            } else if (a.sound_choice == 2) {
+                whale_audio_interrupt();
+                queue_cue(3);
+            } else
+                page(MANAGE);
+        }
+        return;
+    }
     if (k == BSP_BTN_OK && hold) {
         if (a.view == SENDING || a.view == UNBINDING)
             return;
         if (a.view == HOME || reply_home()) {
+            page(MANAGE);
+            return;
+        }
+        if (a.view == MANAGE) {
+            page(a.settings_return);
+            return;
+        }
+        if (a.view == SOUND || a.view == KEEP || a.view == REVOKE || a.view == VERSION ||
+            a.view == UNBIND_FAILED) {
             page(MANAGE);
             return;
         }
@@ -500,15 +699,27 @@ static void key(uint32_t code) {
                 open_list();
             break;
         case LIST:
-            attention_read(2);
-            enter_home();
+            if (a.list_settings || !a.count)
+                page(MANAGE);
+            else {
+                attention_read(2);
+                enter_home();
+            }
             break;
         case LIST_FAILED:
             page(LIST_LOAD);
             snap(requested_cursor);
             break;
         case MANAGE:
-            page(KEEP);
+            if (a.menu_choice == 0) {
+                a.sound_choice = a.sound_mode;
+                page(SOUND);
+            } else if (a.menu_choice == 1)
+                page(KEEP);
+            else if (a.menu_choice == 2)
+                page(VERSION);
+            else
+                page(a.settings_return);
             break;
         case KEEP:
             page(MANAGE);
@@ -543,8 +754,10 @@ static void key(uint32_t code) {
         case UNSURE:
             query();
             break;
-        case RESULT:
         case VERSION:
+            page(MANAGE);
+            break;
+        case RESULT:
             page(HOME);
             break;
         default:
@@ -558,10 +771,12 @@ static void key(uint32_t code) {
     if (a.view == HOME) {
         if (d > 0)
             open_reply();
+        else
+            enter_companion();
         return;
     }
     if (a.view == MANAGE) {
-        page(VERSION);
+        a.menu_choice = (a.menu_choice + (d > 0 ? 1 : 3)) % 4;
         return;
     }
     if (a.view == KEEP || a.view == REVOKE) {
@@ -611,16 +826,25 @@ static void key(uint32_t code) {
         return;
     }
     if (a.view == LIST) {
+        if (a.list_settings) {
+            if (d > 0 && a.count) {
+                a.list_settings = false;
+                a.selected = 0;
+            } else if (d < 0 && !request_snap && a.ready && a.cursor) {
+                a.list_settings = false;
+                page(LIST_LOAD);
+                snap(a.cursor >= 8 ? a.cursor - 8 : 0);
+            }
+            return;
+        }
         int next = (int)a.selected + d;
         if (a.count && next >= 0 && next < a.count)
             a.selected = next;
         else if (!request_snap && a.ready && d == 1 && a.next != UINT32_MAX) {
             page(LIST_LOAD);
             snap(a.next);
-        } else if (!request_snap && a.ready && d == -1 && a.cursor) {
-            page(LIST_LOAD);
-            snap(a.cursor >= 8 ? a.cursor - 8 : 0);
-        }
+        } else if (d == -1)
+            a.list_settings = true;
     } else if (a.view == QUESTION) {
         int next = (int)a.focus + d;
         if (next >= 0 && next < a.options)
@@ -642,7 +866,13 @@ static void apply_message(whale_msg_t msg) {
     size_t n = msg.size;
     if (msg.type == 1 && n == 10) {
         uint8_t b[11] = {2, 2};
-        put32(b + 2, w32(p + 2) & 2047);
+        put32(b + 2, w32(p + 2) & 4095);
+        a.global_cap = (w32(p + 2) & 2048) != 0;
+        a.global_valid = false;
+        a.global_at = 0;
+        a.global_seq = 0;
+        memset(&reminders, 0, sizeof reminders);
+        disconnect_pending = false;
         a.voice_cap = (w32(p + 2) & 512) != 0;
         a.attention_cap = (w32(p + 2) & 1024) != 0;
         put16(b + 6, 20);
@@ -666,7 +896,7 @@ static void apply_message(whale_msg_t msg) {
         uint16_t total = w16(p + 24);
         uint8_t count = p[26];
         if (count > 8 || count > total ||
-            (c != requested_cursor &&
+            (!seek_session && c != requested_cursor &&
              !(requested_cursor >= total && c == (total ? (uint32_t)((total - 1) / 8) * 8 : 0))) ||
             (!total && next != UINT32_MAX) || (next != UINT32_MAX && (!count || next <= c))) {
             snap(0);
@@ -710,10 +940,12 @@ static void apply_message(whale_msg_t msg) {
             snap(requested_cursor);
             return;
         }
-        uint32_t old = a.count ? a.rows[a.selected].session : 0;
+        uint32_t old = !seek_session && a.count ? a.rows[a.selected].session : 0;
         bool resumed = !a.ready;
         bool new_epoch = a.epoch && a.epoch != stage.epoch;
         if (new_epoch) {
+            a.title_session = 0;
+            a.full_title[0] = 0;
             whale_reply_cache_clear();
             memset(sounded, 0, sizeof sounded);
             sounded_next = 0;
@@ -744,16 +976,31 @@ static void apply_message(whale_msg_t msg) {
                 kept = true;
             }
         }
-        /* Explicitly opening the priority list starts at its highest item.
-         * Background snapshots in task/reply/voice views retain session identity. */
-        if (a.view == LIST_LOAD && stage.cursor == 0)
+        /* Preserve the current task when opening or refreshing the list. */
+        if (a.view == LIST_LOAD && (!kept || priority_list))
             a.selected = 0;
+        priority_list = false;
         a.seq = stage.base;
         a.epoch = stage.epoch;
         a.cursor = stage.cursor;
         a.total = stage.total;
         a.next = stage.next;
         a.count = stage.count;
+        if (!a.count)
+            a.list_settings = true;
+        if (seek_session) {
+            bool found = false;
+            for (unsigned i = 0; i < a.count; i++)
+                if (a.rows[i].session == seek_session) {
+                    a.selected = i;
+                    found = true;
+                    break;
+                }
+            whale_page_t destination = found && !seek_to_list ? HOME : LIST;
+            seek_session = 0;
+            page(destination);
+            seek_to_list = false;
+        }
         a.ready = true;
         if (a.view == VOICE) {
             if (new_epoch) {
@@ -765,8 +1012,8 @@ static void apply_message(whale_msg_t msg) {
         request_snap = false;
         memset(a.replies, 0, sizeof a.replies);
         if (old && (!kept || new_epoch) &&
-            (a.view == HOME || question_view() || a.view == RESULT ||
-             a.view == REPLY_READ || a.view == REPLY_LOAD || a.view == REPLY_FAILED)) {
+            (a.view == HOME || question_view() || a.view == RESULT || a.view == REPLY_READ ||
+             a.view == REPLY_LOAD || a.view == REPLY_FAILED)) {
             memset(a.identity, 0, sizeof a.identity);
             a.answer[0] = a.prompt[0] = 0;
             memset(a.labels, 0, sizeof a.labels);
@@ -836,6 +1083,47 @@ static void apply_message(whale_msg_t msg) {
     }
     if (!a.ready || n < 8 || w64(p) != a.epoch)
         return;
+    if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
+        w32(p + 8) == a.title_session && w32(p + 12) == a.title_run && whale_text(p + 18, n - 18)) {
+        memcpy(a.full_title, p + 18, n - 18);
+        a.full_title[n - 18] = 0;
+        return;
+    }
+    if (msg.type == 0x50 && a.global_cap && n == 25 && p[24] <= 1 && w16(p + 14) <= w16(p + 12) &&
+        w16(p + 16) <= w16(p + 12) && w16(p + 18) <= w16(p + 12)) {
+        if (w32(p + 8) < a.global_seq)
+            return;
+        bool baseline = !a.global_valid;
+        a.global_seq = w32(p + 8);
+        a.global_at = a.now;
+        a.global_valid = p[24] != 0;
+        a.global_running = w16(p + 14);
+        a.global_waiting = w16(p + 16);
+        a.global_unread = w16(p + 18);
+        a.global_focus = w32(p + 20);
+        if (a.view == COMPANION && a.global_valid && baseline) {
+            if (a.global_waiting || a.global_unread)
+                companion_work(0, true);
+            else if (a.global_running)
+                companion_work(a.global_focus, false);
+        }
+        return;
+    }
+    if (msg.type == 0x51 && a.global_cap && n == 26 && p[24] <= 3 && (p[25] <= 3 || p[25] == 5)) {
+        uint32_t seq = w32(p + 8);
+        if (seq <= reminders.seq)
+            return;
+        /* A gap means a lost control event: discard pending cues and refresh
+         * the list; never guess an event or replay an old notification. */
+        if (reminders.seq && seq != reminders.seq + 1) {
+            memset(&reminders, 0, sizeof reminders);
+            a.global_valid = false;
+        }
+        whale_cues_update(&reminders, seq, w32(p + 12), w32(p + 20), p[24], p[25], a.now);
+        if (p[25])
+            companion_work(w32(p + 12), p[25] != 5);
+        return;
+    }
     if (msg.type == 0x14 && n >= 13) {
         uint32_t seq = w32(p + 8);
         if (seq <= a.seq)
@@ -977,13 +1265,14 @@ static void peripheral_task(void *unused) {
         bool captured = whale_voice_pending();
         if (captured)
             whale_voice_run();
-        uint8_t cue;
+        whale_audio_cmd_t cue;
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
-                if (captured)
-                    while (xQueueReceive(cues, &cue, 0) == pdTRUE) {
-                    }
-                whale_audio_done();
+                if (cue.kind == 6) {
+                    bool saved = whale_sound_save(cue.mode);
+                    whale_post(&(whale_event_t){.kind = 98, .value = saved ? 1 : 0});
+                } else if (!whale_voice_busy())
+                    whale_audio_play(cue);
             }
         } else
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1031,6 +1320,16 @@ static void service(whale_event_t e) {
         }
         break;
     case WE_DOWN:
+        whale_audio_interrupt();
+        if (a.linked) {
+            disconnected_at = a.now;
+            disconnect_pending = true;
+        }
+        a.global_valid = false;
+        a.global_seq = 0;
+        seek_session = 0;
+        seek_to_list = false;
+        memset(&reminders, 0, sizeof reminders);
         whale_voice_stop(true);
         if (a.view == VOICE)
             voice_page(a.voice_submitted ? VOICE_UNKNOWN : VOICE_DISCONNECTED);
@@ -1052,6 +1351,11 @@ static void service(whale_event_t e) {
         if (ev == BSP_BTN_PRESS) {
             armed[k] = !dim;
             pressed_revision[k] = view_revision;
+            if (k == BSP_BTN_OK && armed[k] && a.view == HOME) {
+                a.confirm_holding = true;
+                a.confirm_at = a.now;
+                a.confirm_hold_ms = BSP_BTN_LONG_PRESS_MS;
+            }
             last_input = a.now;
             if (dim) {
                 dim = false;
@@ -1059,11 +1363,16 @@ static void service(whale_event_t e) {
             }
         } else if (armed[k] && (ev == BSP_BTN_LONG || ev == BSP_BTN_RELEASE)) {
             armed[k] = false;
+            if (k == BSP_BTN_OK)
+                a.confirm_holding = false;
             if (pressed_revision[k] == view_revision)
                 key(k | ((ev == BSP_BTN_LONG) << 8));
         }
         break;
     }
+    case 98:
+        a.sound_saved = e.value ? 1 : -1;
+        break;
     case 99:
         if (e.value <= 100) {
             a.soc = e.value;
@@ -1080,6 +1389,8 @@ static void service(whale_event_t e) {
 }
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
+    a.sound_mode = whale_sound_load();
+    a.sound_saved = 1;
     events = xQueueCreate(40, sizeof(whale_event_t));
     assert(events);
     ESP_ERROR_CHECK(bsp_display_init());
@@ -1089,9 +1400,9 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "R11.4 / protocol 2.2 + voice; minimum free heap: %lu",
+    ESP_LOGI("whale", "v1.3.0-dev / protocol 2.2 + companion cues; minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
-    cues = xQueueCreate(8, sizeof(uint8_t));
+    cues = xQueueCreate(8, sizeof(whale_audio_cmd_t));
     if (!cues)
         ESP_LOGW("whale", "Completion cue queue allocation failed");
     xTaskCreate(peripheral_task, "whale_periph", WHALE_PERIPHERAL_STACK_BYTES, NULL, 2, NULL);
@@ -1149,7 +1460,11 @@ void app_main(void) {
                 whale_reply_cache_clear();
                 memset(sounded, 0, sizeof sounded);
                 sounded_next = 0;
+                uint8_t mode = a.sound_mode;
                 memset(&a, 0, sizeof a);
+                a.sound_mode = mode;
+                memset(&reminders, 0, sizeof reminders);
+                a.global_valid = false;
                 a.soc = -1;
                 a.next = UINT32_MAX;
                 page(HOME);
@@ -1163,14 +1478,15 @@ void app_main(void) {
             } else
                 snap(requested_cursor);
         }
+        companion_tick();
         bool busy = false;
         for (int i = 0; i < a.count; i++)
             if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
                 busy = true;
-        if (a.view != HOME && a.view != LIST)
+        if (a.view != HOME && a.view != LIST && a.view != COMPANION)
             busy = true;
-        if (busy)
-            last_input = a.now;
+        if (a.view == COMPANION)
+            busy = false;
         if (busy && dim) {
             dim = false;
             bsp_display_backlight(75);
@@ -1179,7 +1495,7 @@ void app_main(void) {
             dim = true;
             bsp_display_backlight(18);
         }
-        if ((dirty && a.now - last_draw >= 60) || a.now - last_draw >= 250) {
+        if ((dirty && a.now - last_draw >= 125) || a.now - last_draw >= 125) {
             if (bsp_lvgl_lock(25)) {
                 whale_ui_draw(&a);
                 bsp_lvgl_unlock();

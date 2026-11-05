@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>鲸鱼搭子 · v1.3.0 交互与声音评审</title><style>/*STYLE*/</style></head>
+<body>
+<header class="mast"><div class="eyebrow">DEEPSEEK HARNESS · WHALE COMPANION</div><h1>工作之间，陪你一会儿。</h1><p>v1.3.0 · 轻互动与状态声音 · 可操作设计稿</p><span class="badge">模拟数据 / 非实机验证</span></header>
+<main>
+ <section class="device-panel" aria-label="设备模拟器">
+  <div class="device"><div class="speaker"><i></i><i></i><i></i><i></i><i></i></div><div id="screen" tabindex="0" aria-label="240 × 320 设备屏幕"></div><div class="keys"><button data-key="up" aria-label="上键">↑</button><button data-key="ok" aria-label="确认键">●</button><button data-key="down" aria-label="下键">↓</button></div><div class="brand">AI PASSPORT</div></div>
+  <p class="key-help">点击短按 · 按住 0.5 秒长按<br>键盘 ↑ / ↓ / Enter；Shift + 按键模拟长按</p>
+  <div class="long-keys"><button data-long="up">长按 ↑</button><button data-long="ok">长按确认</button><button data-long="down">长按 ↓</button></div>
+  <p id="context-help" class="context-help"></p>
+  <div class="audio-bar"><button id="enable-audio">启用试听声音</button><button id="stop-audio">停止试听</button><p id="audio-status" role="status">声音尚未启用；请先点击启用。</p></div>
+ </section>
+ <section class="control-panel">
+  <div class="section-heading"><span>01 / 路径演示</span><small>以下控制只在原型外出现</small></div>
+  <div class="paths">
+   <button data-scene="manual"><b>和鲸鱼娘互动</b><span>任务主页 ↑ → 四种互动</span></button>
+   <button data-scene="auto"><b>忙完后的陪伴</b><span>全局空闲 → 2 分钟后自动进入</span></button>
+   <button data-scene="offline"><b>离线也陪你</b><span>电脑未连接 → 互动 → 重连</span></button>
+   <button data-scene="sound"><b>选择提醒方式</b><span>管理 → 声音设置 → 试听</span></button>
+   <button data-scene="record"><b>录音时先不打扰</b><span>录音 → 新提醒 → 停止后检查</span></button>
+   <button data-scene="background"><b>屏幕外也在工作</b><span>第 10 个会话运行 → 禁止自动进入</span></button>
+  </div>
+  <p id="scene-help" class="note">从任务主页短按 ↑ 进入陪伴。所有任务、录音和发送均为模拟。</p>
+  <div class="section-heading"><span>02 / 注入工作事件</span><small>不清除未读标记</small></div>
+  <label class="field">目标会话 <select id="target"></select></label>
+  <div class="event-buttons"><button data-event="start">任务开始</button><button data-event="done">任务完成</button><button data-event="question">等待选择</button><button data-event="error">任务出错</button><button data-event="stop">手动停止</button><button id="repeat-event">重复上一事件</button></div>
+  <div class="event-buttons secondary"><button data-event="thinking">思考中</button><button data-event="tool">工具执行</button><button data-event="waiting">网络等待</button><button id="add-task">新增会话</button><button id="disconnect">断开蓝牙</button><button id="reconnect">重连同步</button><button id="history">首次同步历史</button><button id="archive">归档目标</button><button id="delete">删除目标</button><button id="resolve">处理目标提醒</button></div>
+  <div class="tools"><button data-advance="1.1">快进 1.1 秒</button><button data-advance="5">快进 5 秒</button><button data-advance="120">快进 2 分钟</button><button id="long-title">长标题演示</button><button id="reset">重置演示</button></div>
+  <label class="check"><input id="legacy" type="checkbox">模拟旧桥接器（无全局摘要）</label>
+  <label class="field">模拟电量 <input id="battery" type="range" min="0" max="100" value="76"><output id="battery-value">76%</output></label>
+  <div class="section-heading"><span>03 / 提示音与短语</span><small>逐条试听；不会修改任务</small></div>
+  <p class="note">默认“语音”，使用第 4 版“发条少女声”；设备管理 → 声音提醒，可切换“音效”。完成、待选择、出错及蓝牙断开按模式提醒；手动停止只更新状态。断连持续 5 秒后才进入提醒队列。音效音量设计值为 85%，电脑试听不等于设备实际响度。</p>
+  <div id="sound-samples" class="sound-samples"></div>
+  <details class="diagnostics"><summary>查看模拟状态与事件记录</summary><pre id="diagnostics"></pre><ol id="log"></ol></details>
+ </section>
+</main>
+<section class="inventory"><div class="section-heading"><span>04 / 六张陪伴姿态</span><small>AI 生成设计素材 · 保留原角色特征</small></div><div id="pose-gallery"></div><p>不增加养成值、每日任务或互动语音。固件资源量、中文覆盖、图形池与录音互斥将在功能开发阶段验证。</p></section>
+<footer>独立离线 HTML · 240 × 320 原比例屏幕 · 声音模式保存在本浏览器 · 先评审交互和声音，再开发固件</footer>
+<script>const MEDIA = /*MEDIA*/;</script><script>/*SCRIPT*/</script>
+</body></html>

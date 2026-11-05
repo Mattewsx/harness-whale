@@ -26,7 +26,9 @@ typedef enum {
     REPLY_LOAD,
     REPLY_READ,
     REPLY_FAILED,
-    VOICE
+    VOICE,
+    COMPANION,
+    SOUND
 } whale_page_t;
 typedef struct {
     whale_row_t rows[8];
@@ -53,6 +55,18 @@ typedef struct {
     uint8_t voice_phase, voice_choice, voice_identity[24];
     uint32_t voice_session, voice_at, voice_ms;
     char voice_title[73], voice_text[1801];
+    bool global_cap, global_valid;
+    uint16_t global_running, global_waiting, global_unread;
+    uint32_t global_at, global_seq, global_focus;
+    uint32_t companion_at, action_at;
+    uint8_t companion_choice, companion_action, sound_mode, menu_choice, sound_choice;
+    int8_t sound_saved;
+    uint32_t title_session, title_run;
+    char full_title[513];
+    bool list_settings, confirm_holding;
+    uint32_t confirm_at;
+    uint16_t confirm_hold_ms;
+    whale_page_t settings_return;
     whale_page_t view;
 } whale_app_t;
 void whale_ui_init(void);
