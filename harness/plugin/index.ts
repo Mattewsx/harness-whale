@@ -1,6 +1,7 @@
 import dgram from 'node:dgram'
+import { createVoiceService } from './voice.ts'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -193,7 +194,7 @@ export function apply(ctx: any) {
   const observed = new Set<string>()
   const candidates = new Map<string,{ turn:number, text:string }>()
   const saveReply = (key:string,text:string) => {
-    if (text) replies.set(key,{id:randomUUID(),preview:Array.from(text.replace(/\s+/g,' ')).slice(0,20).join(''),pages:replyPages(text)})
+    if (text) replies.set(key,{id:'history-'+createHash('sha256').update(text).digest('hex'),preview:Array.from(text.replace(/\s+/g,' ')).slice(0,20).join(''),pages:replyPages(text)})
   }
   // Archiving updates the Workspace singleton; it does not end or delete a Session.
   const visibility = new Map<string, {key:string, hidden:boolean, stamp:number}>()
@@ -274,6 +275,7 @@ export function apply(ctx: any) {
       socket.send(Buffer.from(JSON.stringify(out)),PORT,HOST)
     } catch {}
   })
+  const voiceService = createVoiceService(ctx, visible, isMainSession, key => ['question','waiting'].includes(states.get(key)?.state || ''))
   let activeKey = 'agent'
   let bridgeChild: ChildProcess | null = null
   let hardware: HardwareStatus = {
@@ -324,7 +326,7 @@ export function apply(ctx: any) {
     try {
       child = spawn(python, [script], {
         cwd: dirname(script),
-        env: process.env,
+        env: { ...process.env, ...voiceService.environment() },
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
       })
@@ -650,6 +652,7 @@ export function apply(ctx: any) {
 
   ctx.effect(() => () => {
     stopped = true
+    voiceService.close()
     clearInterval(heartbeat)
     clearInterval(bridgeGuard)
     clearTimeout(bridgeStartTimer)

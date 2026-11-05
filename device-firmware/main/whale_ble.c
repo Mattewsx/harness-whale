@@ -1,5 +1,8 @@
 #include "whale_ble.h"
 #include "esp_check.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "host/ble_att.h"
 #include "host/ble_hs.h"
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
@@ -15,8 +18,10 @@ void ble_store_config_init(void);
 #define UUID(n)                                                                                    \
     BLE_UUID128_INIT(0x80, 0x90, 0x56, 0xc2, 0xc1, 0x37, 0x24, 0xa2, 0xc5, 0x48, 0x3a, 0x66, n,    \
                      0x02, 0xb5, 0x13)
-static const ble_uuid128_t svc = UUID(0), cmd = UUID(1), notify = UUID(2);
-static uint16_t notify_attr, serial[2];
+static const ble_uuid128_t svc = UUID(0), cmd = UUID(1), notify = UUID(2), audio = UUID(3);
+static uint16_t notify_attr, audio_attr, serial[2];
+static volatile bool audio_subscribed;
+static SemaphoreHandle_t send_lock;
 static volatile uint16_t peer = BLE_HS_CONN_HANDLE_NONE;
 static volatile bool locked, pair_pending;
 static nvs_handle_t binding_store;
@@ -49,6 +54,10 @@ static const struct ble_gatt_chr_def chars[] = {
      .access_cb = access_cb,
      .flags = BLE_GATT_CHR_F_NOTIFY,
      .val_handle = &notify_attr},
+    {.uuid = &audio.u,
+     .access_cb = access_cb,
+     .flags = BLE_GATT_CHR_F_NOTIFY,
+     .val_handle = &audio_attr},
     {0}};
 static const struct ble_gatt_svc_def services[] = {
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &svc.u, .characteristics = chars}, {0}};
@@ -83,7 +92,12 @@ static int gap(struct ble_gap_event *e, void *arg) {
         peer = h;
         break;
     }
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        if (e->subscribe.attr_handle == audio_attr)
+            audio_subscribed = e->subscribe.cur_notify;
+        break;
     case BLE_GAP_EVENT_DISCONNECT:
+        audio_subscribed = false;
         peer = BLE_HS_CONN_HANDLE_NONE;
         pair_pending = false;
         whale_post(&(whale_event_t){.kind = WE_DOWN});
@@ -97,8 +111,9 @@ static int gap(struct ble_gap_event *e, void *arg) {
             ble_gap_terminate(peer, BLE_ERR_REM_USER_CONN_TERM);
         break;
     case BLE_GAP_EVENT_ENC_CHANGE:
-        if (authorized(e->enc_change.conn_handle))
+        if (authorized(e->enc_change.conn_handle)) {
             whale_post(&(whale_event_t){.kind = WE_LINK});
+        }
         break;
     default:
         break;
@@ -142,6 +157,9 @@ static void host_task(void *arg) {
 void whale_ble_start(void) {
     ESP_ERROR_CHECK(nvs_open("whale_bond", NVS_READWRITE, &binding_store));
     ESP_ERROR_CHECK(nimble_port_init());
+    send_lock = xSemaphoreCreateMutex();
+    assert(send_lock);
+    ble_att_set_preferred_mtu(247);
     ble_hs_cfg.sync_cb = sync_host;
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_YESNO;
     ble_hs_cfg.sm_bonding = 1;
@@ -161,6 +179,8 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     uint16_t h = peer;
     if (n > 96 || !authorized(h))
         return false;
+    if (!send_lock || xSemaphoreTake(send_lock, pdMS_TO_TICKS(50)) != pdTRUE)
+        return false;
     unsigned count = (n + 11) / 12;
     uint16_t id = ++serial[whale_control(type)];
     for (unsigned i = 0; i < count; i++) {
@@ -172,8 +192,20 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
         put16(f + 6, n);
         memcpy(f + 8, p + i * 12, size);
         struct os_mbuf *om = ble_hs_mbuf_from_flat(f, size + 8);
-        if (!om || ble_gatts_notify_custom(h, notify_attr, om))
+        if (!om || ble_gatts_notify_custom(h, notify_attr, om)) {
+            xSemaphoreGive(send_lock);
             return false;
+        }
     }
+    xSemaphoreGive(send_lock);
     return true;
+}
+bool whale_ble_audio_ready(void) {
+    return audio_subscribed && authorized(peer) && ble_att_mtu(peer) >= 67;
+}
+bool whale_ble_audio_send(const uint8_t *p, size_t n) {
+    if (n != 62 || !whale_ble_audio_ready())
+        return false;
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(p, n);
+    return om && ble_gatts_notify_custom(peer, audio_attr, om) == 0;
 }

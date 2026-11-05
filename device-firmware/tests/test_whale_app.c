@@ -2,7 +2,9 @@
 
 static uint8_t sent_type, sent_bytes[64];
 static size_t sent_length;
-static unsigned sends, answers;
+static unsigned sends, answers, voice_starts;
+static unsigned cue_count, audio_plays;
+static bool cue_ok, bad_snapshot_crc;
 static bool send_ok = true;
 void *xQueueCreate(int x, int y) {
     (void)x;
@@ -16,6 +18,12 @@ int xQueueReceive(void *q, void *out, int wait) {
     return 0;
 }
 int xQueueSend(void *q, const void *in, int wait) {
+    if (q == cues) {
+        assert(wait == 0 && *(const uint8_t *)in == 1);
+        if (!cue_ok)
+            return 0;
+        cue_count++;
+    }
     (void)q;
     (void)in;
     (void)wait;
@@ -52,6 +60,10 @@ void whale_pair(bool yes) { (void)yes; }
 bool whale_unbind(void) { return true; }
 void whale_ble_start(void) {}
 void whale_ui_init(void) {}
+bool whale_audio_done(void) {
+    audio_plays++;
+    return true;
+}
 void whale_ui_draw(const whale_app_t *app) { (void)app; }
 bool whale_displayable(const char *s) {
     (void)s;
@@ -95,6 +107,11 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
 }
 static void setup(void) {
     whale_reply_cache_clear();
+    memset(sounded, 0, sizeof sounded);
+    sounded_next = cue_count = audio_plays = 0;
+    cues = (void *)2;
+    cue_ok = true;
+    bad_snapshot_crc = false;
     a = (whale_app_t){.soc = -1,
                       .next = UINT32_MAX,
                       .count = 2,
@@ -117,6 +134,9 @@ static void setup(void) {
     dim = request_snap = false;
     requested_cursor = 0;
     sends = answers = 0;
+    voice_starts = 0;
+    memset(pending_reads, 0, sizeof pending_reads);
+    pending_read_next = 0;
     send_ok = true;
 }
 static void reply_count(uint32_t sid, uint32_t rev, uint32_t part, uint32_t count,
@@ -162,7 +182,7 @@ static void snapshot(bool keep_first) {
     put64(end, a.epoch);
     put32(end + 8, 1);
     end[12] = 1;
-    put32(end + 13, crc);
+    put32(end + 13, bad_snapshot_crc ? crc ^ 1 : crc);
     apply_message((whale_msg_t){0x13, end, sizeof end});
 }
 static void test_detail_and_reading(void) {
@@ -207,10 +227,9 @@ static void test_navigation_and_questions(void) {
     key(BSP_BTN_DOWN);
     assert(a.view == REPLY_LOAD && w32(sent_bytes + 8) == 11);
     key(BSP_BTN_OK);
+    unsigned before = sends;
     key(BSP_BTN_UP);
-    assert(a.view == TITLE && sent_type == 0x16 && w32(sent_bytes + 8) == 11);
-    key(BSP_BTN_OK);
-    assert(a.view == HOME);
+    assert(a.view == HOME && sends == before);
     a.rows[1].question = 40;
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
@@ -326,12 +345,209 @@ static void test_continuous_cache_and_offline(void) {
     whale_reply_cache_forget(10, 31);
     assert(!whale_reply_cache_get(a.epoch, 10, 30, 0, cached, &count));
 }
+static void row_update(uint32_t sid, uint32_t run, uint8_t state, uint32_t seq) {
+    uint8_t p[37] = {0};
+    put64(p, a.epoch);
+    put32(p + 8, seq);
+    put32(p + 13, sid);
+    put32(p + 17, run);
+    p[21] = state;
+    apply_message((whale_msg_t){0x14, p, sizeof p});
+}
+static void test_completion_cues(void) {
+    setup();
+    a.selected = 1; /* Completion of a background task still announces. */
+    row_update(10, 20, 5, 1);
+    assert(cue_count == 1 && audio_plays == 0 && a.rows[0].state == 5);
+    row_update(10, 20, 5, 1); /* duplicate sequence */
+    row_update(10, 20, 5, 2); /* repeat status */
+    row_update(10, 20, 3, 3);
+    row_update(10, 20, 5, 4); /* late state must not ring twice for one run */
+    assert(cue_count == 1);
+    row_update(10, 21, 2, 5);
+    row_update(10, 21, 5, 6);
+    assert(cue_count == 2);
+    setup();
+    row_update(10, 20, 6, 1);
+    row_update(10, 20, 5, 2);
+    assert(cue_count == 0);
+    setup();
+    row_update(10, 20, 7, 1);
+    assert(cue_count == 0);
+    setup();
+    row_update(10, 21, 5, 1); /* unseen run/history restoration */
+    assert(cue_count == 0);
+    setup();
+    row_update(10, 20, 5, 2); /* sequence gap requests snapshot */
+    assert(cue_count == 0 && request_snap);
+    setup();
+    snapshot(true);
+    assert(cue_count == 1);
+    snapshot(true);
+    assert(cue_count == 1);
+    setup();
+    a.ready = false; /* initial connection and reconnect are silent */
+    snapshot(true);
+    assert(cue_count == 0);
+    setup();
+    bad_snapshot_crc = true;
+    snapshot(true);
+    assert(cue_count == 0);
+    setup();
+    cue_ok = false;
+    row_update(10, 20, 5, 1);
+    assert(cue_count == 0 && a.rows[0].state == 5); /* failure does not block UI */
+}
+static void test_voice_and_attention(void) {
+    setup();
+    a.voice_cap = true;
+    key(BSP_BTN_UP | 256);
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sent_type == 0x40);
+    assert(voice_starts == 0);
+    uint8_t ready[27] = {0};
+    memcpy(ready, a.voice_identity, 24);
+    ready[24] = 1;
+    apply_message((whale_msg_t){0x41, ready, sizeof ready});
+    assert(voice_starts == 1); /* no Confirm needed after long Up */
+    whale_event_t e = {.kind = WE_VOICE, .len = 16, .value = 1};
+    memcpy(e.bytes, a.voice_identity + 8, 16);
+    service(e);
+    assert(a.voice_phase == VOICE_RECORD);
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_FINISH);
+    uint8_t b[32];
+    memcpy(b, a.voice_identity, 24);
+    b[24] = 2;
+    put16(b + 25, 5);
+    memcpy(b + 27, "hello", 5);
+    unsigned before = sends;
+    apply_message((whale_msg_t){0x41, b, 32});
+    assert(a.voice_phase == VOICE_PREVIEW && sends == before && !strcmp(a.voice_text, "hello"));
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_ACTIONS && sends == before);
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_SENDING && sent_type == 0x45);
+    service((whale_event_t){.kind = WE_DOWN});
+    assert(a.voice_phase == VOICE_UNKNOWN);
+    a.ready = a.linked = true;
+    key(BSP_BTN_OK);
+    assert(sent_type == 0x46);
+    b[24] = 3;
+    put16(b + 25, 0);
+    apply_message((whale_msg_t){0x41, b, 27});
+    assert(a.voice_phase == VOICE_SENT);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME);
+    setup();
+    a.rows[0].flags = 24;
+    a.rows[0].state = 6;
+    page(LIST);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && !(a.rows[0].flags & 16) && a.rows[0].state == 6 &&
+           (a.rows[0].flags & 8));
+    preview(10, 30);
+    key(BSP_BTN_DOWN);
+    assert(a.rows[0].flags & 8);
+    reply(10, 30, 0, "read this");
+    assert(!(a.rows[0].flags & 8) && sent_type == 0x4a);
+    a.rows[0].flags |= 8;
+    page(HOME);
+    a.ready = false;
+    before = sends;
+    key(BSP_BTN_DOWN);
+    assert(a.view == REPLY_READ && !(a.rows[0].flags & 8) && sends == before);
+    a.ready = true;
+    flush_reads();
+    assert(sends == before + 1 && sent_type == 0x4a);
+}
+static void test_voice_direct_entry(void) {
+    setup();
+    a.voice_cap = true;
+    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_UP | (BSP_BTN_PRESS << 8)});
+    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_UP | (BSP_BTN_LONG << 8)});
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sends == 1);
+    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_UP | (BSP_BTN_RELEASE << 8)});
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sends == 1);
+    uint8_t ready[27] = {0};
+    memcpy(ready, a.voice_identity, 24);
+    ready[24] = 1;
+    key(BSP_BTN_UP); /* cancellation before readiness must never open the mic */
+    apply_message((whale_msg_t){0x41, ready, sizeof ready});
+    assert(a.view == HOME && voice_starts == 0);
+    setup();
+    a.ready = false;
+    key(BSP_BTN_UP | 256);
+    assert(a.voice_phase == VOICE_DISCONNECTED && voice_starts == 0 && sends == 0);
+    setup();
+    key(BSP_BTN_UP | 256);
+    assert(a.voice_phase == VOICE_UNSUPPORTED && voice_starts == 0 && sends == 0);
+    setup();
+    a.voice_cap = true;
+    a.rows[0].question = 40;
+    key(BSP_BTN_UP | 256);
+    assert(a.voice_phase == VOICE_QUESTION && voice_starts == 0 && sends == 0);
+    setup();
+    a.count = 0;
+    key(BSP_BTN_UP | 256);
+    assert(a.view == HOME && voice_starts == 0 && sends == 0);
+    setup();
+    a.attention_cap = true;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST_LOAD && sent_type == 0x10 && w32(sent_bytes + 8) == 0);
+    key(BSP_BTN_OK); /* old cached rows cannot be selected during a priority refresh */
+    assert(a.view == LIST_LOAD);
+    /* Highest-priority row is visible even when the previous task is retained
+     * lower down; background snapshots otherwise continue to track identity. */
+    memset(&stage, 0, sizeof stage);
+    stage.active = true;
+    stage.epoch = a.epoch;
+    stage.snap = stage.count = stage.taken = stage.total = 2;
+    stage.next = UINT32_MAX;
+    stage.rows[0] = a.rows[1];
+    stage.rows[1] = a.rows[0];
+    uint8_t end[17] = {0};
+    put64(end, a.epoch);
+    put32(end + 8, 2);
+    end[12] = 2;
+    apply_message((whale_msg_t){0x13, end, sizeof end});
+    assert(a.view == LIST && a.selected == 0 && a.rows[0].session == 11);
+    setup();
+    a.attention_cap = true;
+    a.linked = false;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST && sends == 0);
+}
 int main(void) {
     test_detail_and_reading();
     test_navigation_and_questions();
     test_new_reply_and_lifecycle();
     test_failure_empty_battery_and_key_release();
     test_continuous_cache_and_offline();
-    puts("Whale R10.1 application state and input tests PASS");
+    test_completion_cues();
+    test_voice_and_attention();
+    test_voice_direct_entry();
+    puts("Whale R11.1 application state, direct voice entry and completion cue tests PASS");
     return 0;
 }
+
+void esp_fill_random(void *p, size_t n) { memset(p, 7, n); }
+bool whale_ble_audio_ready(void) { return true; }
+bool whale_ble_audio_send(const uint8_t *p, size_t n) {
+    (void)p;
+    (void)n;
+    return true;
+}
+bool whale_voice_begin(const uint8_t id[24]) {
+    (void)id;
+    voice_starts++;
+    return true;
+}
+void whale_voice_stop(bool discard) { (void)discard; }
+void whale_voice_ack(const uint8_t id[24], uint32_t next) {
+    (void)id;
+    (void)next;
+}
+bool whale_voice_busy(void) { return false; }
+bool whale_voice_pending(void) { return false; }
+void whale_voice_run(void) {}
+uint32_t whale_voice_milliseconds(void) { return 0; }

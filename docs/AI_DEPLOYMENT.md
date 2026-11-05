@@ -1,18 +1,20 @@
 # AI 自动部署指南
 
-使用同一发布标签的源码、manifest 与固件。当前版本 [v0.10.1](https://github.com/Mattewsx/harness-whale/releases/tag/v0.10.1)，固件 R10.1。先阅读根目录 AGENTS.md。未经用户确认不刷机，发布或下载成功不代表获得刷机授权。
+使用同一发布标签的源码、manifest 与固件。当前版本 [v1.2.0](https://github.com/Mattewsx/harness-whale/releases/tag/v1.2.0)，固件 R11.4。先阅读根目录 AGENTS.md。未经用户确认不刷机，发布或下载成功不代表获得刷机授权。
 
 ## 环境和安装
 
 要求 Windows 10/11、64 位 Python 3.10～3.13、蓝牙、DeepSeek Harness。检查 `python --version`、Python 位数与蓝牙可用性，不读取用户会话或凭据进行诊断。
 
 ```powershell
-git clone --branch v0.10.1 https://github.com/Mattewsx/harness-whale.git
+git clone --branch v1.2.0 https://github.com/Mattewsx/harness-whale.git
 cd harness-whale
 python installer\install_companion.py --non-interactive --skip-key
 ```
 
 余额已隐藏，无需询问 API Key。安装器维护独立 `.venv`、受管插件与 profile 块。安装后让用户完全退出并重启 DSH，通过 `/whale` 检查桥接器；无需手动常驻 Python 终端。
+
+语音需要在 DSH 中启用本地 SenseVoice 并等待模型准备完成；长按 ↑ 录音、确认停止，先核对草稿再明确选择发送。首次配对需核对电脑和设备的数字码并两端确认。旧绑定缺少音频服务时，电脑删除配对，设备长按确认 → 确认进入管理 → ↓ 选择解除绑定 → 确认，然后重新配对。
 
 ## 首次刷机
 
@@ -32,7 +34,7 @@ python -m venv .flash-venv
 
 ## 验收
 
-- 设备版本 R10.1，鲸鱼娘界面、中文和电量正常。
+- 设备版本 R11.4，鲸鱼娘界面、中文和电量正常。
 - BLE 自动连接，`/whale` 显示 connected；会话名单与未归档主会话一致。
 - 状态、标题和用时随任务变化；无 Todo 时不展示进度，余额不显示。
 - ↓ 展开最新最终回复，↑↓ 连续滚动，没有页码；确认收起后再次展开正常。

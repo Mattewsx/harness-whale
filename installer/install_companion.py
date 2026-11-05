@@ -46,6 +46,8 @@ def source_resource(name: str) -> Path:
         return packaged
     project = Path(__file__).resolve().parents[1]
     candidates = {
+        "voice.ts": project / "harness" / "plugin" / "voice.ts",
+        "whale_voice.py": project / "harness" / "bridge" / "whale_voice.py",
         "whale_pairing.py": project / "harness" / "bridge" / "whale_pairing.py",
         "whale_v2.py": project / "harness" / "bridge" / "whale_v2.py",
         "whale_history.py": project / "harness" / "bridge" / "whale_history.py",
@@ -159,7 +161,7 @@ def install_payload(dsh_root: Path, *, dry_run: bool = False) -> tuple[Path, Pat
     plugin_source = source_resource("index.ts")
     bridge_source = source_resource("harness_ble_bridge.py")
     protocol_source = source_resource("harness_ble_protocol.py")
-    if not plugin_source.is_file() or not bridge_source.is_file() or not protocol_source.is_file():
+    if not all(p.is_file() for p in (plugin_source, bridge_source, protocol_source, source_resource("voice.ts"), source_resource("whale_voice.py"))):
         raise FileNotFoundError("源码资源不完整，请重新下载代码仓库")
 
     plugin_dest = dsh_root / "plugins" / PLUGIN_ID / "index.ts"
@@ -169,11 +171,13 @@ def install_payload(dsh_root: Path, *, dry_run: bool = False) -> tuple[Path, Pat
     if not dry_run:
         plugin_dest.parent.mkdir(parents=True, exist_ok=True)
         bridge_dest.parent.mkdir(parents=True, exist_ok=True)
-        for old in (plugin_dest, bridge_dest, protocol_dest, bridge_dir / "whale_v2.py", bridge_dir / "whale_pairing.py", bridge_dir / "whale_history.py"):
+        for old in (plugin_dest.parent / "voice.ts", bridge_dir / "whale_voice.py", plugin_dest, bridge_dest, protocol_dest, bridge_dir / "whale_v2.py", bridge_dir / "whale_pairing.py", bridge_dir / "whale_history.py"):
             if old.exists():
                 stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                 shutil.copy2(old, old.with_name(f"{old.name}.whale-backup-{stamp}"))
         shutil.copy2(plugin_source, plugin_dest)
+        shutil.copy2(source_resource("voice.ts"), plugin_dest.parent / "voice.ts")
+        shutil.copy2(source_resource("whale_voice.py"), bridge_dir / "whale_voice.py")
         shutil.copy2(bridge_source, bridge_dest)
         shutil.copy2(protocol_source, protocol_dest)
         shutil.copy2(source_resource("whale_pairing.py"), bridge_dir / "whale_pairing.py")

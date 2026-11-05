@@ -35,25 +35,25 @@ for kind,body in link.changes():send(kind,body)
 lines+=['key 2','key 2','key 0','assert 1 2 0']
 sid=m.keys['alpha'];rev=9;preview='真实回复'.encode()
 send(0x19,v.pack('QIIB',m.epoch,sid,rev,len(preview))+preview)
-lines+=['key 2','assert 0 2 0','key 1','assert 21 2 0']
+lines+=['key 2','assert 0 2 0','key 1','assert 20 2 0']
 def reply_page(session,page,text):
     data=text.encode()
     send(0x1b,v.pack('QIIIIH',m.epoch,session,rev,page,2,len(data))+data)
 reply_page(m.keys['beta'],0,'别的会话')
-lines.append('assert 21 2 0')
+lines.append('assert 20 2 0')
 reply_page(sid,0,'一。\n二。\n三。\n四。\n五。\n六。\n七。')
-lines+=['assert 22 2 0','scroll 0','key 1','scroll 1','key 0','scroll 0','key 1','key 1','assert 22 2 0']
+lines+=['assert 21 2 0','scroll 0','key 1','scroll 1','key 0','scroll 0','key 1','key 1','assert 21 2 0']
 reply_page(sid,1,'末页')
-lines+=['assert 22 2 0']
+lines+=['assert 21 2 0']
 
 # Backward scrolling stays in one reply, and reopening uses the local cache.
-lines += ['key 0','assert 22 2 0','scroll 0','key 2','assert 0 2 0','key 2','assert 1 2 0',
-          'key 1','key 2','assert 0 2 1','key 257','key 0','key 2','assert 0 2 0','key 1','assert 22 2 0']
+lines += ['key 0','assert 21 2 0','scroll 0','key 2','assert 0 2 0','key 2','assert 1 2 0',
+          'key 1','key 2','assert 0 2 1','key 257','key 0','key 2','assert 0 2 0','key 1','assert 21 2 0']
 # The latest final reply replaces the old one; old replies have no navigation entry.
 rev=10;send(0x19,v.pack('QIIB',m.epoch,sid,rev,len(preview))+preview)
-lines+=['assert 21 2 0']
+lines+=['assert 20 2 0']
 reply_page(sid,0,'用户选择更新')
-lines+=['assert 22 2 0']
+lines+=['assert 21 2 0']
 # Archiving the focused task while its final reply is open closes the reader.
 m.set_visibility('alpha',True,10000)
 for kind,body in link.changes():send(kind,body)

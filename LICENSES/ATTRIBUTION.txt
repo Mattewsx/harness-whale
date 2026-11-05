@@ -1,0 +1,5 @@
+Source: https://github.com/Mattewsx/harness-whale
+Based on FoloToy AI Passport BSP: https://gitee.com/FoloToy/ai-passport
+Companion concept: https://github.com/1ikeMcFlurry/harness-whale-companion
+Whale character reference: https://github.com/Sutera-Diffusus/dsh-whale-musume
+The firmware UI preview is a native LVGL render with synthetic content, not a hardware photograph.

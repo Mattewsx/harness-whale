@@ -1,6 +1,25 @@
 **English** · [简体中文](whale-r10.zh_CN.md)
 
-# Whale companion R10.1
+# Whale companion R10.4
+
+R10.4 extends the completion tone to 150 ms at 85% volume, retaining the 5 ms
+attack/release envelope and 100 ms silent DMA tail.
+
+R10.3 raises completion sound volume from 70% to 85%. Its waveform, duration,
+trigger conditions, and duplicate suppression remain unchanged. The percentage
+is a codec volume setting, not a measured sound-pressure level.
+
+R10.2 restores a short completion sound for an observed active-to-done transition
+in the same run, including a non-selected task in the loaded list. Initial and
+reconnected snapshots, completed history, repeated updates, errors and manual
+stops do not trigger it. The last 16 announced session/run pairs are remembered;
+tasks outside the loaded list window are not observed until a later refresh.
+
+Audio shares the peripheral worker with battery polling, serializing shared-I2C
+initialization and keeping playback outside the UI dispatcher. The BSP streams
+a faded 150 ms tone, drains DMA with silence, and suspends the codec. Failures
+are logged without blocking task updates; later completions retry. Sound and
+volume still require on-device listening acceptance.
 
 The task detail page presents a 196-pixel character, task title, status, elapsed
 time, connection state, and battery reading on the 240 × 320 display. A two-line
