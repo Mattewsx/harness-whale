@@ -1364,12 +1364,10 @@ static void power_step(void) {
     for (int i = 0; a.linked && i < a.count; i++)
         if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
             busy = true;
-    if (a.view == COMPANION)
+    /* The desk display follows the normal dim / screen-off / sleep policy,
+     * day and night. */
+    if (a.view == COMPANION || a.view == DESK)
         busy = false;
-    /* Daytime desk display stays lit while the computer is connected. At
-     * night, or offline, the normal dim / screen-off / sleep policy applies. */
-    if (a.view == DESK)
-        busy = a.linked && !a.night;
     whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
     apply_screen(plan.screen);
     whale_ble_set_slow(plan.slow_adv);

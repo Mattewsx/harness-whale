@@ -714,10 +714,13 @@ static void test_desk_display(void) {
     summary(0, 0, 0);
     companion_tick();
     assert(a.view == DESK);
-    /* Daytime and connected: the desk display stays lit past screen-off. */
+    /* Daytime and connected: the normal dim and screen-off still apply. */
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM && a.view == DESK);
     a.now += WHALE_POWER_OFF_MS;
     power_step();
-    assert(screen_applied == WHALE_SCREEN_ON && sleep_commands == 0);
+    assert(screen_applied == WHALE_SCREEN_OFF && a.view == DESK && sleep_commands == 0);
     /* A session starting work returns to its task home. */
     cue_event(1, 11, 21, 0, 5);
     assert(a.view == HOME && a.selected == 1);
