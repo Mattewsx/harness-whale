@@ -888,8 +888,13 @@ static void apply_message(whale_msg_t msg) {
     const uint8_t *p = msg.bytes;
     size_t n = msg.size;
     if (msg.type == 1 && n == 10) {
-        uint8_t b[11] = {2, 2};
-        put32(b + 2, w32(p + 2) & 4095);
+        // Protocol 2.3: a bridge offering bit 12 gets minor 3; large frames are granted
+        // only when both peers and the ATT MTU allow more than the legacy 20 bytes.
+        uint32_t offered = w32(p + 2);
+        uint16_t frame = whale_frame_grant(offered, w16(p + 6), w16(p + 8),
+                                           whale_ble_frame_limit());
+        uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
+        put32(b + 2, (offered & 4095) | (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
         a.global_cap = (w32(p + 2) & 2048) != 0;
         a.global_valid = false;
         a.global_at = 0;
@@ -898,13 +903,20 @@ static void apply_message(whale_msg_t msg) {
         disconnect_pending = false;
         a.voice_cap = (w32(p + 2) & 512) != 0;
         a.attention_cap = (w32(p + 2) & 1024) != 0;
-        put16(b + 6, 20);
-        put16(b + 8, 20);
-        if (p[0] != 2 || p[1] != 2 || (w32(p + 2) & 63) != 63 || w16(p + 6) < 20 || w16(p + 8) < 20)
+        if (p[0] != 2 || p[1] != 2 || (w32(p + 2) & 63) != 63 || w16(p + 6) < 20 || w16(p + 8) < 20) {
             b[10] = 1;
+            frame = WHALE_FRAME_LEGACY;
+            put32(b + 2, offered & 4095);
+        }
+        put16(b + 6, frame);
+        put16(b + 8, frame);
         a.linked = true;
         a.ready = false;
+        // The reply itself is legacy: the bridge switches only after reading it.
+        whale_ble_set_frame(WHALE_FRAME_LEGACY);
+        rx.frame = frame > WHALE_FRAME_LEGACY ? (uint8_t)frame : 0;
         whale_send(2, b, 11);
+        whale_ble_set_frame(frame);
         if (!b[10])
             snap(0);
         else
@@ -1316,18 +1328,22 @@ static void service(whale_event_t e) {
         whale_msg_t m;
         uint8_t previous_part = rx.slots[0].next;
         uint16_t previous_id = rx.slots[0].id;
-        int result = whale_receive(&rx, e.bytes, e.len, a.now, &m);
+        bool large = e.len > sizeof e.bytes;
+        const uint8_t *frame = large ? whale_ble_frame(e.value) : e.bytes;
+        int result = whale_receive(&rx, frame, e.len, a.now, &m);
         if (result == 1)
             apply_message(m);
         else if (result < 0 && a.ready && !question_view())
             snap(a.cursor);
         if (result == 0 && a.view == LOADING && rx.slots[0].active &&
-            (e.bytes[1] == 0x20 || e.bytes[1] == 0x21) &&
+            (frame[1] == 0x20 || frame[1] == 0x21) &&
             (rx.slots[0].id != previous_id || rx.slots[0].next != previous_part)) {
             a.received = rx.slots[0].next;
             a.parts = rx.slots[0].parts;
             load_progress = a.now;
         }
+        if (large) // whale_receive copied the payload; return the slot to the BLE ring
+            whale_ble_frame_release();
         break;
     }
     case WE_LINK:
@@ -1353,6 +1369,7 @@ static void service(whale_event_t e) {
         break;
     case WE_DOWN:
         log_diag("link-down");
+        rx.frame = 0;
         whale_audio_interrupt();
         if (a.linked) {
             disconnected_at = a.now;
@@ -1433,7 +1450,7 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "v1.3.1 / protocol 2.2 + companion cues; minimum free heap: %lu",
+    ESP_LOGI("whale", "v1.4.0 / protocol 2.3 large frames + companion cues; minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
     cues = xQueueCreate(8, sizeof(whale_audio_cmd_t));
     if (!cues)

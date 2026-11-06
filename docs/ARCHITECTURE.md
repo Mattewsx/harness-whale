@@ -5,7 +5,7 @@ flowchart LR
   D[DeepSeek Harness] --> P[TypeScript 插件]
   P <-->|本机 UDP| B[Python 桥接器]
   H[本机 DSH 工作区和会话记录] --> B
-  B <-->|BLE 2.2| W[AI Passport]
+  B <-->|BLE 2.2/2.3| W[AI Passport]
 ```
 
 插件监听任务、工具、结束与单选事件，并自动启动桥接器。桥接器仅绑定回环 UDP，通过 DSH 工作区名单与本地历史补齐未打开的主会话；过滤归档、删除和子代理，实时事件优先。

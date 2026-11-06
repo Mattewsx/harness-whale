@@ -39,19 +39,24 @@ static unsigned priority(uint8_t t) {
     return 1;
 }
 int whale_receive(whale_rx_t *rx, const uint8_t *f, size_t n, uint32_t ms, whale_msg_t *out) {
-    if (n < 8 || n > 20 || f[0] != 2)
+    unsigned cap;
+    if (n >= 8 && n <= WHALE_FRAME_LEGACY && f[0] == 2)
+        cap = WHALE_FRAME_LEGACY - 8;
+    else if (n >= 8 && f[0] == 3 && rx->frame > WHALE_FRAME_LEGACY && n <= rx->frame)
+        cap = rx->frame - 8u;
+    else
         return -1;
     bool ctl = whale_control(f[1]);
     whale_slot_t *s = &rx->slots[ctl];
     uint8_t *buf = ctl ? rx->control : rx->data;
     uint16_t id = w16(f + 2), len = w16(f + 6);
     unsigned i = f[4], count = f[5];
-    if (!len || len > (ctl ? sizeof(rx->control) : sizeof(rx->data)) || count != (len + 11u) / 12u ||
-        i >= count)
+    if (!len || len > (ctl ? sizeof(rx->control) : sizeof(rx->data)) ||
+        count != (len + cap - 1u) / cap || i >= count)
         return -1;
-    size_t offset = i * 12, part = len - offset;
-    if (part > 12)
-        part = 12;
+    size_t offset = i * cap, part = len - offset;
+    if (part > cap)
+        part = cap;
     if (n != part + 8)
         return -1;
     if (s->active && ms - s->last_ms >= 2000)
@@ -62,12 +67,17 @@ int whale_receive(whale_rx_t *rx, const uint8_t *f, size_t n, uint32_t ms, whale
             return distance == 0x8000 ? -1 : 0;
         if (s->active && (ctl || priority(f[1]) <= priority(s->type)))
             return -1;
-        *s = (whale_slot_t){
-            .id = id, .type = f[1], .parts = count, .length = len, .active = true, .seen = true};
+        *s = (whale_slot_t){.id = id,
+                            .type = f[1],
+                            .parts = count,
+                            .length = len,
+                            .cap = cap,
+                            .active = true,
+                            .seen = true};
     }
     if (!s->active || id != s->id)
         return 0;
-    if (f[1] != s->type || len != s->length || count != s->parts || i > s->next) {
+    if (f[1] != s->type || len != s->length || count != s->parts || cap != s->cap || i > s->next) {
         s->active = false;
         return -1;
     }
@@ -85,6 +95,15 @@ int whale_receive(whale_rx_t *rx, const uint8_t *f, size_t n, uint32_t ms, whale
     s->active = false;
     *out = (whale_msg_t){f[1], buf, len};
     return 1;
+}
+uint16_t whale_frame_grant(uint32_t caps, uint16_t peer_rx, uint16_t peer_tx, uint16_t limit) {
+    uint16_t frame = peer_rx < peer_tx ? peer_rx : peer_tx;
+    if (limit < frame)
+        frame = limit;
+    if (frame > WHALE_FRAME_MAX)
+        frame = WHALE_FRAME_MAX;
+    return (caps & WHALE_CAP_LARGE_FRAMES) && frame > WHALE_FRAME_LEGACY ? frame
+                                                                        : WHALE_FRAME_LEGACY;
 }
 bool whale_text(const uint8_t *p, size_t n) {
     for (size_t i = 0; i < n;) {

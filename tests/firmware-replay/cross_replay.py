@@ -119,3 +119,30 @@ r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=
 if r.returncode:raise RuntimeError(r.stderr+r.stdout)
 assert 'tx 52 '+v.pack('QI',m.epoch,sid).hex() in r.stdout
 print('PASS: v1.3 global frames, off-page work seek, attention interruption and duplicate cue suppression')
+
+# Protocol 2.3: after the production C handshake grants bit 12, the same Python model
+# delivers a full eight-row window in version-3 frames; 2.2 frames remain accepted.
+m=v.Workspace()
+for i in range(8):m.update(dict(sessionId=f'L{i}',runId='run',state='done',title=f'长标题任务{i}'+'很长'*12,replyId='r',replyPreview='预览'))
+offered=v.offered_frame(247);assert offered==244
+link=v.Link(m);link.offered=offered
+granted=v.pack('BBIHHB',2,3,v.CAPS|v.LARGE_FRAMES,offered,offered,0)
+link.receive(2,granted);assert link.ready and link.frame==offered
+lines=[f'limit {offered}'];serial=[0,0]
+send(*v.hello(offered));lines.append(f'frame {offered}')
+window=link.snapshot()+link.changes()
+def frames(limit):return sum(len(list(v.fragments(k,1,b,limit))) for k,b in window)
+large,legacy=frames(offered),frames(20)
+for kind,body in window:
+    lane=kind in v.CONTROL;serial[lane]+=1
+    for frag in v.fragments(kind,serial[lane],body,link.frame):lines.append('rx '+frag.hex())
+lines+=['assert 0 8 0']
+# Disconnect drops the grant; a later 2.2 hello on the same device stays legacy.
+lines+=['down','frame 20','limit 20']
+send(*v.hello(offered));lines.append('frame 20')
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+hellos=[x for x in r.stdout.splitlines() if x.startswith('tx 02 ')]
+assert hellos==['tx 02 '+granted.hex(),'tx 02 '+v.pack('BBIHHB',2,3,v.CAPS,20,20,0).hex()],hellos
+assert large*4<legacy,(large,legacy)
+print(f'PASS: protocol 2.3 grant from C, version-3 eight-row window ({large} frames vs {legacy} legacy), reset on disconnect')

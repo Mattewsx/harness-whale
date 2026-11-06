@@ -4,12 +4,120 @@ from pathlib import Path
 import shutil
 import struct
 import sys
+from types import SimpleNamespace
 import unittest
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness/bridge"))
 import whale_v2 as v
 from harness_ble_bridge import HarnessDatagram, StatusModel
+
+
+class LargeFrames(unittest.TestCase):
+    def test_version3_fragments_and_receiver_grant(self):
+        body = bytes(range(256)) * 2
+        legacy = list(v.fragments(0x1B, 5, body))
+        large = list(v.fragments(0x1B, 5, body, 244))
+        self.assertEqual((len(legacy), len(large)), (43, 3))
+        self.assertTrue(all(f[0] == 2 and len(f) <= 20 for f in legacy))
+        self.assertTrue(all(f[0] == 3 and len(f) <= 244 for f in large))
+        r = v.Receiver()
+        self.assertIsNone(r.accept(large[0]))  # no grant: version 3 is rejected
+        r.frame = 244
+        for f in large[:-1]:
+            self.assertIsNone(r.accept(f))
+        self.assertEqual(r.accept(large[-1]), (0x1B, body))
+        for f in list(v.fragments(0x1B, 6, body))[:-1]:  # 2.2 frames stay valid
+            self.assertIsNone(r.accept(f))
+        self.assertEqual(r.accept(legacy[-1][:2] + b"\x06" + legacy[-1][3:]), (0x1B, body))
+        r.frame = 200  # a message must finish at the frame size it started with
+        mixed = list(v.fragments(0x1B, 7, body, 244))
+        self.assertIsNone(r.accept(mixed[0]))
+        self.assertIsNone(r.accept(list(v.fragments(0x1B, 7, body, 200))[1]))
+        with self.assertRaises(ValueError):
+            list(v.fragments(0x1B, 1, body, 245))
+        self.assertEqual([v.offered_frame(m) for m in (None, 23, 100, 247, 517)], [20, 20, 97, 244, 244])
+
+    def test_hello_and_grant_negotiation(self):
+        kind, body = v.hello(244)
+        self.assertEqual(struct.unpack("<BBIHH", body), (2, 2, v.CAPS | v.LARGE_FRAMES, 244, 244))
+        self.assertEqual(struct.unpack("<BBIHH", v.hello()[1]), (2, 2, v.CAPS, 20, 20))
+        cases = [
+            ((2, 3, v.CAPS | v.LARGE_FRAMES, 244, 244, 0), True, 244),
+            ((2, 3, v.CAPS | v.LARGE_FRAMES, 180, 180, 0), True, 180),
+            ((2, 2, v.CAPS, 20, 20, 0), True, 20),  # v1.3.1 firmware
+            ((2, 3, v.CAPS, 20, 20, 0), True, 20),  # 2.3 firmware at MTU 23
+            ((2, 3, v.CAPS | v.LARGE_FRAMES, 512, 512, 0), True, 20),  # larger than offered
+            ((2, 3, v.CAPS | v.LARGE_FRAMES, 244, 200, 0), True, 20),  # asymmetric
+            ((2, 4, v.CAPS, 20, 20, 0), False, 20),
+            ((2, 3, v.CAPS | v.LARGE_FRAMES, 244, 244, 1), False, 20),
+        ]
+        for reply, ready, frame in cases:
+            with self.subTest(reply=reply):
+                link = v.Link(v.Workspace())
+                link.offered = 244
+                link.receive(2, v.pack("BBIHHB", *reply))
+                self.assertEqual((link.ready, link.frame), (ready, frame))
+
+
+class LargeFrameServe(unittest.IsolatedAsyncioTestCase):
+    async def run_device(self, mtu, grant):
+        model = v.Workspace()
+        model.marks_path = Path(os.devnull)
+        model.update(dict(sessionId="a", runId="r", state="done", title="蓝" * 40,
+                          replyId="x", replyPreview="预览"))
+        writes, done = [], asyncio.Event()
+
+        class Client:
+            is_connected = True
+            mtu_size = mtu
+            services = SimpleNamespace(get_characteristic=lambda _: None)
+
+            async def start_notify(self, _, callback):
+                self.notify = callback
+
+            async def write_gatt_char(self, _, data, response):
+                writes.append(bytes(data))
+                if data[1] == 1:
+                    hello = struct.unpack("<BBIHH", data[8:])
+                    caps, offer = hello[2], hello[3]
+                    frame = min(offer, 244) if grant and caps & v.LARGE_FRAMES else 20
+                    caps = (caps & 4095) | (v.LARGE_FRAMES if frame > 20 else 0)
+                    reply = v.pack("BBIHHB", 2, 3 if grant else 2, caps, frame, frame, 0)
+                    for f in v.fragments(2, 1, reply):
+                        self.notify(None, f)
+                    for f in v.fragments(0x10, 2, v.pack("QIBB", 0, 0, 8, 0), frame):
+                        self.notify(None, f)
+                if data[1] == 0x13:
+                    done.set()
+
+        task = asyncio.create_task(v.serve(Client(), model))
+        try:
+            await asyncio.wait_for(done.wait(), 4)
+            frame = model.frame
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        return writes, frame
+
+    async def test_bridge_switches_after_grant(self):
+        writes, frame = await self.run_device(247, True)
+        self.assertEqual(frame, 244)
+        self.assertEqual((writes[0][0], len(writes[0])), (2, 18))  # hello stays 2.2
+        self.assertTrue(all(w[0] == 3 and len(w) <= 244 for w in writes[1:]))
+        self.assertTrue(any(len(w) > 20 for w in writes[1:]))
+
+    async def test_old_firmware_keeps_legacy_frames(self):
+        writes, frame = await self.run_device(247, False)
+        self.assertEqual(frame, 20)
+        self.assertTrue(all(w[0] == 2 and len(w) <= 20 for w in writes))
+
+    async def test_low_mtu_does_not_offer_large_frames(self):
+        writes, frame = await self.run_device(23, True)
+        self.assertEqual(frame, 20)
+        caps = struct.unpack("<BBIHH", writes[0][8:])[2]
+        self.assertFalse(caps & v.LARGE_FRAMES)
+        self.assertTrue(all(w[0] == 2 and len(w) <= 20 for w in writes))
 
 
 class Wire(unittest.TestCase):

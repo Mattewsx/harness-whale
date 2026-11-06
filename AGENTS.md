@@ -1,6 +1,6 @@
 # Harness Whale Companion — AI 操作说明
 
-这是 FoloToy AI Passport 与 DeepSeek Harness 的个人 BLE 陪伴 Demo。当前分支为 v1.3.1（本轮实机验收通过），协议 2.2；公开社区版本以发布回执为准。先读 [README](README.md) 与任务相关说明；修改固件还须读 [固件 AGENTS](device-firmware/AGENTS.md)。
+这是 FoloToy AI Passport 与 DeepSeek Harness 的个人 BLE 陪伴 Demo。最新发布为 v1.3.1（实机验收通过，协议 2.2）；开发中的 v1.4.0 候选使用协议 2.3（可协商大帧，兼容 2.2）；公开社区版本以发布回执为准。先读 [README](README.md) 与任务相关说明；修改固件还须读 [固件 AGENTS](device-firmware/AGENTS.md)。
 
 ## 安全与授权
 
@@ -26,7 +26,7 @@
 
 - `harness/plugin/index.ts`：事件、会话生命周期、单选及桥接器管理。
 - `harness/bridge/harness_ble_bridge.py`：UDP、DSH 名单与本地记录、BLE 连接。
-- `harness/bridge/whale_v2.py`：当前 2.2 协议；`harness_ble_protocol.py` 保留旧版兼容和文本清洗。
+- `harness/bridge/whale_v2.py`：当前 2.3 协议（2.2 兼容）；`harness_ble_protocol.py` 保留旧版兼容和文本清洗。
 - `device-firmware/main/whale_app.c`：应用入口、状态机与按键。
 - `device-firmware/main/whale_ui.c`：LVGL 布局与动效。
 - `device-firmware/main/whale_reply_cache.c`：内存缓存。
