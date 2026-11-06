@@ -234,6 +234,30 @@ int main(void) {
     a.count = 0;
     whale_ui_draw(&a);
     save("list-empty");
+    a.count = 1;
+    a.list_settings = false;
+    a.view = DESK;
+    a.page_at = a.now;
+    a.soc = 76;
+    a.battery_level = 0;
+    whale_ui_draw(&a);
+    save("desk-unsynced");
+    a.clock_valid = true;
+    a.clock = (whale_local_time_t){.year = 2026, .month = 11, .day = 6, .wday = 5, .hour = 14,
+                                   .minute = 25};
+    whale_ui_draw(&a);
+    save("desk-day");
+    a.clock.hour = 23;
+    a.clock.minute = 40;
+    a.night = true;
+    a.soc = 18;
+    a.battery_level = 1;
+    whale_ui_draw(&a);
+    save("desk-night");
+    a.night = false;
+    a.view = HOME;
+    whale_ui_draw(&a);
+    save("desk-back-home");
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     printf("LVGL renderer PASS; peak pool used %lu / %lu bytes\n", (unsigned long)memory.max_used,

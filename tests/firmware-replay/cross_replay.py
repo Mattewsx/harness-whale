@@ -119,3 +119,24 @@ r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=
 if r.returncode:raise RuntimeError(r.stderr+r.stdout)
 assert 'tx 52 '+v.pack('QI',m.epoch,sid).hex() in r.stdout
 print('PASS: v1.3 global frames, off-page work seek, attention interruption and duplicate cue suppression')
+
+# v1.4 desk display: the Python wall clock reaches production C, an idle home
+# becomes the desk display after 120 s, and work starting returns home.
+m=v.Workspace();m.set_roster({'d0','d1'})
+for i in range(2):m.update(dict(sessionId=f'd{i}',runId='run',state='idle',title=f'Desk {i}'))
+link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,v.CAPS,20,20,0));lines=[];serial=[0,0]
+send(1,v.pack('BBIHH',2,2,v.CAPS,20,20))
+for kind,body in link.snapshot()+link.changes():send(kind,body)
+clock=link.clock(now=1793975400,tz_minutes=480)  # 2026-11-06 22:30 in UTC+8
+assert [k for k,_ in clock]==[0x53]
+for kind,body in clock:send(kind,body)
+lines+=['clock 22 30','view 0','advance 119000','view 0']
+link.global_at=0  # the bridge's 10 s heartbeat summary keeps the idle state fresh
+for kind,body in link.changes():send(kind,body)
+lines+=['advance 1001','view 26']
+m.update(dict(sessionId='d1',runId='run2',state='thinking',title='Desk 1'))
+for kind,body in link.changes():send(kind,body)
+lines+=['view 0','assert 0 2 1']
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+print('PASS: v1.4 wall clock sync, idle desk display entry and work-start return home')

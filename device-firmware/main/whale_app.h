@@ -1,5 +1,6 @@
 #pragma once
 #include "whale_ble.h"
+#include "whale_clock.h"
 #include "whale_voice.h"
 
 typedef enum {
@@ -28,7 +29,8 @@ typedef enum {
     REPLY_FAILED,
     VOICE,
     COMPANION,
-    SOUND
+    SOUND,
+    DESK /* desk display: large clock with the whale, entered when idle */
 } whale_page_t;
 typedef struct {
     whale_row_t rows[8];
@@ -68,6 +70,9 @@ typedef struct {
     uint16_t confirm_hold_ms;
     whale_page_t settings_return;
     whale_page_t view;
+    /* Desk clock: local time from the bridge sync or the chip's RTC. */
+    bool clock_valid, night;
+    whale_local_time_t clock;
 } whale_app_t;
 void whale_ui_init(void);
 void whale_ui_draw(const whale_app_t *app);

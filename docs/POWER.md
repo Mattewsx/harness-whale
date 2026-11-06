@@ -14,6 +14,7 @@ Since v1.4.0, whale mode adds three power-saving behaviours on top of the v1.3 t
 | 30 s after the computer disconnects | Advertising interval grows from 30–60 ms to about 1.0–1.3 s; a key press restores 30 s of fast advertising |
 | Offline for 10 minutes with the screen off | Offline deep sleep: any key wakes it at once; it also wakes every 10 minutes, advertises with a dark screen for 75 s and sleeps again if no computer connects |
 | 12 consecutive timer wakes (about 2 hours) without a computer | Key wake only |
+| Desk display (entered after 2 idle minutes with no tasks) | Keeps no extra light on: it dims and turns off at 5 minutes as usual and sleeps offline as usual; 23:00–7:00 shows only a dark clock |
 
 Offline pages (reading replies, voice) return home after 5 idle minutes so the device can turn the screen off and sleep. It never sleeps while pairing, unbinding, recording or playing a cue.
 

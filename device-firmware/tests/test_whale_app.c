@@ -157,6 +157,7 @@ static void setup(void) {
     memset(pending_reads, 0, sizeof pending_reads);
     pending_read_next = 0;
     send_ok = true;
+    *whale_sleep_clock() = (whale_clock_t){0};
 }
 static void reply_count(uint32_t sid, uint32_t rev, uint32_t part, uint32_t count,
                         const char *text) {
@@ -575,7 +576,10 @@ static void test_companion_and_global_cues(void) {
     assert(a.view == HOME);
     summary(0, 0, 0);
     companion_tick();
-    assert(a.view == COMPANION && last_input == 0);
+    assert(a.view == DESK && last_input == 0); /* idle home becomes the desk display */
+    key(BSP_BTN_UP);
+    assert(a.view == HOME);
+    enter_companion();
     for (unsigned i = 0; i < 4; i++) {
         a.companion_choice = i;
         key(BSP_BTN_OK);
@@ -637,7 +641,7 @@ static void test_companion_and_global_cues(void) {
     assert(a.view == HOME); /* old bridge */
     a.linked = false;
     companion_tick();
-    assert(a.view == COMPANION); /* offline allowed */
+    assert(a.view == DESK); /* offline allowed */
     a.view = REPLY_READ;
     a.now += 120000;
     companion_tick();
@@ -675,6 +679,115 @@ static void test_companion_and_global_cues(void) {
 }
 static void key_event(unsigned k, unsigned ev) {
     service((whale_event_t){.kind = WE_KEY, .value = k | (ev << 8)});
+}
+static void wall_clock(uint64_t epoch, int64_t unix_s, int tz_min) {
+    uint8_t p[18];
+    put64(p, epoch);
+    put64(p + 8, (uint64_t)unix_s);
+    put16(p + 16, (uint16_t)(int16_t)tz_min);
+    apply_message((whale_msg_t){0x53, p, sizeof p});
+}
+static void power_reset(bool linked);
+static void test_desk_display(void) {
+    /* 2026-11-06 14:30:00 UTC: 22:30 in UTC+8, 23:30 in UTC+9. */
+    const int64_t afternoon = 1793975400;
+    setup();
+    a.global_cap = true;
+    a.rows[0].state = 1;
+    wall_clock(a.epoch + 1, afternoon, 480); /* another bridge epoch */
+    wall_clock(a.epoch, 1000, 480);          /* implausible */
+    wall_clock(a.epoch, afternoon, 900);
+    assert(!a.clock_valid);
+    wall_clock(a.epoch, afternoon, 480);
+    assert(a.clock_valid && a.clock.hour == 22 && a.clock.minute == 30 && a.clock.month == 11 &&
+           a.clock.day == 6 && a.clock.wday == 5 && !a.night);
+    /* Not before 120 s, and not while work is running, waiting or unread. */
+    last_input = a.now;
+    a.now += WHALE_DESK_IDLE_MS - 1;
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.view == HOME);
+    a.now++;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.view == HOME);
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.view == DESK);
+    /* Daytime and connected: the normal dim and screen-off still apply. */
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM && a.view == DESK);
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF && a.view == DESK && sleep_commands == 0);
+    /* A session starting work returns to its task home. */
+    cue_event(1, 11, 21, 0, 5);
+    assert(a.view == HOME && a.selected == 1);
+    /* Any summary that shows work also leaves, not only the first one. */
+    enter_desk();
+    summary(0, 0, 0);
+    assert(a.view == DESK);
+    summary(1, 0, 0);
+    assert(a.view == HOME);
+    enter_desk();
+    summary(0, 1, 0);
+    assert(a.view == LIST && a.selected == 0); /* waiting work opens the list */
+
+    /* Any key returns home, even a press that only lights a dimmed screen;
+     * its release does not act on the home page. */
+    power_reset(true);
+    a.rows[0].state = 1;
+    enter_desk();
+    apply_screen(WHALE_SCREEN_DIM);
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    assert(a.view == HOME && !dim);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view == HOME && sends == 0);
+    enter_desk();
+    key(BSP_BTN_DOWN);
+    assert(a.view == HOME && sends == 0);
+
+    /* Night: dark clock that dims and then turns off like any idle page. */
+    power_reset(true);
+    a.rows[0].state = 1;
+    wall_clock(a.epoch, afternoon, 540);
+    assert(a.clock.hour == 23 && a.night);
+    enter_desk();
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM);
+    a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF && sleep_commands == 0);
+
+    /* Offline: chip-timed clock, then the normal screen-off and deep sleep. */
+    power_reset(true);
+    a.rows[0].state = 1;
+    wall_clock(a.epoch, afternoon, 480);
+    service((whale_event_t){.kind = WE_DOWN});
+    wall_clock(a.epoch, afternoon + 3600, 480); /* ignored while offline */
+    clock_step();
+    assert(a.clock_valid && a.clock.hour == 22 && !a.linked);
+    enter_desk();
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(a.view == DESK && screen_applied == WHALE_SCREEN_OFF);
+    a.now += WHALE_POWER_OFFLINE_MS;
+    power_step();
+    assert(sleep_commands == 1);
+
+    /* Old bridges (no work summary): cached rows show the work instead. */
+    setup();
+    a.rows[0].state = 1;
+    a.rows[1].state = 5;
+    enter_desk();
+    companion_tick();
+    assert(a.view == DESK);
+    a.rows[1].state = 3;
+    companion_tick();
+    assert(a.view == HOME && a.selected == 1);
+    puts("Desk display entry, wall clock sync, exits, night and offline power PASS");
 }
 static void test_settings_navigation(void) {
     setup();
@@ -893,6 +1006,7 @@ int main(void) {
     test_power();
     test_settings_navigation();
     test_companion_and_global_cues();
+    test_desk_display();
     test_detail_and_reading();
     test_navigation_and_questions();
     test_new_reply_and_lifecycle();
@@ -952,6 +1066,8 @@ bool whale_blob_save(const char *key, const void *data, size_t size) {
 void whale_ble_set_slow(bool slow) { slow_adv_set = slow; }
 whale_sleep_info_t whale_sleep_boot_info(void) { return (whale_sleep_info_t){0}; }
 const char *whale_sleep_boot_name(whale_boot_t boot) { return boot ? "wake" : "power"; }
+static whale_clock_t fake_rtc_clock;
+whale_clock_t *whale_sleep_clock(void) { return &fake_rtc_clock; }
 bool whale_sleep_enter(uint32_t timer_ms, uint32_t cycles) {
     (void)timer_ms;
     (void)cycles;
