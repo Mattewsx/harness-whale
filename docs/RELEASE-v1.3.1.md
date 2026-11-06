@@ -1,4 +1,4 @@
-# v1.3.1 release record (in preparation)
+# v1.3.1 release record
 
 [简体中文](RELEASE-v1.3.1.zh_CN.md)
 
@@ -25,7 +25,7 @@ python harness/tools/whale_stress.py --voice-rounds 5 --reconnects 10 --serial C
 
 ## Status
 
-Build: PASS — ESP-IDF 5.5.3 complete gate, verified merged 0x0 image and matching ELF/MAP archive. Host tests: PASS — 82 Python application tests, firmware static/host tests, three cross-language replays, native LVGL regression, Python compilation and plugin bundling. Windows symlink-dependent infrastructure tests were skipped by the gate. Device tests: NOT RUN for v1.3.1. Unverified: real BLE reconnect timing, repeated voice/cue transitions, diagnostic stack/heap readings and long-duration stability. This is a candidate for device acceptance, not a new public release.
+Build: PASS — ESP-IDF 5.5.3 complete gate, verified merged 0x0 image and matching ELF/MAP archive. Host tests: PASS — 82 Python application tests, firmware static/host tests, three cross-language replays, native LVGL regression, Python compilation and plugin bundling. Windows symlink-dependent infrastructure checks were skipped. Device tests: PASS for the tested scope — 10 reconnects; operator-confirmed repeated recording, recognition, cancellation and a real send with one message and the session intact. The raw voice report includes an extra empty attempt and is not relabeled as an automated pass. Unverified: long-duration stability, full visual/audio regression and independent automatic evidence of all three intended recordings. See [device acceptance](ACCEPTANCE-v1.3.1.md).
 
 Firmware: `whale-v1.3.1`
 
@@ -37,8 +37,7 @@ replay scenarios. Tests cover the post-jitter cap, heartbeat/countdown throughou
 backoff, incomplete handshake rejection and interrupted runs with preserved partial results.
 Windows symlink-dependent infrastructure checks are skipped by the host gate. No firmware
 source changed in the desktop correction; the combined v1.3.1 candidate subsequently passed
-the build recorded above. No device stress run was performed. Real radio timing and on-device
-recording remain unverified.
+the build recorded above. Device observations and operator confirmations are recorded separately in the acceptance report.
 
 
 ## Build identity

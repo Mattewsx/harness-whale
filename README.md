@@ -2,9 +2,9 @@
 
 把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-当前分支为 **v1.3.1（待实机验收，尚未发布）**，增加重连退避、连接健康统计与压力测试工具，并修正测试结果判定，见 [v1.3.1 发布与验证记录](docs/RELEASE-v1.3.1.zh_CN.md)。陪伴互动、状态音效／语音及导航沿用 v1.3.0。请使用同一交付包中的配套桥接器与固件，更新电脑组件后完全退出并重启 DSH。
+当前分支为 **v1.3.1**，增加重连退避、连接健康统计与压力测试工具，并修正测试结果判定，见 [v1.3.1 发布与验证记录](docs/RELEASE-v1.3.1.zh_CN.md)。陪伴互动、状态音效／语音及导航沿用 v1.3.0。请使用同一交付包中的配套桥接器与固件，更新电脑组件后完全退出并重启 DSH。
 
-AI Passport 社区已公开 **v1.3.0**（项目 1966，审核版本 4796）。GitHub Releases 最新下载仍为 **v1.2.0**，不包含 v1.3 的陪伴互动和状态声音。GitHub 主分支已包含 v1.3.0 源码；v1.3.1 完成验收后再同步正式发布。[v1.3.0 构建记录](docs/RELEASE-v1.3.0.zh_CN.md) · [旧版 v1.2.0 下载](https://github.com/Mattewsx/harness-whale/releases/tag/v1.2.0) · [部署指南](docs/AI_DEPLOYMENT.md)
+[下载 v1.3.1](https://github.com/Mattewsx/harness-whale/releases/tag/v1.3.1) · [更新公告](docs/ANNOUNCEMENT-v1.3.1.zh_CN.md) · [部署指南](docs/AI_DEPLOYMENT.md)。本版已完成构建、主机测试和本轮实机验收；完整包包含配套桥接器、固件和调试归档。AI Passport 社区目标为项目 1966，本次提交前公开版本为 v1.3.0（审核版本 4796），后续审核状态以社区页面为准。
 
 ![R10.1 界面预览](docs/images/r101-preview.png)
 
@@ -39,7 +39,7 @@ AI Passport 社区已公开 **v1.3.0**（项目 1966，审核版本 4796）。Gi
 
 ## 安装与升级
 
-v1.3.1 开发源码位于 `claude/project-thread-8wh5wm` 分支；当前社区 v1.3.0 用户应使用 `feature/v1.3-companion-cues` 分支。下载与固件匹配的分支源码，或解压同版配套 `companion-installer.zip`，在其目录执行：
+下载 [v1.3.1 Release](https://github.com/Mattewsx/harness-whale/releases/tag/v1.3.1) 中的 `companion-installer.zip`，或使用 `v1.3.1` 标签源码。在解压目录执行：
 
 ```powershell
 python installer\install_companion.py --non-interactive --skip-key
@@ -57,7 +57,7 @@ python -m venv .flash-venv
 
 标准安装器校验 SHA-256 后整片擦除并从 **0x0** 写入。旧固件、NVS、设置与配对会被清除。刷写前确认目标串口与数据影响。
 
-已有相同分区布局的鲸鱼固件时，可按 [升级步骤](docs/UPGRADE.md) 使用 `Harness-Whale-ESP32C3-app-0x10000.bin` 保留配对。应用镜像只写 **0x10000**，不可交给完整镜像安装器，也不可从 0x0 写入。
+已有相同分区布局的鲸鱼固件时，可按 [升级步骤](docs/UPGRADE.md) 使用 `Harness-Whale-v1.3.1-app-0x10000.bin` 保留配对。应用镜像只写 **0x10000**，不可交给完整镜像安装器，也不可从 0x0 写入。
 
 ## 语音输入
 
