@@ -146,7 +146,7 @@ class LinkStats:
         self.down_at: float | None = None
 
     def up(self) -> None:
-        """The link carries frames again (legacy connect or v2.2 handshake)."""
+        """The link carries frames again (legacy connect or v2.2/2.3 handshake)."""
         now = self.clock()
         if self.connected_at is None:
             self.connected_at = now
@@ -221,6 +221,9 @@ class StatusModel:
             "packetsSent": self.packets_sent,
             **self.link.fields(),
         }
+        frame = getattr(self.workspace, "frame", None)
+        if frame:
+            report["frame"] = frame
         voice = getattr(self.workspace, "voice", None)
         if voice is not None:
             report["voice"] = dict(getattr(voice, "stats", {}))
@@ -518,7 +521,8 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                         while not relay.done():
                             if cycle.done():
                                 raise LinkCycle("stress-test cycle")
-                            report(phase, True, mtu=mtu)
+                            frame = getattr(model.workspace, "frame", None)
+                            report(phase, True, mtu=mtu, **({"frame": frame} if frame else {}))
                             await asyncio.wait({relay, cycle}, timeout=2,
                                                return_when=asyncio.FIRST_COMPLETED)
                         await relay

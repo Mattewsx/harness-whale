@@ -67,6 +67,18 @@ int64_t esp_timer_get_time(void) { return 0; }
 void whale_pair(bool yes) { (void)yes; }
 bool whale_unbind(void) { return true; }
 void whale_ble_start(void) {}
+static uint16_t frame_limit = WHALE_FRAME_LEGACY, tx_frame = WHALE_FRAME_LEGACY,
+                hello_frame = WHALE_FRAME_LEGACY;
+static uint8_t frame_ring[WHALE_FRAME_MAX];
+static unsigned frame_releases;
+static uint8_t hello_reply[11];
+const uint8_t *whale_ble_frame(uint32_t index) {
+    (void)index;
+    return frame_ring;
+}
+void whale_ble_frame_release(void) { frame_releases++; }
+uint16_t whale_ble_frame_limit(void) { return frame_limit; }
+void whale_ble_set_frame(uint16_t frame) { tx_frame = frame; }
 void whale_ui_init(void) {}
 bool whale_audio_done(void) {
     audio_plays++;
@@ -104,6 +116,11 @@ int whale_scroll_at(const char *s, size_t offset) {
     return line;
 }
 bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
+    if (type == 2) {
+        hello_frame = tx_frame; // the hello reply must leave in a legacy frame
+        assert(n == sizeof hello_reply);
+        memcpy(hello_reply, p, n);
+    }
     sent_type = type;
     sent_length = n;
     sends++;
@@ -762,7 +779,68 @@ static void test_settings_navigation(void) {
     puts("Settings entry, hold/release, return, offline and paged list "
          "navigation PASS");
 }
+static void hello(uint32_t caps, uint16_t peer_rx, uint16_t peer_tx) {
+    uint8_t p[10] = {2, 2};
+    put32(p + 2, caps);
+    put16(p + 6, peer_rx);
+    put16(p + 8, peer_tx);
+    apply_message((whale_msg_t){1, p, sizeof p});
+}
+static void test_large_frame_negotiation(void) {
+    // An unchanged 2.2 bridge keeps 2.2, 20-byte frames and no bit 12.
+    setup();
+    frame_limit = WHALE_FRAME_MAX;
+    hello(4095, 20, 20);
+    assert(hello_reply[0] == 2 && hello_reply[1] == 2 && !hello_reply[10]);
+    assert(w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20 && w16(hello_reply + 8) == 20);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+
+    // A 2.3 bridge at MTU 247 gets minor 3, bit 12 and the largest common frame.
+    hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 200);
+    assert(hello_reply[1] == 3 && !hello_reply[10]);
+    assert(w32(hello_reply + 2) == (4095 | WHALE_CAP_LARGE_FRAMES));
+    assert(w16(hello_reply + 6) == 200 && w16(hello_reply + 8) == 200);
+    assert(hello_frame == WHALE_FRAME_LEGACY && tx_frame == 200 && rx.frame == 200);
+
+    // A version-3 frame from the ring is reassembled and the slot is released.
+    a.ready = true; // as after the snapshot that follows the hello
+    uint8_t body[20] = {0};
+    put64(body, a.epoch);
+    put32(body + 8, 10);
+    put32(body + 12, 40);
+    body[16] = 3;
+    memcpy(body + 17, "big", 3);
+    uint8_t head[8] = {3, 0x19, 1, 0, 0, 1, sizeof body, 0};
+    memcpy(frame_ring, head, sizeof head);
+    memcpy(frame_ring + 8, body, sizeof body);
+    unsigned releases = frame_releases;
+    whale_event_t e = {.kind = WE_FRAME, .len = 8 + sizeof body, .value = 0};
+    service(e);
+    assert(frame_releases == releases + 1 && a.replies[0].revision == 40);
+
+    // Disconnect forgets the grant; stale large frames are rejected but still released.
+    service((whale_event_t){.kind = WE_DOWN});
+    assert(rx.frame == 0);
+    frame_ring[2] = 2;
+    service(e);
+    assert(frame_releases == releases + 2 && a.replies[0].revision == 40);
+
+    // A 2.3 bridge on a 23-byte MTU still speaks 2.3, but without large frames.
+    setup();
+    frame_limit = WHALE_FRAME_LEGACY;
+    hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 244);
+    assert(hello_reply[1] == 3 && w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+
+    // A rejected hello never grants large frames.
+    frame_limit = WHALE_FRAME_MAX;
+    hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 19);
+    assert(hello_reply[10] == 1 && w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+    frame_limit = WHALE_FRAME_LEGACY;
+}
 int main(void) {
+    test_large_frame_negotiation();
     test_settings_navigation();
     test_companion_and_global_cues();
     test_detail_and_reading();
