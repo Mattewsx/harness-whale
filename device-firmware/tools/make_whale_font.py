@@ -7,7 +7,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 def build(otf, folder, size):
-    font = ImageFont.truetype(otf, size)
+    # BASIC layout gives whole-pixel advances, matching the committed fonts
+    # whether or not Pillow was built with libraqm.
+    font = ImageFont.truetype(otf, size, layout_engine=ImageFont.Layout.BASIC)
     chars = set(chr(i) for i in range(32, 127))
     for hi in range(0xB0, 0xD8 if size in (14, 16, 18) else 0xB0):
         for lo in range(0xA1, 0xFF):
@@ -21,6 +23,8 @@ def build(otf, folder, size):
             chars.update(c for c in f.read_text("utf8") if ord(c) > 127)
     if size == 21:
         chars = set("任务列表0123456789:")
+    if size == 64:  # desk display clock digits only
+        chars = set("0123456789:-")
     codes = sorted(ord(c) for c in chars)
     bitmap = bytearray()
     desc = ["{0}"]
@@ -94,5 +98,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("otf")
     args = parser.parse_args()
-    for size in (12, 14, 16, 18, 21):
+    for size in (12, 14, 16, 18, 21, 64):
         build(args.otf, Path(__file__).resolve().parents[1] / "main", size)

@@ -2,7 +2,7 @@
 
 **English** · [简体中文](POWER.zh_CN.md)
 
-Since v1.4.0, whale mode adds three power-saving behaviours on top of the v1.3 two-minute dimming. The desktop protocol and plugin are unchanged (still 2.2).
+Since v1.4.0, whale mode adds three power-saving behaviours on top of the v1.3 two-minute dimming. The integrated build also includes the desk clock and protocol 2.3 large frames, with protocol 2.2 compatibility.
 
 ## Behaviour
 
@@ -14,6 +14,7 @@ Since v1.4.0, whale mode adds three power-saving behaviours on top of the v1.3 t
 | 30 s after the computer disconnects | Advertising interval grows from 30–60 ms to about 1.0–1.3 s; a key press restores 30 s of fast advertising |
 | Offline for 10 minutes with the screen off | Offline deep sleep: any key wakes it at once; it also wakes every 10 minutes, advertises with a dark screen for 75 s and sleeps again if no computer connects |
 | 12 consecutive timer wakes (about 2 hours) without a computer | Key wake only |
+| Desk display (entered after 2 idle minutes with no tasks) | Keeps no extra light on: it dims and turns off at 5 minutes as usual and sleeps offline as usual; 23:00–7:00 shows only a dark clock |
 
 Offline pages (reading replies, voice) return home after 5 idle minutes so the device can turn the screen off and sleep. It never sleeps while pairing, unbinding, recording or playing a cue.
 
@@ -46,7 +47,7 @@ Bench thresholds: dim at 10 s, screen off at 20 s, slow advertising after 10 s, 
 
 USB charges the cell, so battery life has to be measured unplugged. The firmware writes every state-of-charge change to NVS (timestamps are RTC seconds, which keep counting through deep sleep) and prints it after USB is reconnected:
 
-1. Charge to 100 %, unplug USB and use the device in the scenario to measure (e.g. connected and working, or offline). A rise of 5 points or more counts as a recharge and starts a new run; the previous run is kept.
+1. Charge to 100 %, unplug USB and use the device in the scenario to measure (e.g. connected and working, or offline). A cumulative rise of at least 5 points from the run's low counts as a recharge and starts a new run. Continued charging updates only the new run's peak; it does not repeatedly replace the previous discharge log.
 2. Afterwards (or after it shuts down), reconnect USB and run:
 
    ```bash
@@ -55,4 +56,6 @@ USB charges the cell, so battery life has to be measured unplugged. The firmware
 
    `--reset` restarts the device so it prints the log; pressing reset works too. The report gives duration, charge used, charge per hour and the projected full-charge life, plus the share of time linked, screen on, in timer wakes and with slow advertising. `--log FILE` analyses a saved serial capture.
 
-The log holds only timestamps, charge and state bits, no session content. Gauge percentages have their own error; measure at least 20 points per scenario before trusting a projection.
+The analyser excludes recharge stretches and trailing recoveries, including gradual charging in old logs. Small recoveries within a discharge are netted against later drops. `hours`, charge used and time shares describe the retained discharge intervals; `excludedRecoveryHours` reports excluded time. State shares are approximate because state can change between charge samples.
+
+The log holds only timestamps, charge and state bits, no session content. SOC trends cannot detect USB power while the percentage stays flat, so unplug USB during measurement. Gauge percentages have their own error; measure at least 20 points per scenario before trusting a projection.

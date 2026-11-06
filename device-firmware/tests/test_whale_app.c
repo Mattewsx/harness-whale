@@ -71,6 +71,18 @@ int64_t esp_timer_get_time(void) { return 0; }
 void whale_pair(bool yes) { (void)yes; }
 bool whale_unbind(void) { return true; }
 void whale_ble_start(void) {}
+static uint16_t frame_limit = WHALE_FRAME_LEGACY, tx_frame = WHALE_FRAME_LEGACY,
+                hello_frame = WHALE_FRAME_LEGACY;
+static uint8_t frame_ring[WHALE_FRAME_MAX];
+static unsigned frame_releases;
+static uint8_t hello_reply[11];
+const uint8_t *whale_ble_frame(uint32_t index) {
+    (void)index;
+    return frame_ring;
+}
+void whale_ble_frame_release(void) { frame_releases++; }
+uint16_t whale_ble_frame_limit(void) { return frame_limit; }
+void whale_ble_set_frame(uint16_t frame) { tx_frame = frame; }
 void whale_ui_init(void) {}
 bool whale_audio_done(void) {
     audio_plays++;
@@ -108,6 +120,11 @@ int whale_scroll_at(const char *s, size_t offset) {
     return line;
 }
 bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
+    if (type == 2) {
+        hello_frame = tx_frame; // the hello reply must leave in a legacy frame
+        assert(n == sizeof hello_reply);
+        memcpy(hello_reply, p, n);
+    }
     sent_type = type;
     sent_length = n;
     sends++;
@@ -157,6 +174,7 @@ static void setup(void) {
     memset(pending_reads, 0, sizeof pending_reads);
     pending_read_next = 0;
     send_ok = true;
+    *whale_sleep_clock() = (whale_clock_t){0};
 }
 static void reply_count(uint32_t sid, uint32_t rev, uint32_t part, uint32_t count,
                         const char *text) {
@@ -575,7 +593,10 @@ static void test_companion_and_global_cues(void) {
     assert(a.view == HOME);
     summary(0, 0, 0);
     companion_tick();
-    assert(a.view == COMPANION && last_input == 0);
+    assert(a.view == DESK && last_input == 0); /* idle home becomes the desk display */
+    key(BSP_BTN_UP);
+    assert(a.view == HOME);
+    enter_companion();
     for (unsigned i = 0; i < 4; i++) {
         a.companion_choice = i;
         key(BSP_BTN_OK);
@@ -637,7 +658,7 @@ static void test_companion_and_global_cues(void) {
     assert(a.view == HOME); /* old bridge */
     a.linked = false;
     companion_tick();
-    assert(a.view == COMPANION); /* offline allowed */
+    assert(a.view == DESK); /* offline allowed */
     a.view = REPLY_READ;
     a.now += 120000;
     companion_tick();
@@ -675,6 +696,116 @@ static void test_companion_and_global_cues(void) {
 }
 static void key_event(unsigned k, unsigned ev) {
     service((whale_event_t){.kind = WE_KEY, .value = k | (ev << 8)});
+}
+static void wall_clock(uint64_t epoch, int64_t unix_s, int tz_min) {
+    uint8_t p[18];
+    put64(p, epoch);
+    put64(p + 8, (uint64_t)unix_s);
+    put16(p + 16, (uint16_t)(int16_t)tz_min);
+    apply_message((whale_msg_t){0x53, p, sizeof p});
+}
+static void power_reset(bool linked);
+static void test_desk_display(void) {
+    /* 2026-11-06 14:30:00 UTC: 22:30 in UTC+8, 23:30 in UTC+9. */
+    const int64_t afternoon = 1793975400;
+    setup();
+    a.global_cap = true;
+    a.rows[0].state = 1;
+    wall_clock(a.epoch + 1, afternoon, 480); /* another bridge epoch */
+    wall_clock(a.epoch, 1000, 480);          /* implausible */
+    wall_clock(a.epoch, afternoon, 900);
+    assert(!a.clock_valid);
+    wall_clock(a.epoch, afternoon, 480);
+    assert(a.clock_valid && a.clock.hour == 22 && a.clock.minute == 30 && a.clock.month == 11 &&
+           a.clock.day == 6 && a.clock.wday == 5 && !a.night);
+    /* Not before 120 s, and not while work is running, waiting or unread. */
+    last_input = a.now;
+    a.now += WHALE_DESK_IDLE_MS - 1;
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.view == HOME);
+    a.now++;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.view == HOME);
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.view == DESK);
+    /* Daytime and connected: the normal dim and screen-off still apply. */
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM && a.view == DESK);
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF && a.view == DESK && sleep_commands == 0);
+    /* A session starting work returns to its task home. */
+    cue_event(1, 11, 21, 0, 5);
+    assert(a.view == HOME && a.selected == 1);
+    /* Any summary that shows work also leaves, not only the first one. */
+    enter_desk();
+    summary(0, 0, 0);
+    assert(a.view == DESK);
+    summary(1, 0, 0);
+    assert(a.view == HOME);
+    enter_desk();
+    summary(0, 1, 0);
+    assert(a.view == LIST && a.selected == 0); /* waiting work opens the list */
+
+    /* Any key returns home, even a press that only lights a dimmed screen;
+     * its release does not act on the home page. */
+    power_reset(true);
+    a.rows[0].state = 1;
+    enter_desk();
+    apply_screen(WHALE_SCREEN_DIM);
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    assert(a.view == HOME && !dim);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view == HOME && sends == 0);
+    enter_desk();
+    key(BSP_BTN_DOWN);
+    assert(a.view == HOME && sends == 0);
+
+    /* Night: dark clock that dims and then turns off like any idle page. */
+    power_reset(true);
+    a.rows[0].state = 1;
+    wall_clock(a.epoch, afternoon, 540);
+    assert(a.clock.hour == 23 && a.night);
+    enter_desk();
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM);
+    a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF && sleep_commands == 0);
+
+    /* Offline: chip-timed clock, then the normal screen-off and deep sleep. */
+    power_reset(true);
+    a.rows[0].state = 1;
+    wall_clock(a.epoch, afternoon, 480);
+    service((whale_event_t){.kind = WE_DOWN});
+    wall_clock(a.epoch, afternoon + 3600, 480); /* ignored while offline */
+    clock_step();
+    assert(a.clock_valid && a.clock.hour == 22 && !a.linked);
+    enter_desk();
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(a.view == DESK && screen_applied == WHALE_SCREEN_OFF);
+    a.now += WHALE_POWER_OFFLINE_MS;
+    power_step();
+    assert(sleep_commands == 1);
+
+    /* A reconnect to an old bridge cannot establish global idle from one
+     * cached page, even if every visible task is idle. Manual companion stays. */
+    setup();
+    a.rows[0].state = 1;
+    a.rows[1].state = 5;
+    enter_desk();
+    companion_tick();
+    assert(a.view == HOME);
+    key(BSP_BTN_UP);
+    companion_tick();
+    assert(a.view == COMPANION);
+    puts("Desk display entry, wall clock sync, exits, night and offline power PASS");
 }
 static void test_settings_navigation(void) {
     setup();
@@ -889,10 +1020,72 @@ static void test_power(void) {
     key_event(BSP_BTN_DOWN, BSP_BTN_RELEASE);
     assert(a.selected == 0);
 }
+static void hello(uint32_t caps, uint16_t peer_rx, uint16_t peer_tx) {
+    uint8_t p[10] = {2, 2};
+    put32(p + 2, caps);
+    put16(p + 6, peer_rx);
+    put16(p + 8, peer_tx);
+    apply_message((whale_msg_t){1, p, sizeof p});
+}
+static void test_large_frame_negotiation(void) {
+    // An unchanged 2.2 bridge keeps 2.2, 20-byte frames and no bit 12.
+    setup();
+    frame_limit = WHALE_FRAME_MAX;
+    hello(4095, 20, 20);
+    assert(hello_reply[0] == 2 && hello_reply[1] == 2 && !hello_reply[10]);
+    assert(w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20 && w16(hello_reply + 8) == 20);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+
+    // A 2.3 bridge at MTU 247 gets minor 3, bit 12 and the largest common frame.
+    hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 200);
+    assert(hello_reply[1] == 3 && !hello_reply[10]);
+    assert(w32(hello_reply + 2) == (4095 | WHALE_CAP_LARGE_FRAMES));
+    assert(w16(hello_reply + 6) == 200 && w16(hello_reply + 8) == 200);
+    assert(hello_frame == WHALE_FRAME_LEGACY && tx_frame == 200 && rx.frame == 200);
+
+    // A version-3 frame from the ring is reassembled and the slot is released.
+    a.ready = true; // as after the snapshot that follows the hello
+    uint8_t body[20] = {0};
+    put64(body, a.epoch);
+    put32(body + 8, 10);
+    put32(body + 12, 40);
+    body[16] = 3;
+    memcpy(body + 17, "big", 3);
+    uint8_t head[8] = {3, 0x19, 1, 0, 0, 1, sizeof body, 0};
+    memcpy(frame_ring, head, sizeof head);
+    memcpy(frame_ring + 8, body, sizeof body);
+    unsigned releases = frame_releases;
+    whale_event_t e = {.kind = WE_FRAME, .len = 8 + sizeof body, .value = 0};
+    service(e);
+    assert(frame_releases == releases + 1 && a.replies[0].revision == 40);
+
+    // Disconnect forgets the grant; stale large frames are rejected but still released.
+    service((whale_event_t){.kind = WE_DOWN});
+    assert(rx.frame == 0);
+    frame_ring[2] = 2;
+    service(e);
+    assert(frame_releases == releases + 2 && a.replies[0].revision == 40);
+
+    // A 2.3 bridge on a 23-byte MTU still speaks 2.3, but without large frames.
+    setup();
+    frame_limit = WHALE_FRAME_LEGACY;
+    hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 244);
+    assert(hello_reply[1] == 3 && w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+
+    // A rejected hello never grants large frames.
+    frame_limit = WHALE_FRAME_MAX;
+    hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 19);
+    assert(hello_reply[10] == 1 && w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+    frame_limit = WHALE_FRAME_LEGACY;
+}
 int main(void) {
     test_power();
+    test_large_frame_negotiation();
     test_settings_navigation();
     test_companion_and_global_cues();
+    test_desk_display();
     test_detail_and_reading();
     test_navigation_and_questions();
     test_new_reply_and_lifecycle();
@@ -952,6 +1145,8 @@ bool whale_blob_save(const char *key, const void *data, size_t size) {
 void whale_ble_set_slow(bool slow) { slow_adv_set = slow; }
 whale_sleep_info_t whale_sleep_boot_info(void) { return (whale_sleep_info_t){0}; }
 const char *whale_sleep_boot_name(whale_boot_t boot) { return boot ? "wake" : "power"; }
+static whale_clock_t fake_rtc_clock;
+whale_clock_t *whale_sleep_clock(void) { return &fake_rtc_clock; }
 bool whale_sleep_enter(uint32_t timer_ms, uint32_t cycles) {
     (void)timer_ms;
     (void)cycles;

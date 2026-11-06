@@ -1,8 +1,9 @@
 #pragma once
 /* Battery-life log kept in NVS so a discharge run can be read back over USB
  * afterwards (USB power would charge the cell and spoil the measurement).
- * One entry per SOC change; a jump up of WHALE_BATT_RECHARGE points starts a
- * new run; the app keeps the finished run as the previous one. */
+ * One entry per SOC change; a cumulative rise of WHALE_BATT_RECHARGE points
+ * starts a new run. While charging, keep only the latest peak so further
+ * rises do not overwrite the previous discharge run. */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -15,6 +16,7 @@ enum {
     WHALE_BATT_SCREEN = 2,   /* backlight on or dimmed */
     WHALE_BATT_TIMER = 4,    /* sampled during a periodic offline wake */
     WHALE_BATT_SLOW_ADV = 8, /* long advertising interval */
+    WHALE_BATT_CHARGING = 128, /* internal trend marker; not a charger sensor */
 };
 
 typedef struct {

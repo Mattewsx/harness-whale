@@ -33,6 +33,7 @@ type HardwareStatus = {
   state: string
   device: string
   mtu?: number
+  frame?: number
   packetsSent?: number
   error?: string
   disconnects?: number
@@ -311,6 +312,7 @@ export function apply(ctx: any) {
         state: String(message.state || 'unknown'),
         device: String(message.device || 'HARNESS-WHALE'),
         mtu: Number.isFinite(message.mtu) ? Number(message.mtu) : undefined,
+        frame: finite(message.frame),
         packetsSent: Number.isFinite(message.packetsSent) ? Number(message.packetsSent) : undefined,
         error: message.error ? String(message.error) : undefined,
         disconnects: finite(message.disconnects),
@@ -490,6 +492,11 @@ export function apply(ctx: any) {
           `Device: ${hardware.device}`,
           `Last heartbeat: ${lastSeen}`,
           `Packets: ${hardware.packetsSent ?? 0}`,
+          ...(bridgeOnline && linked && hardware.frame !== undefined
+            ? [`BLE frame: ${hardware.frame} B (${hardware.frame > 20
+              ? 'protocol 2.3 large frames' : 'protocol 2.2 compatible'}${
+              hardware.mtu ? `, MTU ${hardware.mtu}` : ''})`]
+            : []),
           `Agent mirror: ${agent?.state || 'idle'} / ${agent?.tool || 'none'}`,
           `Task title: ${agent?.title || 'waiting for title'}`,
           ...(bridgeOnline && hardware.disconnects !== undefined

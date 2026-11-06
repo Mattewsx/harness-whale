@@ -1,4 +1,9 @@
-"""AI Passport v2.2 wire projection. Integers are little endian throughout."""
+"""AI Passport v2.2/2.3 wire projection. Integers are little endian throughout.
+
+Protocol 2.3 keeps the 2.2 hello and adds capability bit 12: when both peers and the
+ATT MTU allow it, fragments after the handshake use header version 3 and the
+negotiated frame size instead of 20-byte frames with a 12-byte payload.
+"""
 
 import asyncio
 from collections import OrderedDict
@@ -22,43 +27,76 @@ HEADER = struct.Struct("<BBHBBH")
 IDENTITY = struct.Struct("<QIII")
 ROW = struct.Struct("<IIBBBIHHIB")
 CAPS = 4095  # bit 11: global work summary and live cue events (v1.3)
+LARGE_FRAMES = 4096  # bit 12: protocol 2.3 negotiated large frames
+LEGACY_FRAME = 20
+MAX_FRAME = 244  # ATT MTU 247 minus the 3-byte ATT header
 CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
 CONTROL |= {0x50, 0x51, 0x52}
 END = 0xFFFFFFFF
+CLOCK_RESYNC_SECONDS = 1800
 
 
 def pack(fmt, *values):
     return struct.pack("<" + fmt, *values)
 
 
-def fragments(kind, serial, body, limit=20):
-    capacity = limit - HEADER.size
+def frame_capacity(frame):
+    """Payload bytes per fragment: legacy version 2 or negotiated version 3."""
+    return frame - HEADER.size
+
+
+def fragments(kind, serial, body, limit=LEGACY_FRAME):
+    if not LEGACY_FRAME <= limit <= MAX_FRAME:
+        raise ValueError("invalid frame size")
+    capacity = frame_capacity(limit)
+    version = 3 if limit > LEGACY_FRAME else 2
     count = max(1, (len(body) + capacity - 1) // capacity)
-    if capacity < 12 or len(body) > (96 if kind in CONTROL else 2048) or count > 255:
+    if len(body) > (96 if kind in CONTROL else 2048) or count > 255:
         raise ValueError("invalid message size")
     for i in range(count):
-        yield HEADER.pack(2, kind, serial, i, count, len(body)) + body[
+        yield HEADER.pack(version, kind, serial, i, count, len(body)) + body[
             i * capacity : (i + 1) * capacity
         ]
+
+
+def offered_frame(mtu):
+    """The largest frame one ATT write or notification can carry at this MTU."""
+    try:
+        mtu = int(mtu or 0)
+    except (TypeError, ValueError):
+        mtu = 0
+    return max(LEGACY_FRAME, min(MAX_FRAME, mtu - 3))
+
+
+def hello(frame=LEGACY_FRAME):
+    """A 2.2-compatible hello; bit 12 offers 2.3 large frames when the MTU allows."""
+    caps = CAPS | (LARGE_FRAMES if frame > LEGACY_FRAME else 0)
+    return (1, pack("BBIHH", 2, 2, caps, frame, frame))
 
 
 class Receiver:
     def __init__(self):
         self.active = {}
         self.last = {}
+        self.frame = 0  # negotiated version-3 frame size; 0 accepts legacy frames only
 
     def accept(self, frame):
         if len(frame) < 8:
             return None
         version, kind, serial, index, count, size = HEADER.unpack_from(frame)
         lane = kind in CONTROL
+        if version == 2 and len(frame) <= LEGACY_FRAME:
+            capacity = frame_capacity(LEGACY_FRAME)
+        elif version == 3 and LEGACY_FRAME < self.frame and len(frame) <= self.frame:
+            capacity = frame_capacity(self.frame)
+        else:
+            return None
         if (
-            version != 2
-            or not size
+            not size
             or size > (96 if lane else 2048)
-            or count != (size + 11) // 12
+            or count != (size + capacity - 1) // capacity
             or index >= count
-            or len(frame) != 8 + min(12, size - index * 12)
+            or len(frame) != 8 + min(capacity, size - index * capacity)
         ):
             return None
         now = time.monotonic()
@@ -75,9 +113,9 @@ class Receiver:
             if old_slot and (lane or priority(kind) <= priority(old_slot[1])):
                 return None
             self.last[lane] = serial
-            self.active[lane] = (serial, kind, count, size, [], [now])
+            self.active[lane] = (serial, kind, count, size, [], [now], version)
         active = self.active.get(lane)
-        if not active or active[:4] != (serial, kind, count, size):
+        if not active or active[:4] != (serial, kind, count, size) or active[6] != version:
             return None
         pieces = active[4]
         chunk = bytes(frame[8:])
@@ -128,6 +166,7 @@ class Workspace:
         self.read_marks = {}
         self.marks_path = None
         self.voice = None
+        self.frame = None  # negotiated BLE frame size of the current link, for diagnostics
 
     def load_marks(self, path):
         self.marks_path = path
@@ -397,6 +436,27 @@ class Link:
         self.global_at = 0
         self.announced = set()
         self.global_initialized = False
+        self.clock_at = None
+        self.offered = LEGACY_FRAME
+        self.frame = LEGACY_FRAME
+
+    def clock(self, now=None, tz_minutes=None):
+        """0x53 desk-display wall clock: epoch, Unix seconds, local UTC offset.
+
+        Sent after the first snapshot (the device only accepts it once ready)
+        and then every CLOCK_RESYNC_SECONDS to correct the chip's drift.
+        Firmware before v1.4.0 ignores the unknown message type.
+        """
+        if not self.ready or not self.snap:
+            return []
+        tick = time.monotonic()
+        if self.clock_at is not None and tick - self.clock_at < CLOCK_RESYNC_SECONDS:
+            return []
+        self.clock_at = tick
+        now = time.time() if now is None else now
+        if tz_minutes is None:
+            tz_minutes = (time.localtime(now).tm_gmtoff or 0) // 60
+        return [(0x53, pack('QqH', self.model.epoch, int(now), tz_minutes & 0xFFFF))]
 
     def global_changes(self):
         """Independent of the eight-row window; reconnect establishes a silent baseline.
@@ -575,11 +635,17 @@ class Link:
             self.readable=bool(caps & 256)
             self.attention=bool(caps & 1024)
             self.global_cap=bool(caps & 2048)
+            self.clock_at = None
             self.ready = (
-                (major, minor, status) == (2, 2, 0)
+                (major, status) == (2, 0)
+                and minor in (2, 3)
                 and caps & 63 == 63
-                and min(rx, tx) >= 20
+                and min(rx, tx) >= LEGACY_FRAME
             )
+            # 2.3 grants one symmetric frame no larger than this bridge offered.
+            large = (self.ready and minor == 3 and caps & LARGE_FRAMES and rx == tx
+                     and LEGACY_FRAME < rx <= self.offered)
+            self.frame = rx if large else LEGACY_FRAME
             return []
         if not self.ready:
             return []
@@ -727,7 +793,9 @@ async def serve(client, model, on_write=None):
             lane = 0 if kind in CONTROL else 1
             queues[lane].append((kind, body))
 
-    queue([(1, pack("BBIHH", 2, 2, CAPS, 20, 20))])
+    wire.offered = offered_frame(getattr(client, "mtu_size", 0))
+    model.frame = None
+    queue([hello(wire.offered)])
     bulk_type = None
     refresh_after_page = False
     hello_deadline = time.monotonic() + HELLO_TIMEOUT_SECONDS
@@ -741,6 +809,10 @@ async def serve(client, model, on_write=None):
                 msg = rx.accept(inbox.get_nowait())
                 if msg:
                     replies = [] if wire.ready and voice.receive(*msg) else wire.receive(*msg)
+                    if msg[0] == 2:
+                        # Later fragments in both directions use the negotiated frame.
+                        rx.frame = wire.frame if wire.frame > LEGACY_FRAME else 0
+                        model.frame = wire.frame if wire.ready else None
                     if (
                         msg[0] in (0x24, 0x16)
                         and replies
@@ -760,6 +832,8 @@ async def serve(client, model, on_write=None):
                 refresh_after_page = False
             if not queues[1] and inflight[1] is None:
                 queue(wire.changes())
+            if not queues[1] and inflight[1] is None:
+                queue(wire.clock())
             for lane in (0, 1):
                 if inflight[lane] is None and queues[lane]:
                     kind, body = queues[lane].pop(0)
@@ -768,7 +842,7 @@ async def serve(client, model, on_write=None):
                     if lane:
                         bulk_type = kind
                     serial[lane] = (serial[lane] + 1) & 65535
-                    inflight[lane] = iter(fragments(kind, serial[lane], body))
+                    inflight[lane] = iter(fragments(kind, serial[lane], body, wire.frame))
                 if inflight[lane] is not None:
                     value = next(inflight[lane], None)
                     if value is None:
@@ -783,4 +857,5 @@ async def serve(client, model, on_write=None):
             else:
                 await asyncio.sleep(0.035)
     finally:
+        model.frame = None
         voice.disconnected()

@@ -30,7 +30,37 @@ int main(void) {
     page[4] = 1;
     assert(whale_receive(&rx, page, 11, 5, &out) == 1 && out.type == 0x21 && out.size == 15);
     assert(whale_receive(&rx, page, 11, 6, &out) == 0);
+    // Protocol 2.3: version-3 frames need a grant and use the negotiated payload.
+    assert(whale_frame_grant(WHALE_CAP_LARGE_FRAMES, 244, 244, 244) == 244);
+    assert(whale_frame_grant(WHALE_CAP_LARGE_FRAMES, 244, 180, 200) == 180);
+    assert(whale_frame_grant(WHALE_CAP_LARGE_FRAMES, 512, 512, 512) == WHALE_FRAME_MAX);
+    assert(whale_frame_grant(WHALE_CAP_LARGE_FRAMES, 244, 244, 20) == WHALE_FRAME_LEGACY);
+    assert(whale_frame_grant(4095, 244, 244, 244) == WHALE_FRAME_LEGACY);
+    whale_rx_t big = {0};
+    uint8_t v3[WHALE_FRAME_MAX] = {3, 0x14, 7, 0, 0, 2, 0x2c, 1}; // 300 bytes in two parts
+    for (unsigned k = 8; k < sizeof v3; k++)
+        v3[k] = (uint8_t)k;
+    assert(whale_receive(&big, v3, sizeof v3, 10, &out) == -1); // no grant yet
+    big.frame = WHALE_FRAME_MAX;
+    assert(whale_receive(&big, v3, sizeof v3, 11, &out) == 0 && big.slots[0].next == 1);
+    uint8_t v3_tail[8 + 64] = {3, 0x14, 7, 0, 1, 2, 0x2c, 1};
+    memset(v3_tail + 8, 0xab, 64);
+    uint8_t v2_tail[20] = {2, 0x14, 7, 0, 1, 2, 0x2c, 1};
+    assert(whale_receive(&big, v2_tail, sizeof v2_tail, 12, &out) == -1); // legacy-sized tail
+    assert(whale_receive(&big, v3_tail, sizeof v3_tail - 1, 13, &out) == -1); // short tail
+    assert(whale_receive(&big, v3_tail, sizeof v3_tail, 14, &out) == 1 && out.size == 300 &&
+           out.bytes[0] == 8 && out.bytes[235] == 243 && out.bytes[236] == 0xab);
+    v3[2] = 8;
+    v3_tail[2] = 8;
+    assert(whale_receive(&big, v3, sizeof v3, 15, &out) == 0);
+    big.frame = 200; // a different grant must not complete a message started at 244
+    assert(whale_receive(&big, v3_tail, 8 + 108, 16, &out) == -1 && !big.slots[0].active);
+    big.frame = WHALE_FRAME_MAX;
+    uint8_t oversize[WHALE_FRAME_MAX + 1] = {3, 0x14, 10, 0, 0, 2, 0x2c, 1};
+    assert(whale_receive(&big, oversize, sizeof oversize, 18, &out) == -1);
+    uint8_t legacy[20] = {2, 0x23, 2, 0, 0, 1, 1, 0, 4};
+    assert(whale_receive(&big, legacy, 9, 19, &out) == 1); // 2.2 frames stay valid after a grant
     uint8_t bad[] = {0xe0, 0x80, 0x80};
     assert(!whale_text(bad, 3));
-    puts("wire: lengths, UTF-8, CRC, slot priority, duplicate and serial wrap passed");
+    puts("wire: lengths, UTF-8, CRC, slot priority, duplicate, serial wrap and 2.3 large frames passed");
 }

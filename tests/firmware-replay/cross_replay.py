@@ -119,3 +119,81 @@ r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=
 if r.returncode:raise RuntimeError(r.stderr+r.stdout)
 assert 'tx 52 '+v.pack('QI',m.epoch,sid).hex() in r.stdout
 print('PASS: v1.3 global frames, off-page work seek, attention interruption and duplicate cue suppression')
+
+# v1.4 desk display: the Python wall clock reaches production C, an idle home
+# becomes the desk display after 120 s, and work starting returns home.
+m=v.Workspace();m.set_roster({'d0','d1'})
+for i in range(2):m.update(dict(sessionId=f'd{i}',runId='run',state='idle',title=f'Desk {i}'))
+link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,v.CAPS,20,20,0));lines=[];serial=[0,0]
+send(1,v.pack('BBIHH',2,2,v.CAPS,20,20))
+for kind,body in link.snapshot()+link.changes():send(kind,body)
+clock=link.clock(now=1793975400,tz_minutes=480)  # 2026-11-06 22:30 in UTC+8
+assert [k for k,_ in clock]==[0x53]
+for kind,body in clock:send(kind,body)
+lines+=['clock 22 30','view 0','advance 119000','view 0']
+link.global_at=0  # the bridge's 10 s heartbeat summary keeps the idle state fresh
+for kind,body in link.changes():send(kind,body)
+lines+=['advance 1001','view 26']
+m.update(dict(sessionId='d1',runId='run2',state='thinking',title='Desk 1'))
+for kind,body in link.changes():send(kind,body)
+lines+=['view 0','assert 0 2 1']
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+print('PASS: v1.4 wall clock sync, idle desk display entry and work-start return home')
+
+# Protocol 2.3: after the production C handshake grants bit 12, the same Python model
+# delivers a full eight-row window in version-3 frames; 2.2 frames remain accepted.
+m=v.Workspace()
+for i in range(8):m.update(dict(sessionId=f'L{i}',runId='run',state='done',title=f'长标题任务{i}'+'很长'*12,replyId='r',replyPreview='预览'))
+offered=v.offered_frame(247);assert offered==244
+link=v.Link(m);link.offered=offered
+granted=v.pack('BBIHHB',2,3,v.CAPS|v.LARGE_FRAMES,offered,offered,0)
+link.receive(2,granted);assert link.ready and link.frame==offered
+lines=[f'limit {offered}'];serial=[0,0]
+send(*v.hello(offered));lines.append(f'frame {offered}')
+window=link.snapshot()+link.changes()
+def frames(limit):return sum(len(list(v.fragments(k,1,b,limit))) for k,b in window)
+large,legacy=frames(offered),frames(20)
+for kind,body in window:
+    lane=kind in v.CONTROL;serial[lane]+=1
+    for frag in v.fragments(kind,serial[lane],body,link.frame):lines.append('rx '+frag.hex())
+lines+=['assert 0 8 0']
+# Disconnect drops the grant; a later 2.2 hello on the same device stays legacy.
+lines+=['down','frame 20','limit 20']
+send(*v.hello(offered));lines.append('frame 20')
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+hellos=[x for x in r.stdout.splitlines() if x.startswith('tx 02 ')]
+assert hellos==['tx 02 '+granted.hex(),'tx 02 '+v.pack('BBIHHB',2,3,v.CAPS,20,20,0).hex()],hellos
+assert large*4<legacy,(large,legacy)
+print(f'PASS: protocol 2.3 grant from C, version-3 eight-row window ({large} frames vs {legacy} legacy), reset on disconnect')
+
+# Integrated features: time sync and global work outside the current page must
+# still reach the desk display after switching to large frames.
+m=v.Workspace();m.set_roster({f'I{i}' for i in range(10)})
+for i in range(10):m.update(dict(sessionId=f'I{i}',runId='r',state='idle',title=f'Idle {i}'))
+link=v.Link(m);link.offered=244
+link.receive(2,v.pack('BBIHHB',2,3,v.CAPS|v.LARGE_FRAMES,244,244,0))
+lines=['limit 244'];serial=[0,0]
+send(*v.hello(244));lines.append('frame 244')
+def send_large(messages):
+    for kind,body in messages:
+        lane=kind in v.CONTROL;serial[lane]+=1
+        lines.extend('rx '+f.hex() for f in v.fragments(kind,serial[lane],body,244))
+send_large(link.snapshot()+link.changes())
+off_page=next(sid for sid in m.sessions if sid not in link.rows)
+off_key=next(key for key,sid in m.keys.items() if sid==off_page)
+send_large(link.clock(now=1793975400,tz_minutes=480))
+lines+=['clock 22 30','advance 119000']
+link.global_at=0
+send_large(link.changes())
+lines+=['advance 1001','view 26']
+m.update(dict(sessionId=off_key,runId='new',state='thinking',title='Off-page task'))
+send_large(link.changes())
+lines+=['view 18']
+send_large(link.receive(0x52,v.pack('QI',m.epoch,off_page)))
+lines+=['view 0',f'selected {off_page}']
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+assert 'tx 52 '+v.pack('QI',m.epoch,off_page).hex() in r.stdout
+print('PASS: integrated 2.3 clock sync, idle desk display and off-page work interruption')

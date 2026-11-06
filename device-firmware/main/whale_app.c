@@ -44,6 +44,10 @@ static volatile uint8_t power_flags;
 static volatile uint32_t sleep_timer_ms, sleep_cycles;
 static bool sleep_requested;
 static uint32_t sleep_retry_at, key_guard_until;
+/* Idle this long on the task home (or companion) with no work: desk display. */
+#define WHALE_DESK_IDLE_MS 120000u
+static uint32_t rtc_seconds(void);
+static void clock_step(void);
 static unsigned stack_headroom(const char *task) {
     TaskHandle_t handle = xTaskGetHandle(task);
     return handle ? (unsigned)uxTaskGetStackHighWaterMark(handle) : 0;
@@ -376,8 +380,14 @@ static void enter_companion(void) {
     a.companion_at = a.now;
     page(COMPANION);
 }
+static void enter_desk(void) {
+    ESP_LOGI("whale", "desk display on (clock %s)", a.clock_valid ? "synced" : "unknown");
+    page(DESK);
+}
+/* Work started or needs attention while the companion or desk display is up:
+ * go back to the task pages. */
 static void companion_work(uint32_t session, bool attention) {
-    if (a.view != COMPANION)
+    if (a.view != COMPANION && a.view != DESK)
         return;
     if (attention) {
         seek_session = 0;
@@ -421,8 +431,13 @@ static void companion_tick(void) {
     bool idle =
         !a.linked || (a.ready && a.global_cap && a.global_valid && a.now - a.global_at < 30000 &&
                       !a.global_running && !a.global_waiting && !a.global_unread);
-    if (a.view == HOME && a.now - last_input >= 120000 && idle && !whale_voice_busy())
-        enter_companion();
+    if ((a.view == HOME || a.view == COMPANION) && a.now - last_input >= WHALE_DESK_IDLE_MS &&
+        idle && !whale_voice_busy() && !a.companion_action)
+        enter_desk();
+    /* After an offline desk display reconnects to an old bridge, the cached
+     * page cannot prove all sessions are idle. Return to the task home. */
+    if (a.view == DESK && a.linked && a.ready && !a.global_cap)
+        page(HOME);
     if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
         disconnect_pending = false;
         whale_cues_update(&reminders, reminders.seq + 1, 0, disconnected_at, 4, 4, a.now);
@@ -648,6 +663,10 @@ static void key(uint32_t code) {
         return;
     }
     user_input();
+    if (a.view == DESK) { /* any key returns to the normal pages */
+        page(HOME);
+        return;
+    }
     if (a.view == VOICE) {
         voice_key(k, hold);
         return;
@@ -928,8 +947,13 @@ static void apply_message(whale_msg_t msg) {
     const uint8_t *p = msg.bytes;
     size_t n = msg.size;
     if (msg.type == 1 && n == 10) {
-        uint8_t b[11] = {2, 2};
-        put32(b + 2, w32(p + 2) & 4095);
+        // Protocol 2.3: a bridge offering bit 12 gets minor 3; large frames are granted
+        // only when both peers and the ATT MTU allow more than the legacy 20 bytes.
+        uint32_t offered = w32(p + 2);
+        uint16_t frame = whale_frame_grant(offered, w16(p + 6), w16(p + 8),
+                                           whale_ble_frame_limit());
+        uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
+        put32(b + 2, (offered & 4095) | (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
         a.global_cap = (w32(p + 2) & 2048) != 0;
         a.global_valid = false;
         a.global_at = 0;
@@ -938,13 +962,20 @@ static void apply_message(whale_msg_t msg) {
         disconnect_pending = false;
         a.voice_cap = (w32(p + 2) & 512) != 0;
         a.attention_cap = (w32(p + 2) & 1024) != 0;
-        put16(b + 6, 20);
-        put16(b + 8, 20);
-        if (p[0] != 2 || p[1] != 2 || (w32(p + 2) & 63) != 63 || w16(p + 6) < 20 || w16(p + 8) < 20)
+        if (p[0] != 2 || p[1] != 2 || (w32(p + 2) & 63) != 63 || w16(p + 6) < 20 || w16(p + 8) < 20) {
             b[10] = 1;
+            frame = WHALE_FRAME_LEGACY;
+            put32(b + 2, offered & 4095);
+        }
+        put16(b + 6, frame);
+        put16(b + 8, frame);
         a.linked = true;
         a.ready = false;
+        // The reply itself is legacy: the bridge switches only after reading it.
+        whale_ble_set_frame(WHALE_FRAME_LEGACY);
+        rx.frame = frame > WHALE_FRAME_LEGACY ? (uint8_t)frame : 0;
         whale_send(2, b, 11);
+        whale_ble_set_frame(frame);
         if (!b[10])
             snap(0);
         else
@@ -1146,6 +1177,13 @@ static void apply_message(whale_msg_t msg) {
     }
     if (!a.ready || n < 8 || w64(p) != a.epoch)
         return;
+    if (msg.type == 0x53 && n == 18) {
+        /* Wall clock: epoch, Unix seconds (int64), local UTC offset minutes. */
+        if (whale_clock_sync(whale_sleep_clock(), rtc_seconds(), (int64_t)w64(p + 8),
+                             (int16_t)w16(p + 16)))
+            clock_step();
+        return;
+    }
     if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
         w32(p + 8) == a.title_session && w32(p + 12) == a.title_run && whale_text(p + 18, n - 18)) {
         memcpy(a.full_title, p + 18, n - 18);
@@ -1164,7 +1202,9 @@ static void apply_message(whale_msg_t msg) {
         a.global_waiting = w16(p + 16);
         a.global_unread = w16(p + 18);
         a.global_focus = w32(p + 20);
-        if (a.view == COMPANION && a.global_valid && baseline) {
+        /* The desk display leaves on any summary that shows work; the
+         * companion page only reacts to the first one after (re)connecting. */
+        if ((a.view == DESK || (a.view == COMPANION && baseline)) && a.global_valid) {
             if (a.global_waiting || a.global_unread)
                 companion_work(0, true);
             else if (a.global_running)
@@ -1311,7 +1351,9 @@ static void apply_message(whale_msg_t msg) {
         page(!a.page && whale_text_wide(a.prompt) ? PROMPT : QUESTION);
     }
 }
-static bool main_view(void) { return a.view == HOME || a.view == LIST || a.view == COMPANION; }
+static bool main_view(void) {
+    return a.view == HOME || a.view == LIST || a.view == COMPANION || a.view == DESK;
+}
 static void power_step(void) {
     bool hold = whale_voice_busy() || whale_audio_busy() || reminders.batching ||
                 a.view == PAIR || a.view == UNBINDING;
@@ -1328,7 +1370,9 @@ static void power_step(void) {
     for (int i = 0; a.linked && i < a.count; i++)
         if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
             busy = true;
-    if (a.view == COMPANION)
+    /* The desk display follows the normal dim / screen-off / sleep policy,
+     * day and night. */
+    if (a.view == COMPANION || a.view == DESK)
         busy = false;
     whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
     apply_screen(plan.screen);
@@ -1352,6 +1396,13 @@ static uint32_t rtc_seconds(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint32_t)tv.tv_sec;
+}
+static void clock_step(void) {
+    whale_local_time_t t;
+    a.clock_valid = whale_clock_local(whale_sleep_clock(), rtc_seconds(), &t);
+    if (a.clock_valid)
+        a.clock = t;
+    a.night = a.clock_valid && whale_clock_night(&a.clock);
 }
 static void batt_dump(const char *name) {
     if (!whale_blob_load(name, &batt_log, sizeof batt_log) || !whale_batt_log_valid(&batt_log))
@@ -1421,18 +1472,22 @@ static void service(whale_event_t e) {
         whale_msg_t m;
         uint8_t previous_part = rx.slots[0].next;
         uint16_t previous_id = rx.slots[0].id;
-        int result = whale_receive(&rx, e.bytes, e.len, a.now, &m);
+        bool large = e.len > sizeof e.bytes;
+        const uint8_t *frame = large ? whale_ble_frame(e.value) : e.bytes;
+        int result = whale_receive(&rx, frame, e.len, a.now, &m);
         if (result == 1)
             apply_message(m);
         else if (result < 0 && a.ready && !question_view())
             snap(a.cursor);
         if (result == 0 && a.view == LOADING && rx.slots[0].active &&
-            (e.bytes[1] == 0x20 || e.bytes[1] == 0x21) &&
+            (frame[1] == 0x20 || frame[1] == 0x21) &&
             (rx.slots[0].id != previous_id || rx.slots[0].next != previous_part)) {
             a.received = rx.slots[0].next;
             a.parts = rx.slots[0].parts;
             load_progress = a.now;
         }
+        if (large) // whale_receive copied the payload; return the slot to the BLE ring
+            whale_ble_frame_release();
         break;
     }
     case WE_LINK:
@@ -1460,6 +1515,7 @@ static void service(whale_event_t e) {
     case WE_DOWN:
         whale_power_link(&power, a.now, false);
         log_diag("link-down");
+        rx.frame = 0;
         whale_audio_interrupt();
         if (a.linked) {
             disconnected_at = a.now;
@@ -1488,6 +1544,14 @@ static void service(whale_event_t e) {
         unsigned k = e.value & 255, ev = e.value >> 8;
         if (k >= 3)
             break;
+        if (ev == BSP_BTN_PRESS && a.view == DESK) {
+            /* Even a press that only lights the screen leaves the desk display;
+             * its release must not act on the page underneath. */
+            armed[k] = false;
+            user_input();
+            page(HOME);
+            break;
+        }
         if (ev == BSP_BTN_PRESS) {
             /* After a key wake the waking press may still be held at boot. */
             armed[k] = !dim && (int32_t)(a.now - key_guard_until) >= 0;
@@ -1541,7 +1605,9 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "v1.4.0 / protocol 2.2 + companion cues + power saving; minimum free heap: %lu",
+    ESP_LOGI("whale",
+             "v1.4.0 / protocol 2.3 large frames + companion cues + power saving + desk clock; "
+             "minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST
     ESP_LOGW("whale_power", "BENCH BUILD: short power thresholds (WHALE_POWER_TEST)");
@@ -1555,6 +1621,7 @@ void app_main(void) {
     whale_power_init(&power, a.now, boot_info.boot == WHALE_BOOT_TIMER, boot_info.cycles);
     if (boot_info.boot == WHALE_BOOT_KEY)
         key_guard_until = a.now + 1000;
+    clock_step();
     log_diag("boot");
     xTaskCreate(peripheral_task, "whale_periph", WHALE_PERIPHERAL_STACK_BYTES, NULL, 2, NULL);
     /* A timer wake looks for the computer with the screen dark. */
@@ -1635,6 +1702,7 @@ void app_main(void) {
             } else
                 snap(requested_cursor);
         }
+        clock_step();
         companion_tick();
         power_step();
         /* With the backlight off nothing is visible: skip LVGL work. */

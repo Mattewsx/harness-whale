@@ -33,6 +33,22 @@ static bool mark_revoking(uint8_t value) {
            nvs_commit(binding_store) == ESP_OK;
 }
 static uint8_t own;
+#define LARGE_SLOTS 8u
+static uint8_t large[LARGE_SLOTS][WHALE_FRAME_MAX];
+static uint32_t large_head, large_tail; // single producer (host task), single consumer (app)
+static volatile uint16_t tx_frame = WHALE_FRAME_LEGACY;
+const uint8_t *whale_ble_frame(uint32_t index) { return large[index % LARGE_SLOTS]; }
+void whale_ble_frame_release(void) { __atomic_fetch_add(&large_tail, 1, __ATOMIC_RELEASE); }
+uint16_t whale_ble_frame_limit(void) {
+    uint16_t mtu = peer == BLE_HS_CONN_HANDLE_NONE ? 0 : ble_att_mtu(peer);
+    if (mtu < WHALE_FRAME_LEGACY + 3)
+        return WHALE_FRAME_LEGACY;
+    uint16_t frame = (uint16_t)(mtu - 3u);
+    return frame > WHALE_FRAME_MAX ? WHALE_FRAME_MAX : frame;
+}
+void whale_ble_set_frame(uint16_t frame) {
+    tx_frame = frame > WHALE_FRAME_LEGACY && frame <= WHALE_FRAME_MAX ? frame : WHALE_FRAME_LEGACY;
+}
 static bool authorized(uint16_t h) {
     struct ble_gap_conn_desc d;
     return !locked && h == peer && !ble_gap_conn_find(h, &d) && d.sec_state.encrypted &&
@@ -42,12 +58,28 @@ static int access_cb(uint16_t h, uint16_t attr, struct ble_gatt_access_ctxt *ctx
     if (!authorized(h))
         return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     whale_event_t e = {.kind = WE_FRAME};
-    uint16_t len = 0;
-    if (ctx->op != BLE_GATT_ACCESS_OP_WRITE_CHR ||
-        ble_hs_mbuf_to_flat(ctx->om, e.bytes, 20, &len) || len < 8)
+    uint16_t len = 0, total = ctx->om ? OS_MBUF_PKTLEN(ctx->om) : 0;
+    if (ctx->op != BLE_GATT_ACCESS_OP_WRITE_CHR || total < 8 || total > WHALE_FRAME_MAX)
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    if (total <= sizeof e.bytes) {
+        if (ble_hs_mbuf_to_flat(ctx->om, e.bytes, sizeof e.bytes, &len))
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        e.len = len;
+        return whale_post(&e) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    uint32_t head = large_head;
+    if (head - __atomic_load_n(&large_tail, __ATOMIC_ACQUIRE) >= LARGE_SLOTS)
+        return BLE_ATT_ERR_INSUFFICIENT_RES;
+    if (ble_hs_mbuf_to_flat(ctx->om, large[head % LARGE_SLOTS], WHALE_FRAME_MAX, &len) ||
+        len != total)
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     e.len = len;
-    return whale_post(&e) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    e.value = head;
+    large_head = head + 1;
+    if (whale_post(&e))
+        return 0;
+    large_head = head;
+    return BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 static const struct ble_gatt_chr_def chars[] = {
     {.uuid = &cmd.u,
@@ -109,6 +141,7 @@ static int gap(struct ble_gap_event *e, void *arg) {
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI("whale_ble", "disconnected reason=0x%x", (unsigned)e->disconnect.reason);
         audio_subscribed = false;
+        tx_frame = WHALE_FRAME_LEGACY;
         peer = BLE_HS_CONN_HANDLE_NONE;
         pair_pending = false;
         whale_post(&(whale_event_t){.kind = WE_DOWN});
@@ -194,16 +227,22 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
         return false;
     if (!send_lock || xSemaphoreTake(send_lock, pdMS_TO_TICKS(50)) != pdTRUE)
         return false;
-    unsigned count = (n + 11) / 12;
+    // Version 3 frames carry the negotiated payload; version 2 keeps 12-byte fragments.
+    uint16_t frame = tx_frame;
+    unsigned cap = frame - 8u, count = (n + cap - 1) / cap;
     uint16_t id = ++serial[whale_control(type)];
+    static uint8_t f[WHALE_FRAME_MAX]; // guarded by send_lock; keeps the caller's stack small
     for (unsigned i = 0; i < count; i++) {
-        uint8_t f[20] = {2, type, 0, 0, i, count};
-        size_t size = n - i * 12;
-        if (size > 12)
-            size = 12;
+        f[0] = frame > WHALE_FRAME_LEGACY ? 3 : 2;
+        f[1] = type;
+        f[4] = i;
+        f[5] = count;
+        size_t size = n - i * cap;
+        if (size > cap)
+            size = cap;
         put16(f + 2, id);
         put16(f + 6, n);
-        memcpy(f + 8, p + i * 12, size);
+        memcpy(f + 8, p + i * cap, size);
         struct os_mbuf *om = ble_hs_mbuf_from_flat(f, size + 8);
         if (!om || ble_gatts_notify_custom(h, notify_attr, om)) {
             xSemaphoreGive(send_lock);

@@ -33,6 +33,7 @@ class WhaleFonts(unittest.TestCase):
         for size in (14, 16, 18):
             self.assertFalse(dynamic - inventory(size))
         self.assertTrue(set(map(ord, "任务列表0123456789:")) <= inventory(21))
+        self.assertTrue(set(map(ord, "0123456789:-")) <= inventory(64))
 
     def test_complete_alpha_pose_inventory(self):
         self.assertEqual((ROOT / "main/poses.rgb").stat().st_size, 16 * 196 * 196 * 3)

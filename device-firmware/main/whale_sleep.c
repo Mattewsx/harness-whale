@@ -15,6 +15,7 @@
 #define WHALE_SLEEP_MAGIC 0x57484C53UL
 static const char *TAG = "whale_sleep";
 static RTC_DATA_ATTR uint32_t s_magic, s_cycles, s_sleeps;
+static RTC_DATA_ATTR whale_clock_t s_clock;
 
 static void warn(const char *step, esp_err_t error) {
     if (error != ESP_OK)
@@ -26,6 +27,7 @@ whale_sleep_info_t whale_sleep_boot_info(void) {
     if (s_magic != WHALE_SLEEP_MAGIC || esp_reset_reason() != ESP_RST_DEEPSLEEP) {
         s_magic = WHALE_SLEEP_MAGIC;
         s_cycles = s_sleeps = 0;
+        s_clock = (whale_clock_t){0};
         return info;
     }
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
@@ -34,6 +36,8 @@ whale_sleep_info_t whale_sleep_boot_info(void) {
     info.sleeps = s_sleeps;
     return info;
 }
+
+whale_clock_t *whale_sleep_clock(void) { return &s_clock; }
 
 const char *whale_sleep_boot_name(whale_boot_t boot) {
     return boot == WHALE_BOOT_TIMER ? "timer" : boot == WHALE_BOOT_KEY ? "key" : "power";

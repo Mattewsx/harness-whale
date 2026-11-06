@@ -7,7 +7,7 @@ at that moment). It prints the stored runs over USB once per boot as
 ``whale_batt`` lines. USB power charges the cell, so measure like this:
 
 1. Charge to 100 %, unplug USB, and use the device normally (or leave it).
-   A jump of 5 points or more starts a new run; the old run is kept as
+   A cumulative rise of 5 points or more starts a new run; the old run is kept as
    ``batt_prev``.
 2. When done (or when it shuts down), plug USB back in and run
    ``python harness/tools/whale_battery.py --serial COM5 --reset``. ``--reset``
@@ -29,6 +29,7 @@ from typing import Any, Iterable
 
 ENTRY = re.compile(r"whale_batt: log=(batt_prev|batt_cur) i=(\d+) t=(\d+) soc=(\d+) flags=(\d+)")
 FLAGS = {"linked": 1, "screen": 2, "timer_wake": 4, "slow_adv": 8}
+RECHARGE = 5
 
 
 def parse(lines: Iterable[str]) -> dict[str, list[dict[str, int]]]:
@@ -55,18 +56,48 @@ def segments(entries: list[dict[str, int]]) -> list[list[dict[str, int]]]:
     return parts
 
 
+def discharge_segments(part: list[dict[str, int]]) -> list[list[dict[str, int]]]:
+    """Remove recharge stretches, including gradual rises in legacy logs.
+
+    Small recoveries within a discharge remain netted against later drops;
+    trailing rises are excluded. SOC alone cannot detect USB power at flat SOC.
+    """
+    if not part:
+        return []
+    runs = []
+    start = low = 0
+    peak = None
+    for i in range(1, len(part)):
+        soc = part[i]["soc"]
+        if peak is not None:
+            if soc >= part[peak]["soc"]:
+                peak = i
+            else:
+                start, low, peak = peak, i, None
+        elif soc <= part[low]["soc"]:
+            low = i
+        elif soc >= part[low]["soc"] + RECHARGE:
+            runs.append(part[start:low + 1])
+            peak = i
+    if peak is None:
+        runs.append(part[start:low + 1])
+    return runs
+
+
 def analyse(entries: list[dict[str, int]]) -> dict[str, Any]:
     if len(entries) < 2:
         return {"entries": len(entries), "note": "not enough samples yet"}
     seconds = 0
     used = 0
     share = {name: 0 for name in FLAGS}
-    for part in segments(entries):
+    clock_parts = segments(entries)
+    parts = [run for part in clock_parts for run in discharge_segments(part)]
+    for part in parts:
         for before, after in zip(part, part[1:]):
             span = after["t"] - before["t"]
             seconds += span
             used += before["soc"] - after["soc"]
-            # The state recorded at a sample describes the stretch that follows it.
+            # Approximation: state can change between SOC samples.
             for name, bit in FLAGS.items():
                 if before["flags"] & bit:
                     share[name] += span
@@ -76,7 +107,9 @@ def analyse(entries: list[dict[str, int]]) -> dict[str, Any]:
         "endSoc": entries[-1]["soc"],
         "hours": round(seconds / 3600, 2),
         "socUsed": used,
-        "powerLosses": len(segments(entries)) - 1,
+        "powerLosses": len(clock_parts) - 1,
+        "excludedRecoveryHours": round((sum(p[-1]["t"] - p[0]["t"]
+                                           for p in clock_parts) - seconds) / 3600, 2),
     }
     if seconds:
         report["timeShare"] = {name: round(value / seconds, 3) for name, value in share.items()}

@@ -15,6 +15,7 @@ LV_FONT_DECLARE(lv_font_cn_14);
 LV_FONT_DECLARE(lv_font_cn_16);
 LV_FONT_DECLARE(lv_font_cn_18);
 LV_FONT_DECLARE(lv_font_cn_21);
+LV_FONT_DECLARE(lv_font_cn_64);
 unsigned whale_glyph_advance(unsigned cp);
 extern const uint8_t whale_poses[] asm("_binary_poses_rgb_start");
 extern const uint8_t companion_poses[] asm("_binary_companion_rgb_start");
@@ -320,49 +321,61 @@ void whale_ui_draw(const whale_app_t *a) {
     bool inline_reply = a->view == REPLY_READ || a->view == REPLY_LOAD || a->view == REPLY_FAILED;
     painted_pose = false;
     visible_panels = 0;
-    panel(link_dot, 13, 11, 5, 5, a->ready ? 0x558c82 : 0x9ca5b2, LV_RADIUS_CIRCLE);
-    text_at(23, 4, 90, 18, &lv_font_cn_12,
-            a->view == COMPANION ? (a->ready    ? "电脑已连接"
-                                    : a->linked ? "正在同步"
-                                                : "电脑未连接")
-            : a->ready  ? (a->recovered && a->now - a->recovered < 1200 ? "同步已恢复" : "蓝牙已连")
-            : a->linked ? "正在同步"
-            : a->count  ? "正在重连"
-                        : "等待连接",
-            MUT, PAPER, LV_TEXT_ALIGN_LEFT);
-    if (a->view == HOME) {
-        text_at(93, 4, 54, 18, &lv_font_cn_12, r->question && a->ready ? "● 回答" : "● 列表", TEAL,
-                PAPER, LV_TEXT_ALIGN_CENTER);
-    } else if (a->count && !inline_reply && a->view != COMPANION && a->view != SOUND &&
-               a->view != MANAGE) {
-        snprintf(text, sizeof text, "%lu/%u", (unsigned long)a->cursor + a->selected + 1, a->total);
-        text_at(111, 4, 47, 18, &lv_font_cn_12, text, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
+    bool desk = a->view == DESK;
+    if (!desk) {
+        panel(link_dot, 13, 11, 5, 5, a->ready ? 0x558c82 : 0x9ca5b2, LV_RADIUS_CIRCLE);
+        text_at(23, 4, 90, 18, &lv_font_cn_12,
+                a->view == COMPANION ? (a->ready    ? "电脑已连接"
+                                        : a->linked ? "正在同步"
+                                                    : "电脑未连接")
+                : a->ready
+                    ? (a->recovered && a->now - a->recovered < 1200 ? "同步已恢复" : "蓝牙已连")
+                : a->linked ? "正在同步"
+                : a->count  ? "正在重连"
+                            : "等待连接",
+                MUT, PAPER, LV_TEXT_ALIGN_LEFT);
+        if (a->view == HOME) {
+            text_at(93, 4, 54, 18, &lv_font_cn_12, r->question && a->ready ? "● 回答" : "● 列表",
+                    TEAL, PAPER, LV_TEXT_ALIGN_CENTER);
+        } else if (a->count && !inline_reply && a->view != COMPANION && a->view != SOUND &&
+                   a->view != MANAGE) {
+            snprintf(text, sizeof text, "%lu/%u", (unsigned long)a->cursor + a->selected + 1,
+                     a->total);
+            text_at(111, 4, 47, 18, &lv_font_cn_12, text, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
+        }
+        if (a->soc < 0)
+            snprintf(value, sizeof value, "--%%");
+        else
+            snprintf(value, sizeof value, "%s%d%%", a->soc_stale ? "~" : "", a->soc);
+        label(180, 3, 44, value,
+              a->battery_level == 0   ? MUT
+              : a->battery_level == 1 ? GOLD
+                                      : RED,
+              PAPER, LV_TEXT_ALIGN_RIGHT);
+        if (!battery_box) {
+            battery_box = lv_obj_create(lv_screen_active());
+            lv_obj_remove_style_all(battery_box);
+            lv_obj_set_pos(battery_box, 161, 8);
+            lv_obj_set_size(battery_box, 17, 9);
+            lv_obj_set_style_border_width(battery_box, 1, 0);
+            lv_obj_set_style_border_color(battery_box, lv_color_hex(MUT), 0);
+            battery_fill = lv_obj_create(battery_box);
+            lv_obj_remove_style_all(battery_fill);
+            lv_obj_set_pos(battery_fill, 1, 1);
+            lv_obj_set_style_bg_opa(battery_fill, LV_OPA_COVER, 0);
+        }
+        lv_obj_set_size(battery_fill, a->soc > 0 ? (a->soc * 13 + 99) / 100 : 0, 5);
+        lv_color_t battery_color = lv_color_hex(a->battery_level ? GOLD : 0xa8ddd3);
+        if (!lv_color_eq(lv_obj_get_style_bg_color(battery_fill, 0), battery_color))
+            lv_obj_set_style_bg_color(battery_fill, battery_color, 0);
     }
-    if (a->soc < 0)
-        snprintf(value, sizeof value, "--%%");
-    else
-        snprintf(value, sizeof value, "%s%d%%", a->soc_stale ? "~" : "", a->soc);
-    label(180, 3, 44, value,
-          a->battery_level == 0   ? MUT
-          : a->battery_level == 1 ? GOLD
-                                  : RED,
-          PAPER, LV_TEXT_ALIGN_RIGHT);
-    if (!battery_box) {
-        battery_box = lv_obj_create(lv_screen_active());
-        lv_obj_remove_style_all(battery_box);
-        lv_obj_set_pos(battery_box, 161, 8);
-        lv_obj_set_size(battery_box, 17, 9);
-        lv_obj_set_style_border_width(battery_box, 1, 0);
-        lv_obj_set_style_border_color(battery_box, lv_color_hex(MUT), 0);
-        battery_fill = lv_obj_create(battery_box);
-        lv_obj_remove_style_all(battery_fill);
-        lv_obj_set_pos(battery_fill, 1, 1);
-        lv_obj_set_style_bg_opa(battery_fill, LV_OPA_COVER, 0);
+    /* The desk display has no status bar: date and battery sit at the bottom. */
+    if (battery_box && desk != lv_obj_has_flag(battery_box, LV_OBJ_FLAG_HIDDEN)) {
+        if (desk)
+            lv_obj_add_flag(battery_box, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_remove_flag(battery_box, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_size(battery_fill, a->soc > 0 ? (a->soc * 13 + 99) / 100 : 0, 5);
-    lv_color_t battery_color = lv_color_hex(a->battery_level ? GOLD : 0xa8ddd3);
-    if (!lv_color_eq(lv_obj_get_style_bg_color(battery_fill, 0), battery_color))
-        lv_obj_set_style_bg_color(battery_fill, battery_color, 0);
     const char *foot = "长按确认返回";
     if (a->view == HOME || inline_reply) {
         int n = r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
@@ -503,6 +516,38 @@ void whale_ui_draw(const whale_app_t *a) {
                  action ? "陪伴中…" : choices[a->companion_choice % 5]);
         text_at(40, 266, 160, 18, &lv_font_cn_12, text, TEAL, -1, LV_TEXT_ALIGN_CENTER);
         foot = action ? "长按确认中断并返回" : "↑↓选择  确认互动";
+    } else if (desk) {
+        static const char *week[] = {"日", "一", "二", "三", "四", "五", "六"};
+        const whale_local_time_t *t = &a->clock;
+        char clock[8], line[96];
+        if (a->clock_valid)
+            snprintf(clock, sizeof clock, "%02u:%02u", t->hour % 24u, t->minute % 60u);
+        else
+            snprintf(clock, sizeof clock, "--:--");
+        if (a->soc < 0)
+            snprintf(value, sizeof value, "电量 --%%");
+        else
+            snprintf(value, sizeof value, "电量 %s%d%%", a->soc_stale ? "~" : "", a->soc);
+        if (a->clock_valid)
+            snprintf(line, sizeof line, "%u月%u日 周%s  ·  %s", t->month, t->day, week[t->wday % 7],
+                     value);
+        else
+            snprintf(line, sizeof line, "等待电脑校准时间  ·  %s", value);
+        int low = a->battery_level == 0 ? -1 : a->battery_level == 1 ? GOLD : RED;
+        if (a->night) {
+            /* Night: she is asleep; only a dark clock remains. */
+            panel(sea, 0, 0, 240, 320, 0x0b1120, 0);
+            text_at(0, 102, 240, 67, &lv_font_cn_64, clock, 0x5b6a82, -1, LV_TEXT_ALIGN_CENTER);
+            text_at(8, 184, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : 0x3f4d63, -1,
+                    LV_TEXT_ALIGN_CENTER);
+        } else {
+            text_at(0, 8, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
+            unsigned phase = (a->now - a->page_at) % 24000;
+            int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
+            pose_at(n, 22, 82, 256);
+            text_at(8, 290, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
+                    LV_TEXT_ALIGN_CENTER);
+        }
     } else if (a->view == MANAGE || a->view == SOUND) {
         text_at(12, 40, 216, 26, &lv_font_cn_18, a->view == SOUND ? "声音提醒" : "设备设置", NAV,
                 PAPER, LV_TEXT_ALIGN_CENTER);
@@ -809,7 +854,7 @@ void whale_ui_draw(const whale_app_t *a) {
     for (unsigned i = 0; i < sizeof panels / sizeof panels[0]; i++)
         if (!(visible_panels & (1u << i)))
             lv_obj_add_flag(*panels[i], LV_OBJ_FLAG_HIDDEN);
-    if (a->view != HOME && !inline_reply)
+    if (a->view != HOME && !inline_reply && !desk)
         text_at(8, 297, 224, 19, &lv_font_cn_12, foot, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
     for (unsigned i = used; i < LABEL_COUNT; i++)
         lv_obj_add_flag(labels[i], LV_OBJ_FLAG_HIDDEN);

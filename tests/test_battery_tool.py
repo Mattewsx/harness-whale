@@ -47,7 +47,32 @@ class BatteryReport(unittest.TestCase):
                    {"t": 3, "soc": 1, "flags": 0}, {"t": 30, "soc": 2, "flags": 0}]
         report = battery.analyse(entries)
         self.assertEqual(report["powerLosses"], 1)
-        self.assertEqual(report["hours"], round(3627 / 3600, 2))
+        self.assertEqual(report["hours"], 1.0)
+        self.assertEqual(report["socUsed"], 10)
+
+    def test_gradual_recharge_does_not_inflate_legacy_runtime(self):
+        samples = [(0, 100, 1), (3600, 80, 2)]
+        samples += [(3600 + (soc - 80) * 60, soc, 2) for soc in range(81, 101)]
+        samples += [(8400, 80, 0)]
+        report = battery.analyse(battery.parse(dump("batt_cur", samples))["batt_cur"])
+        self.assertEqual(report["hours"], 2.0)
+        self.assertEqual(report["socUsed"], 40)
+        self.assertEqual(report["projectedFullChargeHours"], 5.0)
+        self.assertEqual(report["excludedRecoveryHours"], 0.33)
+        self.assertEqual(report["timeShare"]["linked"], 0.5)
+
+    def test_small_gauge_recovery_is_netted_not_double_counted(self):
+        samples = [(0, 100, 0), (100, 97, 0), (200, 99, 0), (300, 96, 0), (400, 98, 0)]
+        report = battery.analyse(battery.parse(dump("batt_cur", samples))["batt_cur"])
+        self.assertEqual(report["socUsed"], 4)
+        self.assertEqual(report["hours"], round(300 / 3600, 2))
+
+    def test_charging_only_has_no_runtime_projection(self):
+        samples = [(soc * 60, soc, 0) for soc in range(20, 101)]
+        report = battery.analyse(battery.parse(dump("batt_cur", samples))["batt_cur"])
+        self.assertEqual(report["hours"], 0)
+        self.assertEqual(report["socUsed"], 0)
+        self.assertNotIn("projectedFullChargeHours", report)
 
     def test_short_or_flat_runs_say_so(self):
         self.assertIn("note", battery.analyse([{"t": 0, "soc": 50, "flags": 0}]))
