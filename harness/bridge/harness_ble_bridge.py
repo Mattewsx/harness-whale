@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 
 try:
-    from . import whale_v2
+    from . import whale_v2, whale_ota
     from .whale_history import journal_path, read_session_history, reply_pages
     from .whale_pairing import pair_passport, PairingDeclined
     from .harness_ble_protocol import (
@@ -29,6 +29,7 @@ try:
     )
 except ImportError:  # Direct execution: python tools/harness_ble_bridge.py
     import whale_v2
+    import whale_ota
     from whale_history import journal_path, read_session_history, reply_pages
     from whale_pairing import pair_passport, PairingDeclined
     from harness_ble_protocol import (
@@ -211,6 +212,9 @@ class StatusModel:
         self.link_cycle = asyncio.Event()
         self.link_hold = 0.0
         self.packets_sent = 0
+        # Local BLE OTA requests from harness/tools/whale_ota_cli.py.
+        self.ota_requests: asyncio.Queue[tuple[dict[str, Any], tuple[str, int]]] = asyncio.Queue()
+        self.ota_busy = False
 
     def link_report(self) -> dict[str, Any]:
         """Loopback-only status for the stress script: counters, no session data."""
@@ -351,6 +355,10 @@ class HarnessDatagram(asyncio.DatagramProtocol):
     def __init__(self, model: StatusModel) -> None:
         self.model = model
 
+    def reply(self, addr: tuple[str, int], document: dict[str, Any]) -> None:
+        if self.model.datagram_transport:
+            self.model.datagram_transport.sendto(json.dumps(document).encode(), addr)
+
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.model.workspace.transport = transport
         self.model.datagram_transport = transport  # type: ignore[assignment]
@@ -385,6 +393,15 @@ class HarnessDatagram(asyncio.DatagramProtocol):
                 self.model.link_hold = min(max(hold, 0.0), MAX_LINK_HOLD_SECONDS)
                 self.model.link_cycle.set()
                 self.model.changed.set()
+            elif kind == "whale-ota":
+                # Loopback-only maintenance command; the image is read from a
+                # local path and validated before anything is sent.
+                if self.model.ota_busy or self.model.ota_requests.qsize():
+                    self.reply(addr, {"kind": "whale-ota-status", "phase": "error",
+                                      "error": "another OTA request is running"})
+                else:
+                    document["_queuedAt"] = time.monotonic()
+                    self.model.ota_requests.put_nowait((document, addr))
             elif kind == "whale-visibility":
                 items = document.get("items")
                 if not isinstance(items,list): return
@@ -436,6 +453,69 @@ async def balance_loop(model: StatusModel, interval: float) -> None:
             await asyncio.wait_for(model.balance_refresh.wait(), timeout=interval)
         except asyncio.TimeoutError:
             pass
+
+
+MAX_OTA_IMAGE_BYTES = 4 * 1024 * 1024
+OTA_REQUEST_TTL_SECONDS = 30.0
+
+
+async def ota_service(client: Any, model: StatusModel) -> None:
+    """Serve whale-ota requests over the live, paired connection."""
+    while True:
+        document, addr = await model.ota_requests.get()
+
+        def send(**fields: Any) -> None:
+            if model.datagram_transport:
+                model.datagram_transport.sendto(
+                    json.dumps({"kind": "whale-ota-status", **fields}).encode(), addr)
+
+        if time.monotonic() - document.get("_queuedAt", 0) > OTA_REQUEST_TTL_SECONDS:
+            continue  # the CLI has given up waiting for a connection
+        action = document.get("action")
+        model.ota_busy = True
+        try:
+            if not whale_ota.has_ota(client):
+                raise whale_ota.OtaError("device firmware has no BLE OTA (needs v1.4 via USB first)")
+            async with whale_ota.Session(client) as session:
+                if action == "info":
+                    info = await session.info()
+                    send(phase="info", version=info.version, otherVersion=info.other_version,
+                         pending=info.pending, rollback=info.rollback, assetsOk=info.assets_ok,
+                         assetId=info.asset_id.hex(), maxSize=info.max_size)
+                elif action == "rollback":
+                    send(phase="confirm")
+                    await session.rollback()
+                    send(phase="done")
+                elif action == "push":
+                    path = Path(str(document.get("path") or ""))
+                    if not path.is_file() or path.stat().st_size > MAX_OTA_IMAGE_BYTES:
+                        raise whale_ota.OtaError("image file is missing or too large")
+                    image = whale_ota.parse_image(path.read_bytes())
+                    expected = document.get("sha256")
+                    if expected and expected != image.sha256:
+                        raise whale_ota.OtaError("image SHA-256 does not match the manifest")
+                    send(phase="start", version=image.version, size=len(image.data),
+                         sha256=image.sha256)
+                    last = [0.0]
+
+                    def progress(phase: str, done: int, total: int) -> None:
+                        now = time.monotonic()
+                        if phase != "sending" or now - last[0] >= 0.5 or done == total:
+                            last[0] = now
+                            send(phase=phase, done=done, total=total)
+
+                    await session.push(image, progress)
+                else:
+                    raise whale_ota.OtaError("unknown OTA action")
+        except asyncio.CancelledError:
+            send(phase="error", error="BLE link lost")
+            raise
+        except (whale_ota.OtaError, asyncio.TimeoutError, OSError) as exc:
+            send(phase="error", error=str(exc) or type(exc).__name__)
+        except Exception as exc:  # bleak errors on a dropped link
+            send(phase="error", error=f"{type(exc).__name__}: {exc}")
+        finally:
+            model.ota_busy = False
 
 
 async def write_frame(client: Any, frame: bytes) -> None:
@@ -514,6 +594,7 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                             link.up()
                     relay = asyncio.create_task(whale_v2.serve(client, model.workspace, record_write))
                     cycle = asyncio.create_task(model.link_cycle.wait())
+                    ota = asyncio.create_task(ota_service(client, model))
                     try:
                         while not relay.done():
                             if cycle.done():
@@ -525,7 +606,8 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                     finally:
                         relay.cancel()
                         cycle.cancel()
-                        await asyncio.gather(relay, cycle, return_exceptions=True)
+                        ota.cancel()
+                        await asyncio.gather(relay, cycle, ota, return_exceptions=True)
                     # serve() returns once the peer has gone away.
                     await wait_retry(link.lost("link-lost"), "reconnecting")
                     continue

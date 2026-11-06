@@ -1,5 +1,7 @@
 # 保留配对升级到 v1.3.1
 
+> **仅适用于 v1.3.x 旧布局。** v1.4 起使用双 OTA 分区和独立素材分区：v1.3.x → v1.4 需要用完整镜像整片刷写一次，之后通过蓝牙升级，见 [蓝牙 OTA](OTA.md)。不要把任何应用镜像写到 v1.4 设备的 0x10000。
+
 这条路径仅适用于已确认使用相同分区布局的 AI Passport 鲸鱼固件：8 MB Flash、分区表 0x8000、NVS 0x9000/0x6000、PHY 0xF000/0x1000、factory 0x10000/0x7F0000。未知固件或改过分区的设备先核对布局，不能直接套用。
 
 从 [v1.3.1](https://github.com/Mattewsx/harness-whale/releases/tag/v1.3.1) 下载 `Harness-Whale-v1.3.1-app-0x10000.bin` 和 `SHA256SUMS.txt`。应用 SHA-256：

@@ -30,6 +30,23 @@ avoid overlaps, and make sure the application image is flashed at the start of
 an app partition large enough to contain it. When a derivative changes its
 layout, update that project's documentation and flashing instructions.
 
+## Harness Whale layout (v1.4)
+
+The Harness Whale application in this repository deliberately uses a custom
+table so it can be updated over BLE: `nvs` (`0x9000`/`0x6000`), `otadata`
+(`0xF000`/`0x2000`), `phy_init` (`0x11000`/`0x1000`), two equal application
+slots `ota_0` (`0x20000`) and `ota_1` (`0x2A0000`) of `0x280000` each, an
+`assets` data partition (subtype `0x40`, `0x520000`/`0x2D0000`) holding the
+pose, companion and cue data as an asset pack built by
+`tools/make_whale_asset_pack.py`, and a reserved `coredump` partition
+(`0x7F0000`/`0x10000`). `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` is set; a new
+image stays pending until its asset pack check and an authenticated BLE link
+succeed. Moving from the single-`factory` layout requires one full-chip flash.
+`tools/verify_whale_ota_layout.py` checks the slots, the asset pack and the
+application's `WHALE-ASSET-PACK` marker in `validate.sh --firmware`. BLE OTA
+replaces only the application; changing the asset pack or this table still
+needs a full flash.
+
 ## Enforced validation
 
 Run:

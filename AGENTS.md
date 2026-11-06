@@ -10,7 +10,8 @@
 - 不修改无关 DSH 插件、profile 或系统 Python，使用独立 `.venv`。
 - 本版隐藏余额，安装使用 `--non-interactive --skip-key`。如用户主动配置旧版余额接口，必须由用户在隐藏提示中输入 Key。
 - 构建、提交和发布不会授权刷机。刷写前只读识别串口，确认镜像、偏移及数据影响，并获得用户授权。
-- 标准 `installer/flash_firmware.py` 只支持完整镜像：校验后整片擦除并写入 0x0。相同布局的应用升级按 [UPGRADE](docs/UPGRADE.md) 写入 0x10000；两种镜像不得混用。
+- 标准 `installer/flash_firmware.py` 只支持完整镜像：校验后整片擦除并写入 0x0。v1.4 起分区为双 OTA 槽 + `assets` 素材分区，应用升级走 [蓝牙 OTA](docs/OTA.md)（`harness/tools/whale_ota_cli.py`，只接受应用镜像）；v1.3.x → v1.4 必须整片刷写一次。旧的 0x10000 应用写入路径（[UPGRADE](docs/UPGRADE.md)）只适用于 v1.3.x 布局；完整镜像与应用镜像不得混用。
+- 改动分区表、素材文件（`poses.rgb`、`companion.rgb`、`cues.pcm`）或素材包格式都意味着用户需要 USB 整片刷写，OTA 无法完成；这类改动要在发布说明中写明。
 
 ## 产品约束
 
