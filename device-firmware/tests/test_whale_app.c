@@ -3,7 +3,9 @@
 static uint8_t sent_type, sent_bytes[64];
 static size_t sent_length;
 static unsigned sends, answers, voice_starts;
-static unsigned cue_count, audio_plays;
+static unsigned cue_count, audio_plays, sleep_commands;
+static bool slow_adv_set;
+static int backlight_level = -1;
 static bool cue_ok, bad_snapshot_crc;
 static bool send_ok = true;
 void *xQueueCreate(int x, int y) {
@@ -19,7 +21,9 @@ int xQueueReceive(void *q, void *out, int wait) {
 }
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
-        assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 6));
+        assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7));
+        if (*(const uint8_t *)in == WHALE_CMD_SLEEP)
+            sleep_commands++;
         if (!cue_ok)
             return 0;
         cue_count++;
@@ -38,7 +42,7 @@ bool bsp_lvgl_lock(int wait) {
     return true;
 }
 void bsp_lvgl_unlock(void) {}
-void bsp_display_backlight(int percent) { (void)percent; }
+void bsp_display_backlight(int percent) { backlight_level = percent; }
 int bsp_button_init(void (*cb)(int, int, void *), void *ctx) {
     (void)cb;
     (void)ctx;
@@ -144,6 +148,9 @@ static void setup(void) {
     memset(&rx, 0, sizeof rx);
     memset(armed, 0, sizeof armed);
     dim = request_snap = false;
+    screen_applied = WHALE_SCREEN_ON;
+    key_guard_until = 0;
+    whale_power_init(&power, 1000, false, 0);
     requested_cursor = 0;
     sends = answers = 0;
     voice_starts = 0;
@@ -762,7 +769,128 @@ static void test_settings_navigation(void) {
     puts("Settings entry, hold/release, return, offline and paged list "
          "navigation PASS");
 }
+static void power_reset(bool linked) {
+    setup();
+    a.linked = linked;
+    whale_power_init(&power, a.now, false, 0);
+    whale_power_link(&power, a.now, linked);
+    if (!linked) /* the link went down at boot time in these scenarios */
+        power.offline_since = a.now;
+    last_input = a.now;
+    screen_applied = WHALE_SCREEN_ON;
+    sleep_requested = false;
+    sleep_retry_at = 0;
+    sleep_commands = 0;
+    backlight_level = -1;
+    key_guard_until = 0;
+}
+static void test_power(void) {
+    /* Linked, idle rows: dim at 2 min, off at 5 min, never sleep. */
+    power_reset(true);
+    a.rows[0].state = 5;
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(dim && backlight_level == 18 && screen_applied == WHALE_SCREEN_DIM);
+    a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+    power_step();
+    assert(dim && backlight_level == 0 && screen_applied == WHALE_SCREEN_OFF);
+    a.now += 10 * WHALE_POWER_OFFLINE_MS;
+    power_step();
+    assert(sleep_commands == 0 && !slow_adv_set);
+    /* The first press only wakes the screen. */
+    key_event(BSP_BTN_DOWN, BSP_BTN_PRESS);
+    key_event(BSP_BTN_DOWN, BSP_BTN_RELEASE);
+    assert(!dim && backlight_level == 75 && a.selected == 0);
+    /* A running task keeps it lit; a question relights it. */
+    power_reset(true);
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_ON && !dim);
+    a.rows[0].state = 5;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF);
+    a.rows[1].question = 1;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_ON);
+
+    /* Offline: fast advertising first, then slow; stale running rows do not
+     * hold the screen, an offline page falls back home, then deep sleep. */
+    power_reset(false);
+    a.view = REPLY_READ;
+    power_step();
+    assert(!slow_adv_set && screen_applied == WHALE_SCREEN_ON);
+    a.now += WHALE_POWER_FAST_ADV_MS;
+    power_step();
+    assert(slow_adv_set);
+    a.now += WHALE_POWER_OFF_MS - WHALE_POWER_FAST_ADV_MS;
+    power_step();
+    assert(a.view == HOME && screen_applied == WHALE_SCREEN_OFF && sleep_commands == 0);
+    a.now += WHALE_POWER_OFFLINE_MS - WHALE_POWER_OFF_MS - 1;
+    power_step();
+    assert(sleep_commands == 0);
+    a.now += 1;
+    power_step();
+    assert(sleep_commands == 1 && sleep_requested && sleep_timer_ms == WHALE_POWER_TIMER_MS &&
+           sleep_cycles == 1);
+    power_step();
+    assert(sleep_commands == 1); /* one request in flight */
+    /* Refused (key held): retry after 30 s. */
+    service((whale_event_t){.kind = 97});
+    power_step();
+    assert(sleep_commands == 1);
+    a.now += 30000;
+    power_step();
+    assert(sleep_commands == 2);
+    /* A key press restarts fast advertising and the offline countdown. */
+    power_reset(false);
+    a.now += WHALE_POWER_OFFLINE_MS - 1000;
+    power_step();
+    key_event(BSP_BTN_DOWN, BSP_BTN_PRESS);
+    key_event(BSP_BTN_DOWN, BSP_BTN_RELEASE);
+    power_step();
+    assert(!slow_adv_set && !dim);
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(sleep_commands == 0);
+    /* Voice capture and pairing hold the device awake. */
+    power_reset(false);
+    a.view = PAIR;
+    a.now += 2 * WHALE_POWER_OFFLINE_MS;
+    power_step();
+    assert(a.view == PAIR && sleep_commands == 0);
+
+    /* Timer wake: dark screen, short window, then sleep with a growing cycle
+     * count; the computer showing up cancels it. */
+    power_reset(false);
+    whale_power_init(&power, a.now, true, 3);
+    screen_applied = WHALE_SCREEN_OFF;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF && sleep_commands == 0);
+    a.now += WHALE_POWER_WINDOW_MS;
+    power_step();
+    assert(sleep_commands == 1 && sleep_cycles == 4 && sleep_timer_ms == WHALE_POWER_TIMER_MS);
+    power_reset(false);
+    whale_power_init(&power, a.now, true, WHALE_POWER_TIMER_CYCLES);
+    a.now += WHALE_POWER_WINDOW_MS;
+    power_step();
+    assert(sleep_commands == 1 && sleep_timer_ms == 0); /* key wake only */
+    power_reset(false);
+    whale_power_init(&power, a.now, true, 2);
+    service((whale_event_t){.kind = WE_LINK});
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_ON && power.cycles == 0);
+    a.now += WHALE_POWER_WINDOW_MS;
+    power_step();
+    assert(sleep_commands == 0);
+    /* A held waking key is ignored for a moment after a key wake. */
+    power_reset(true);
+    key_guard_until = a.now + 1000;
+    key_event(BSP_BTN_DOWN, BSP_BTN_PRESS);
+    key_event(BSP_BTN_DOWN, BSP_BTN_RELEASE);
+    assert(a.selected == 0);
+}
 int main(void) {
+    test_power();
     test_settings_navigation();
     test_companion_and_global_cues();
     test_detail_and_reading();
@@ -773,8 +901,8 @@ int main(void) {
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();
-    puts("Whale R11.1 application state, direct voice entry and completion cue "
-         "tests PASS");
+    puts("Whale R11.1 application state, direct voice entry, completion cue "
+         "and power policy tests PASS");
     return 0;
 }
 
@@ -809,5 +937,25 @@ bool whale_audio_play(whale_audio_cmd_t c) {
 }
 uint8_t whale_sound_load(void) { return 1; }
 bool whale_sound_save(uint8_t mode) { return mode < 2; }
+bool whale_blob_load(const char *key, void *data, size_t size) {
+    (void)key;
+    (void)data;
+    (void)size;
+    return false;
+}
+bool whale_blob_save(const char *key, const void *data, size_t size) {
+    (void)key;
+    (void)data;
+    (void)size;
+    return true;
+}
+void whale_ble_set_slow(bool slow) { slow_adv_set = slow; }
+whale_sleep_info_t whale_sleep_boot_info(void) { return (whale_sleep_info_t){0}; }
+const char *whale_sleep_boot_name(whale_boot_t boot) { return boot ? "wake" : "power"; }
+bool whale_sleep_enter(uint32_t timer_ms, uint32_t cycles) {
+    (void)timer_ms;
+    (void)cycles;
+    return false;
+}
 
 bool whale_audio_busy(void) { return false; }

@@ -54,6 +54,7 @@ class DeepSleepContractTest(unittest.TestCase):
         cls.display = read("components/bsp/src/bsp_display.c")
         cls.i2c = read("components/bsp/src/bsp_i2c.c")
         cls.demo = read("main/demo_low_power.c")
+        cls.whale_sleep = read("main/whale_sleep.c")
 
     def test_es8311_force_sleep_sequence_is_complete_and_ordered(self) -> None:
         expected = [
@@ -152,6 +153,28 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertLess(body.index("bsp_lvgl_lock(1000)"),
                         body.index("bsp_display_prepare_deep_sleep()"))
+
+    def test_whale_offline_sleep_reuses_the_shutdown_order(self) -> None:
+        body = function_body(self.whale_sleep, "whale_sleep_enter")
+        calls = [
+            "bsp_button_read_mv()",
+            "whale_ble_stop_for_sleep()",
+            "esp_sleep_enable_timer_wakeup",
+            "bsp_button_prepare_deep_sleep(&level)",
+            "esp_deep_sleep_enable_gpio_wakeup",
+            "bsp_audio_sleep()",
+            "bsp_audio_prepare_deep_sleep()",
+            "bsp_i2c_prepare_deep_sleep()",
+            "bsp_lvgl_lock(1000)",
+            "bsp_display_prepare_deep_sleep()",
+            "esp_deep_sleep_start()",
+        ]
+        positions = [body.index(call) for call in calls]
+        self.assertEqual(positions, sorted(positions))
+        # The gauge keeps counting through offline sleep so SOC stays continuous.
+        self.assertNotIn("bsp_battery_sleep", body)
+        # A held key is refused while the buttons still work.
+        self.assertIn("BSP_BTN_MV_RELEASED_MIN", body[:body.index("whale_ble_stop_for_sleep()")])
 
 
 if __name__ == "__main__":

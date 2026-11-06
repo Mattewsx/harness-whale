@@ -12,11 +12,15 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "whale_audio.h"
+#include "whale_battery_log.h"
 #include "whale_cues.h"
+#include "whale_power.h"
 #include "whale_reply_cache.h"
 #include "whale_settings.h"
+#include "whale_sleep.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 
 static whale_app_t a = {.soc = -1, .next = UINT32_MAX};
 static whale_rx_t rx;
@@ -27,9 +31,19 @@ static uint32_t disconnected_at, seek_session, title_requested_at;
 static bool disconnect_pending;
 static bool seek_to_list, priority_list;
 static char title_prefix[73];
+/* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
+#define WHALE_CMD_SLEEP 7
 /* Serial-only health line for the hardware stress script. No session data. */
 #define WHALE_DIAG_MS 30000
 static volatile unsigned periph_stack_min;
+static whale_power_t power;
+static whale_sleep_info_t boot_info;
+/* Shared with the peripheral task: power state for the battery log and the
+ * parameters of a pending sleep request. */
+static volatile uint8_t power_flags;
+static volatile uint32_t sleep_timer_ms, sleep_cycles;
+static bool sleep_requested;
+static uint32_t sleep_retry_at, key_guard_until;
 static unsigned stack_headroom(const char *task) {
     TaskHandle_t handle = xTaskGetHandle(task);
     return handle ? (unsigned)uxTaskGetStackHighWaterMark(handle) : 0;
@@ -44,6 +58,14 @@ static void log_diag(const char *why) {
              why, (unsigned long)esp_get_free_heap_size(),
              (unsigned long)esp_get_minimum_free_heap_size(), main_stack, periph_stack_min,
              lvgl_stack, ble_stack);
+    ESP_LOGI("whale_power",
+             "why=%s boot=%s sleeps=%lu cycles=%lu screen=%s adv=%s linked=%d "
+             "offline_ms=%lu idle_ms=%lu soc=%d",
+             why, whale_sleep_boot_name(boot_info.boot), (unsigned long)boot_info.sleeps,
+             (unsigned long)power.cycles, whale_power_screen_name(power.screen),
+             power.slow_adv ? "slow" : "fast", (int)a.linked,
+             (unsigned long)(a.linked ? 0 : a.now - power.offline_since),
+             (unsigned long)(a.now - power.last_input), a.soc);
     (void)why;
     (void)main_stack;
     (void)lvgl_stack;
@@ -79,6 +101,25 @@ static bool armed[3];
 static uint32_t last_input, load_progress, last_draw, unbind_at;
 static unsigned queries;
 static bool dim, dirty = true, request_snap;
+static uint8_t screen_applied = WHALE_SCREEN_ON;
+/* dim means "not fully lit" (dimmed or off); the first press only wakes it. */
+static void apply_screen(uint8_t screen) {
+    if (screen == screen_applied && dim == (screen != WHALE_SCREEN_ON))
+        return;
+    screen_applied = screen;
+    dim = screen != WHALE_SCREEN_ON;
+    bsp_display_backlight(screen == WHALE_SCREEN_ON    ? 75
+                          : screen == WHALE_SCREEN_DIM ? 18
+                                                       : 0);
+    dirty = true;
+    ESP_LOGI("whale_power", "screen=%s", whale_power_screen_name(screen));
+}
+static void user_input(void) {
+    last_input = a.now;
+    whale_power_input(&power, a.now);
+    if (dim)
+        apply_screen(WHALE_SCREEN_ON);
+}
 static struct {
     uint64_t epoch;
     uint32_t snap, base, cursor, next, crc, deadline;
@@ -602,12 +643,11 @@ static bool voice_displayable(const uint8_t *p, size_t n) {
 static void key(uint32_t code) {
     unsigned k = code & 255;
     bool hold = (code >> 8) != 0;
-    last_input = a.now;
     if (dim) {
-        dim = false;
-        bsp_display_backlight(75);
+        user_input();
         return;
     }
+    user_input();
     if (a.view == VOICE) {
         voice_key(k, hold);
         return;
@@ -1271,16 +1311,78 @@ static void apply_message(whale_msg_t msg) {
         page(!a.page && whale_text_wide(a.prompt) ? PROMPT : QUESTION);
     }
 }
+static bool main_view(void) { return a.view == HOME || a.view == LIST || a.view == COMPANION; }
+static void power_step(void) {
+    bool hold = whale_voice_busy() || whale_audio_busy() || reminders.batching ||
+                a.view == PAIR || a.view == UNBINDING;
+    /* Nobody answers an offline page: once the screen would turn off, return
+     * home so the device may sleep. Pairing and unbinding finish on their own. */
+    if (!a.linked && !hold && !main_view() && a.now - last_input >= WHALE_POWER_OFF_MS) {
+        if (a.view == VOICE)
+            voice_cancel();
+        else
+            page(HOME);
+    }
+    bool busy = !main_view();
+    /* Rows are stale while offline; only a live task keeps the screen lit. */
+    for (int i = 0; a.linked && i < a.count; i++)
+        if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
+            busy = true;
+    if (a.view == COMPANION)
+        busy = false;
+    whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
+    apply_screen(plan.screen);
+    whale_ble_set_slow(plan.slow_adv);
+    power_flags = (a.linked ? WHALE_BATT_LINKED : 0) |
+                  (plan.screen != WHALE_SCREEN_OFF ? WHALE_BATT_SCREEN : 0) |
+                  (power.quiet ? WHALE_BATT_TIMER : 0) | (plan.slow_adv ? WHALE_BATT_SLOW_ADV : 0);
+    if (plan.sleep && !sleep_requested && (int32_t)(a.now - sleep_retry_at) >= 0) {
+        whale_audio_cmd_t cmd = {WHALE_CMD_SLEEP, 0, 0};
+        sleep_timer_ms = plan.timer_ms;
+        sleep_cycles = whale_power_next_cycles(&power);
+        log_diag("sleep");
+        if (cues && xQueueSend(cues, &cmd, 0) == pdTRUE)
+            sleep_requested = true;
+        else
+            sleep_retry_at = a.now + 30000;
+    }
+}
+static whale_batt_log_t batt_log;
+static uint32_t rtc_seconds(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint32_t)tv.tv_sec;
+}
+static void batt_dump(const char *name) {
+    if (!whale_blob_load(name, &batt_log, sizeof batt_log) || !whale_batt_log_valid(&batt_log))
+        whale_batt_log_reset(&batt_log);
+    ESP_LOGI("whale_batt", "log=%s count=%u", name, (unsigned)batt_log.count);
+    for (unsigned i = 0; i < batt_log.count; i++)
+        ESP_LOGI("whale_batt", "log=%s i=%u t=%lu soc=%u flags=%u", name, i,
+                 (unsigned long)batt_log.e[i].t, (unsigned)batt_log.e[i].soc,
+                 (unsigned)batt_log.e[i].flags);
+}
+static void batt_record(int soc) {
+    if (whale_batt_log_new_run(&batt_log, soc))
+        whale_blob_save("batt_prev", &batt_log, sizeof batt_log);
+    if (whale_batt_log_add(&batt_log, rtc_seconds(), soc, power_flags) != WHALE_BATT_SAME &&
+        !whale_blob_save("batt_cur", &batt_log, sizeof batt_log))
+        ESP_LOGW("whale_batt", "battery log save failed");
+}
 static void peripheral_task(void *unused) {
     (void)unused;
     bool initialized = false;
     uint32_t polled = ms() - 30000;
+    /* Print the stored discharge runs once per boot for whale_battery.py. */
+    batt_dump("batt_prev");
+    batt_dump("batt_cur");
     for (;;) {
         if (ms() - polled >= 30000) {
             polled = ms();
             if (!initialized)
                 initialized = bsp_battery_init() == ESP_OK;
             int soc = initialized ? bsp_battery_soc() : -1;
+            batt_record(soc);
             periph_stack_min = (unsigned)uxTaskGetStackHighWaterMark(NULL);
             whale_post(&(whale_event_t){.kind = 99, .value = (uint32_t)soc});
         }
@@ -1294,7 +1396,10 @@ static void peripheral_task(void *unused) {
         whale_audio_cmd_t cue;
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
-                if (cue.kind == 6) {
+                if (cue.kind == WHALE_CMD_SLEEP) {
+                    if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
+                        whale_post(&(whale_event_t){.kind = 97});
+                } else if (cue.kind == 6) {
                     bool saved = whale_sound_save(cue.mode);
                     whale_post(&(whale_event_t){.kind = 98, .value = saved ? 1 : 0});
                 } else if (!whale_voice_busy()) {
@@ -1332,6 +1437,7 @@ static void service(whale_event_t e) {
     }
     case WE_LINK:
         a.linked = true;
+        whale_power_link(&power, a.now, true);
         log_diag("link-up");
         break;
     case WE_PAIR:
@@ -1352,6 +1458,7 @@ static void service(whale_event_t e) {
         }
         break;
     case WE_DOWN:
+        whale_power_link(&power, a.now, false);
         log_diag("link-down");
         whale_audio_interrupt();
         if (a.linked) {
@@ -1382,18 +1489,15 @@ static void service(whale_event_t e) {
         if (k >= 3)
             break;
         if (ev == BSP_BTN_PRESS) {
-            armed[k] = !dim;
+            /* After a key wake the waking press may still be held at boot. */
+            armed[k] = !dim && (int32_t)(a.now - key_guard_until) >= 0;
             pressed_revision[k] = view_revision;
             if (k == BSP_BTN_OK && armed[k] && a.view == HOME) {
                 a.confirm_holding = true;
                 a.confirm_at = a.now;
                 a.confirm_hold_ms = BSP_BTN_LONG_PRESS_MS;
             }
-            last_input = a.now;
-            if (dim) {
-                dim = false;
-                bsp_display_backlight(75);
-            }
+            user_input();
         } else if (armed[k] && (ev == BSP_BTN_LONG || ev == BSP_BTN_RELEASE)) {
             armed[k] = false;
             if (k == BSP_BTN_OK)
@@ -1403,6 +1507,10 @@ static void service(whale_event_t e) {
         }
         break;
     }
+    case 97: /* sleep refused (key held or BLE busy); try again later */
+        sleep_requested = false;
+        sleep_retry_at = a.now + 30000;
+        break;
     case 98:
         a.sound_saved = e.value ? 1 : -1;
         break;
@@ -1433,14 +1541,25 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "v1.3.1 / protocol 2.2 + companion cues; minimum free heap: %lu",
+    ESP_LOGI("whale", "v1.4.0 / protocol 2.2 + companion cues + power saving; minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
+#ifdef WHALE_POWER_TEST
+    ESP_LOGW("whale_power", "BENCH BUILD: short power thresholds (WHALE_POWER_TEST)");
+#endif
     cues = xQueueCreate(8, sizeof(whale_audio_cmd_t));
     if (!cues)
         ESP_LOGW("whale", "Completion cue queue allocation failed");
-    xTaskCreate(peripheral_task, "whale_periph", WHALE_PERIPHERAL_STACK_BYTES, NULL, 2, NULL);
     last_input = ms();
-    bsp_display_backlight(75);
+    a.now = last_input;
+    boot_info = whale_sleep_boot_info();
+    whale_power_init(&power, a.now, boot_info.boot == WHALE_BOOT_TIMER, boot_info.cycles);
+    if (boot_info.boot == WHALE_BOOT_KEY)
+        key_guard_until = a.now + 1000;
+    log_diag("boot");
+    xTaskCreate(peripheral_task, "whale_periph", WHALE_PERIPHERAL_STACK_BYTES, NULL, 2, NULL);
+    /* A timer wake looks for the computer with the screen dark. */
+    screen_applied = WHALE_SCREEN_OFF;
+    apply_screen(power.screen);
     uint32_t diag_at = ms();
     for (;;) {
         whale_event_t e;
@@ -1517,23 +1636,10 @@ void app_main(void) {
                 snap(requested_cursor);
         }
         companion_tick();
-        bool busy = false;
-        for (int i = 0; i < a.count; i++)
-            if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
-                busy = true;
-        if (a.view != HOME && a.view != LIST && a.view != COMPANION)
-            busy = true;
-        if (a.view == COMPANION)
-            busy = false;
-        if (busy && dim) {
-            dim = false;
-            bsp_display_backlight(75);
-        }
-        if (!busy && !dim && a.now - last_input >= 120000) {
-            dim = true;
-            bsp_display_backlight(18);
-        }
-        if ((dirty && a.now - last_draw >= 125) || a.now - last_draw >= 125) {
+        power_step();
+        /* With the backlight off nothing is visible: skip LVGL work. */
+        if (screen_applied != WHALE_SCREEN_OFF &&
+            ((dirty && a.now - last_draw >= 125) || a.now - last_draw >= 125)) {
             if (bsp_lvgl_lock(25)) {
                 whale_ui_draw(&a);
                 bsp_lvgl_unlock();

@@ -20,3 +20,22 @@ bool whale_sound_save(uint8_t mode) {
     nvs_close(h);
     return err == ESP_OK;
 }
+bool whale_blob_load(const char *key, void *data, size_t size) {
+    nvs_handle_t h;
+    size_t length = size;
+    if (nvs_open("whale", NVS_READONLY, &h) != ESP_OK)
+        return false;
+    esp_err_t err = nvs_get_blob(h, key, data, &length);
+    nvs_close(h);
+    return err == ESP_OK && length == size;
+}
+bool whale_blob_save(const char *key, const void *data, size_t size) {
+    nvs_handle_t h;
+    if (nvs_open("whale", NVS_READWRITE, &h) != ESP_OK)
+        return false;
+    esp_err_t err = nvs_set_blob(h, key, data, size);
+    if (err == ESP_OK)
+        err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
+}

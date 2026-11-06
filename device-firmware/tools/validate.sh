@@ -39,11 +39,15 @@ run_static_checks() {
     "${test_dir}/test_whale_voice"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain \
-        tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c -o "${test_dir}/test_whale_app"
+        tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c main/whale_power.c \
+        main/whale_battery_log.c -o "${test_dir}/test_whale_app"
     "${test_dir}/test_whale_app"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain tests/test_whale_audio.c -o "${test_dir}/test_whale_audio"
     "${test_dir}/test_whale_audio"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_whale_battery_log.c -o "${test_dir}/test_whale_battery_log"
+    "${test_dir}/test_whale_battery_log"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/settings_stubs -Imain \
         tests/test_whale_settings.c -o "${test_dir}/test_whale_settings"
     "${test_dir}/test_whale_settings"

@@ -1,6 +1,8 @@
 #include "whale_ble.h"
+#include "whale_power.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "host/ble_att.h"
@@ -63,14 +65,20 @@ static const struct ble_gatt_chr_def chars[] = {
 static const struct ble_gatt_svc_def services[] = {
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &svc.u, .characteristics = chars}, {0}};
 static int gap(struct ble_gap_event *e, void *arg);
+static volatile bool adv_slow, host_synced, stopped;
 static void advertise(void) {
+    if (stopped || !host_synced)
+        return;
     const char *name = "HARNESS-WHALE";
     struct ble_hs_adv_fields f = {.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP,
                                   .name = (const uint8_t *)name,
                                   .name_len = strlen(name),
                                   .name_is_complete = 1};
+    bool slow = adv_slow;
     struct ble_gap_adv_params adv = {.conn_mode = BLE_GAP_CONN_MODE_UND,
-                                     .disc_mode = BLE_GAP_DISC_MODE_GEN};
+                                     .disc_mode = BLE_GAP_DISC_MODE_GEN,
+                                     .itvl_min = slow ? WHALE_ADV_SLOW_MIN : WHALE_ADV_FAST_MIN,
+                                     .itvl_max = slow ? WHALE_ADV_SLOW_MAX : WHALE_ADV_FAST_MAX};
     ble_gap_adv_set_fields(&f);
     ble_gap_adv_start(own, NULL, BLE_HS_FOREVER, &adv, gap, NULL);
 }
@@ -150,8 +158,10 @@ static void sync_host(void) {
         locked = true;
     if (pending && !whale_unbind())
         locked = true;
-    if (!ble_hs_util_ensure_addr(0) && !ble_hs_id_infer_auto(0, &own))
+    if (!ble_hs_util_ensure_addr(0) && !ble_hs_id_infer_auto(0, &own)) {
+        host_synced = true;
         advertise();
+    }
 }
 static void host_task(void *arg) {
     nimble_port_run();
@@ -211,4 +221,34 @@ bool whale_ble_audio_send(const uint8_t *p, size_t n) {
         return false;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(p, n);
     return om && ble_gatts_notify_custom(peer, audio_attr, om) == 0;
+}
+void whale_ble_set_slow(bool slow) {
+    if (slow == adv_slow)
+        return;
+    adv_slow = slow;
+    /* Restart only an idle advertiser; a connection keeps its own timing and
+     * the next disconnect advertises with the new interval. */
+    if (!stopped && host_synced && peer == BLE_HS_CONN_HANDLE_NONE && ble_gap_adv_active()) {
+        ble_gap_adv_stop();
+        advertise();
+    }
+    ESP_LOGI("whale_ble", "advertising %s", slow ? "slow" : "fast");
+}
+bool whale_ble_stop_for_sleep(void) {
+    if (peer != BLE_HS_CONN_HANDLE_NONE || pair_pending)
+        return false;
+    stopped = true;
+    ble_gap_adv_stop();
+    if (peer != BLE_HS_CONN_HANDLE_NONE) { /* a central won the race */
+        stopped = false;
+        advertise();
+        return false;
+    }
+    /* Deep sleep powers the radio down; stop the host so nothing is mid-flight.
+     * A host that will not stop leaves no safe way back: restart instead. */
+    if (nimble_port_stop() != 0) {
+        ESP_LOGE("whale_ble", "NimBLE stop failed before sleep; restarting");
+        esp_restart();
+    }
+    return true;
 }

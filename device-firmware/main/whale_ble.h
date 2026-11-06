@@ -13,3 +13,9 @@ bool whale_unbind(void);
 
 bool whale_ble_audio_ready(void);
 bool whale_ble_audio_send(const uint8_t *bytes, size_t length);
+/* Long advertising interval while the computer has been away for a while. */
+void whale_ble_set_slow(bool slow);
+/* Stop advertising and the NimBLE host before deep sleep. Refuses (false)
+ * while a central is connected or pairing; the radio is unusable after true.
+ * Restarts the chip if the host cannot be stopped. */
+bool whale_ble_stop_for_sleep(void);
