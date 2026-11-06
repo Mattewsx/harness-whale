@@ -15,7 +15,7 @@
 #include <string.h>
 
 #define WHALE_OTA_QUEUE 20
-#define WHALE_OTA_STACK 4096
+#define WHALE_OTA_STACK 6144 /* esp_ota_end() verifies the whole image */
 enum { RX_PACKET, RX_YES, RX_NO, RX_LINK };
 typedef struct {
     uint8_t kind, len;
@@ -169,7 +169,7 @@ static whale_ota_ops_t ops = {
 
 static void worker(void *unused) {
     (void)unused;
-    static rx_item_t item; /* static: keep the 4 KiB stack for esp_ota_end */
+    static rx_item_t item; /* static: keep the stack for esp_ota_end */
     for (;;) {
         if (xQueueReceive(rx, &item, pdMS_TO_TICKS(1000)) == pdTRUE) {
             uint32_t now = now_ms();

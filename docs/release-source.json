@@ -113,7 +113,7 @@
     "main/whale_assets.c": "38cdb01862ecf61ae181df92dba1c5318b055793bf213faebdcf2f98d4ac1651",
     "main/whale_asset_pack.c": "8e87574efa416e351056f099c230cf06a08463c97b11529f835174cb83395408",
     "main/whale_asset_pack.h": "db9ed57fb784513f51525ab526b2193acf803121177e988bdd1aa3d7f92e9b20",
-    "main/whale_ota.c": "df770c3ceb8288e11d23c95426302dd1b9e679e486324d61c41b62fa82c062c6",
+    "main/whale_ota.c": "fcd0b8b73bf6b2f6f756c1e4ad03ec29bff8cce232c9314f1340bca873ebb2e0",
     "main/whale_ota.h": "d092348e29ececa318ac12548310eb5df36ec2d029c26579c0836c0d2d94da3d",
     "main/whale_ota_core.c": "9a60aba877aba0e1ea8c6333e61de914701ecef4ae2844d93eac40901353858e",
     "main/whale_ota_core.h": "368a8453a436762bd3282ad4a1b8c9f7b474579d06a014c139914ef034fc6280",
