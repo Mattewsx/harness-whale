@@ -1,6 +1,6 @@
 Run from the repository root with a native C compiler (not the ESP cross compiler):
 
-cc -std=c11 -Itests/firmware-replay/stubs -Idevice-firmware/main tests/firmware-replay/fw_replay.c device-firmware/main/whale_wire.c device-firmware/main/whale_reply_cache.c device-firmware/main/whale_power.c device-firmware/main/whale_battery_log.c -o tests/firmware-replay/fw_replay.exe
+cc -std=c11 -Itests/firmware-replay/stubs -Idevice-firmware/main tests/firmware-replay/fw_replay.c device-firmware/main/whale_wire.c device-firmware/main/whale_reply_cache.c device-firmware/main/whale_power.c device-firmware/main/whale_battery_log.c device-firmware/main/whale_clock.c -o tests/firmware-replay/fw_replay.exe
 python tests/firmware-replay/cross_replay.py
 
 Python bridge frames drive the production C dispatcher and keys with hardware stubs.

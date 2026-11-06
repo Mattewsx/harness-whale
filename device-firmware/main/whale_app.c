@@ -44,6 +44,10 @@ static volatile uint8_t power_flags;
 static volatile uint32_t sleep_timer_ms, sleep_cycles;
 static bool sleep_requested;
 static uint32_t sleep_retry_at, key_guard_until;
+/* Idle this long on the task home (or companion) with no work: desk display. */
+#define WHALE_DESK_IDLE_MS 120000u
+static uint32_t rtc_seconds(void);
+static void clock_step(void);
 static unsigned stack_headroom(const char *task) {
     TaskHandle_t handle = xTaskGetHandle(task);
     return handle ? (unsigned)uxTaskGetStackHighWaterMark(handle) : 0;
@@ -376,8 +380,14 @@ static void enter_companion(void) {
     a.companion_at = a.now;
     page(COMPANION);
 }
+static void enter_desk(void) {
+    ESP_LOGI("whale", "desk display on (clock %s)", a.clock_valid ? "synced" : "unknown");
+    page(DESK);
+}
+/* Work started or needs attention while the companion or desk display is up:
+ * go back to the task pages. */
 static void companion_work(uint32_t session, bool attention) {
-    if (a.view != COMPANION)
+    if (a.view != COMPANION && a.view != DESK)
         return;
     if (attention) {
         seek_session = 0;
@@ -421,8 +431,19 @@ static void companion_tick(void) {
     bool idle =
         !a.linked || (a.ready && a.global_cap && a.global_valid && a.now - a.global_at < 30000 &&
                       !a.global_running && !a.global_waiting && !a.global_unread);
-    if (a.view == HOME && a.now - last_input >= 120000 && idle && !whale_voice_busy())
-        enter_companion();
+    if ((a.view == HOME || a.view == COMPANION) && a.now - last_input >= WHALE_DESK_IDLE_MS &&
+        idle && !whale_voice_busy() && !a.companion_action)
+        enter_desk();
+    /* Old bridges send no work summary; fall back to the cached task rows. */
+    if (a.view == DESK && a.linked && a.ready && !a.global_cap)
+        for (unsigned i = 0; i < a.count; i++) {
+            const whale_row_t *r = &a.rows[i];
+            if ((r->state >= 2 && r->state <= 4) || r->state == 8 || r->question) {
+                a.selected = i;
+                page(HOME);
+                break;
+            }
+        }
     if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
         disconnect_pending = false;
         whale_cues_update(&reminders, reminders.seq + 1, 0, disconnected_at, 4, 4, a.now);
@@ -648,6 +669,10 @@ static void key(uint32_t code) {
         return;
     }
     user_input();
+    if (a.view == DESK) { /* any key returns to the normal pages */
+        page(HOME);
+        return;
+    }
     if (a.view == VOICE) {
         voice_key(k, hold);
         return;
@@ -1146,6 +1171,13 @@ static void apply_message(whale_msg_t msg) {
     }
     if (!a.ready || n < 8 || w64(p) != a.epoch)
         return;
+    if (msg.type == 0x53 && n == 18) {
+        /* Wall clock: epoch, Unix seconds (int64), local UTC offset minutes. */
+        if (whale_clock_sync(whale_sleep_clock(), rtc_seconds(), (int64_t)w64(p + 8),
+                             (int16_t)w16(p + 16)))
+            clock_step();
+        return;
+    }
     if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
         w32(p + 8) == a.title_session && w32(p + 12) == a.title_run && whale_text(p + 18, n - 18)) {
         memcpy(a.full_title, p + 18, n - 18);
@@ -1164,7 +1196,9 @@ static void apply_message(whale_msg_t msg) {
         a.global_waiting = w16(p + 16);
         a.global_unread = w16(p + 18);
         a.global_focus = w32(p + 20);
-        if (a.view == COMPANION && a.global_valid && baseline) {
+        /* The desk display leaves on any summary that shows work; the
+         * companion page only reacts to the first one after (re)connecting. */
+        if ((a.view == DESK || (a.view == COMPANION && baseline)) && a.global_valid) {
             if (a.global_waiting || a.global_unread)
                 companion_work(0, true);
             else if (a.global_running)
@@ -1311,7 +1345,9 @@ static void apply_message(whale_msg_t msg) {
         page(!a.page && whale_text_wide(a.prompt) ? PROMPT : QUESTION);
     }
 }
-static bool main_view(void) { return a.view == HOME || a.view == LIST || a.view == COMPANION; }
+static bool main_view(void) {
+    return a.view == HOME || a.view == LIST || a.view == COMPANION || a.view == DESK;
+}
 static void power_step(void) {
     bool hold = whale_voice_busy() || whale_audio_busy() || reminders.batching ||
                 a.view == PAIR || a.view == UNBINDING;
@@ -1330,6 +1366,10 @@ static void power_step(void) {
             busy = true;
     if (a.view == COMPANION)
         busy = false;
+    /* Daytime desk display stays lit while the computer is connected. At
+     * night, or offline, the normal dim / screen-off / sleep policy applies. */
+    if (a.view == DESK)
+        busy = a.linked && !a.night;
     whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
     apply_screen(plan.screen);
     whale_ble_set_slow(plan.slow_adv);
@@ -1352,6 +1392,13 @@ static uint32_t rtc_seconds(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint32_t)tv.tv_sec;
+}
+static void clock_step(void) {
+    whale_local_time_t t;
+    a.clock_valid = whale_clock_local(whale_sleep_clock(), rtc_seconds(), &t);
+    if (a.clock_valid)
+        a.clock = t;
+    a.night = a.clock_valid && whale_clock_night(&a.clock);
 }
 static void batt_dump(const char *name) {
     if (!whale_blob_load(name, &batt_log, sizeof batt_log) || !whale_batt_log_valid(&batt_log))
@@ -1488,6 +1535,14 @@ static void service(whale_event_t e) {
         unsigned k = e.value & 255, ev = e.value >> 8;
         if (k >= 3)
             break;
+        if (ev == BSP_BTN_PRESS && a.view == DESK) {
+            /* Even a press that only lights the screen leaves the desk display;
+             * its release must not act on the page underneath. */
+            armed[k] = false;
+            user_input();
+            page(HOME);
+            break;
+        }
         if (ev == BSP_BTN_PRESS) {
             /* After a key wake the waking press may still be held at boot. */
             armed[k] = !dim && (int32_t)(a.now - key_guard_until) >= 0;
@@ -1541,7 +1596,9 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "v1.4.0 / protocol 2.2 + companion cues + power saving; minimum free heap: %lu",
+    ESP_LOGI("whale",
+             "v1.4.0 / protocol 2.2 + companion cues + power saving + desk clock; "
+             "minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST
     ESP_LOGW("whale_power", "BENCH BUILD: short power thresholds (WHALE_POWER_TEST)");
@@ -1555,6 +1612,7 @@ void app_main(void) {
     whale_power_init(&power, a.now, boot_info.boot == WHALE_BOOT_TIMER, boot_info.cycles);
     if (boot_info.boot == WHALE_BOOT_KEY)
         key_guard_until = a.now + 1000;
+    clock_step();
     log_diag("boot");
     xTaskCreate(peripheral_task, "whale_periph", WHALE_PERIPHERAL_STACK_BYTES, NULL, 2, NULL);
     /* A timer wake looks for the computer with the screen dark. */
@@ -1635,6 +1693,7 @@ void app_main(void) {
             } else
                 snap(requested_cursor);
         }
+        clock_step();
         companion_tick();
         power_step();
         /* With the backlight off nothing is visible: skip LVGL work. */

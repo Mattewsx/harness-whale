@@ -35,6 +35,8 @@ int main(void){
         else if(sscanf(line,"cues %u",&val)==1){assert(queued_cues==val);}
         else if(sscanf(line,"view %u",&val)==1){assert(a.view==val);}
         else if(sscanf(line,"scroll %u",&val)==1){assert(a.scroll==(int)val);}
+        else if(!strncmp(line,"clock ",6)){unsigned h,m;assert(sscanf(line+6,"%u%u",&h,&m)==2);
+            if(!a.clock_valid||a.clock.hour!=h||a.clock.minute!=m){fprintf(stderr,"clock expected %u:%u got valid=%d %u:%u\n",h,m,a.clock_valid,a.clock.hour,a.clock.minute);return 1;}}
         else if(!strncmp(line,"down",4)){service((whale_event_t){.kind=WE_DOWN});}
         else if(!strncmp(line,"assert ",7)){
             int view,count,selected;assert(sscanf(line+7,"%d%d%d",&view,&count,&selected)==3);
@@ -66,5 +68,6 @@ void whale_ble_set_slow(bool slow){(void)slow;}
 whale_sleep_info_t whale_sleep_boot_info(void){return (whale_sleep_info_t){0};}
 const char *whale_sleep_boot_name(whale_boot_t b){(void)b;return "power";}
 bool whale_sleep_enter(uint32_t t,uint32_t c){(void)t;(void)c;return false;}
+static whale_clock_t rtc_clock;whale_clock_t *whale_sleep_clock(void){return &rtc_clock;}
 
 bool whale_audio_busy(void) { return false; }

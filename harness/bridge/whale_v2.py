@@ -25,6 +25,7 @@ CAPS = 4095  # bit 11: global work summary and live cue events (v1.3)
 CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
 CONTROL |= {0x50, 0x51, 0x52}
 END = 0xFFFFFFFF
+CLOCK_RESYNC_SECONDS = 1800
 
 
 def pack(fmt, *values):
@@ -397,6 +398,25 @@ class Link:
         self.global_at = 0
         self.announced = set()
         self.global_initialized = False
+        self.clock_at = None
+
+    def clock(self, now=None, tz_minutes=None):
+        """0x53 desk-display wall clock: epoch, Unix seconds, local UTC offset.
+
+        Sent after the first snapshot (the device only accepts it once ready)
+        and then every CLOCK_RESYNC_SECONDS to correct the chip's drift.
+        Firmware before v1.4.0 ignores the unknown message type.
+        """
+        if not self.ready or not self.snap:
+            return []
+        tick = time.monotonic()
+        if self.clock_at is not None and tick - self.clock_at < CLOCK_RESYNC_SECONDS:
+            return []
+        self.clock_at = tick
+        now = time.time() if now is None else now
+        if tz_minutes is None:
+            tz_minutes = (time.localtime(now).tm_gmtoff or 0) // 60
+        return [(0x53, pack('QqH', self.model.epoch, int(now), tz_minutes & 0xFFFF))]
 
     def global_changes(self):
         """Independent of the eight-row window; reconnect establishes a silent baseline.
@@ -575,6 +595,7 @@ class Link:
             self.readable=bool(caps & 256)
             self.attention=bool(caps & 1024)
             self.global_cap=bool(caps & 2048)
+            self.clock_at = None
             self.ready = (
                 (major, minor, status) == (2, 2, 0)
                 and caps & 63 == 63
@@ -760,6 +781,8 @@ async def serve(client, model, on_write=None):
                 refresh_after_page = False
             if not queues[1] and inflight[1] is None:
                 queue(wire.changes())
+            if not queues[1] and inflight[1] is None:
+                queue(wire.clock())
             for lane in (0, 1):
                 if inflight[lane] is None and queues[lane]:
                     kind, body = queues[lane].pop(0)

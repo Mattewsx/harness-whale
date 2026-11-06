@@ -141,6 +141,37 @@ int main(void) {
     a.confirm_holding = false;
     draw(&a);
     assert(draw(&a) == 0);
+    /* Desk display: still frames do not redraw; a minute change redraws only
+     * the clock; the night clock and the return home repaint fully. */
+    a.view = DESK;
+    a.page_at = a.now;
+    a.clock_valid = true;
+    a.clock = (whale_local_time_t){.year = 2026, .month = 11, .day = 6, .wday = 5, .hour = 14,
+                                   .minute = 25};
+    draw(&a);
+    a.now += 125;
+    pixels = draw(&a);
+    printf("desk still frame: %u pixels redrawn (expected 0)\n", pixels);
+    errors += pixels != 0;
+    a.clock.minute = 26;
+    pixels = draw(&a);
+    printf("desk minute update: %u pixels redrawn (limit 24000)\n", pixels);
+    errors += !pixels || pixels >= 24000;
+    a.night = true;
+    assert(draw(&a) > 0);
+    assert(draw(&a) == 0);
+    a.clock_valid = false;
+    assert(draw(&a) > 0);
+    a.night = false;
+    a.view = HOME;
+    assert(draw(&a) > 0);
+    assert(draw(&a) == 0);
+    for (unsigned i = 0; i < 100; i++) {
+        a.view = i % 3 == 0 ? DESK : i % 3 == 1 ? HOME : COMPANION;
+        a.night = i % 2;
+        a.now += 125;
+        draw(&a);
+    }
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     assert(memory.free_size > 4096 && lv_mem_test() == LV_RESULT_OK);
