@@ -14,6 +14,7 @@ import json
 import logging
 from pathlib import Path
 import os
+import random
 import time
 from typing import Any
 import urllib.error
@@ -45,6 +46,16 @@ FINAL_HOLD_SECONDS = 4.0
 STALE_EVENT_SECONDS = 30.0
 QUESTION_SINGLE_PAGE_OPTIONS = 4
 QUESTION_PAGED_OPTIONS = 3
+# Reconnect backoff: 1 s, 2 s, 4 s ... capped at 60 s, with +/-20 % jitter so a
+# flapping link or an absent device does not hammer the radio. A link that
+# stayed up for RECONNECT_STABLE_SECONDS (or a deliberate stress-test cycle)
+# starts again from the base delay.
+RECONNECT_BASE_SECONDS = 1.0
+RECONNECT_MAX_SECONDS = 60.0
+RECONNECT_STABLE_SECONDS = 30.0
+RECONNECT_JITTER = 0.2
+PAIRING_DECLINED_SECONDS = 60.0
+MAX_LINK_HOLD_SECONDS = 30.0
 
 LOG = logging.getLogger("harness-ble")
 
@@ -107,6 +118,78 @@ def fetch_balance(api_key: str) -> Balance | None:
     return parse_balance_document(document)
 
 
+class LinkCycle(Exception):
+    """Raised inside the BLE loop to drop the link on a local stress-test request."""
+
+
+class LinkStats:
+    """Disconnect accounting and reconnect backoff for one bridge process.
+
+    Only counters, exception type names and timings are kept: no addresses,
+    session IDs or text, so the values are safe to show in /whale.
+    """
+
+    def __init__(self, clock=time.monotonic, wall=time.time, rand=random.random) -> None:
+        self.clock = clock
+        self.wall = wall
+        self.rand = rand
+        self.state = "starting"
+        self.connected = False
+        self.disconnects = 0
+        self.last_reason: str | None = None
+        self.last_disconnect_at: int | None = None
+        self.last_reconnect_ms: int | None = None
+        self.retry_delay: float | None = None
+        self.attempt = 0
+        self.connected_at: float | None = None
+        self.down_at: float | None = None
+
+    def up(self) -> None:
+        """The link carries frames again (legacy connect or v2.2 handshake)."""
+        now = self.clock()
+        if self.connected_at is None:
+            self.connected_at = now
+        if self.down_at is not None:
+            self.last_reconnect_ms = round((now - self.down_at) * 1000)
+            self.down_at = None
+        self.retry_delay = None
+
+    def lost(self, reason: str, manual: bool = False) -> float:
+        """Record a failed attempt or a dropped link; return the delay before retrying."""
+        now = self.clock()
+        if self.connected_at is not None:
+            self.disconnects += 1
+            self.last_reason = reason
+            self.last_disconnect_at = int(self.wall() * 1000)
+            if now - self.connected_at >= RECONNECT_STABLE_SECONDS:
+                self.attempt = 0
+            self.connected_at = None
+            self.down_at = now
+        if manual:
+            self.attempt = 0
+        delay = min(RECONNECT_MAX_SECONDS, RECONNECT_BASE_SECONDS * (2 ** min(self.attempt, 16)))
+        delay *= 1 + RECONNECT_JITTER * (2 * self.rand() - 1)
+        self.attempt += 1
+        self.retry_delay = round(delay, 2)
+        return delay
+
+    def hold(self, seconds: float) -> float:
+        """A fixed wait (pairing declined) that does not grow the backoff."""
+        self.retry_delay = seconds
+        return seconds
+
+    def fields(self) -> dict[str, Any]:
+        fields: dict[str, Any] = {"disconnects": self.disconnects}
+        if self.last_reason:
+            fields["lastDisconnect"] = self.last_reason
+            fields["lastDisconnectAt"] = self.last_disconnect_at
+        if self.last_reconnect_ms is not None:
+            fields["lastReconnectMs"] = self.last_reconnect_ms
+        if self.retry_delay is not None:
+            fields["retryIn"] = self.retry_delay
+        return fields
+
+
 class StatusModel:
     def __init__(self) -> None:
         self.workspace = whale_v2.Workspace()
@@ -124,6 +207,26 @@ class StatusModel:
         self.question_page = 0
         self.question_revision = 0
         self.datagram_transport: asyncio.DatagramTransport | None = None
+        self.link = LinkStats()
+        self.link_cycle = asyncio.Event()
+        self.link_hold = 0.0
+        self.packets_sent = 0
+
+    def link_report(self) -> dict[str, Any]:
+        """Loopback-only status for the stress script: counters, no session data."""
+        report: dict[str, Any] = {
+            "kind": "whale-link-status",
+            "connected": self.link.connected,
+            "state": self.link.state,
+            "packetsSent": self.packets_sent,
+            **self.link.fields(),
+        }
+        voice = getattr(self.workspace, "voice", None)
+        if voice is not None:
+            report["voice"] = dict(getattr(voice, "stats", {}))
+            if getattr(voice, "last_stt_ms", None) is not None:
+                report["lastSttMs"] = voice.last_stt_ms
+        return report
 
     def merge(self, data: dict[str, Any]) -> None:
         if data.get("v") != 1:
@@ -268,6 +371,20 @@ class HarnessDatagram(asyncio.DatagramProtocol):
                           "lastGattSnapshot":self.model.workspace.delivered}
                 if self.model.datagram_transport:
                     self.model.datagram_transport.sendto(json.dumps(report).encode(), addr)
+            elif kind == "whale-link-status":
+                if self.model.datagram_transport:
+                    self.model.datagram_transport.sendto(
+                        json.dumps(self.model.link_report()).encode(), addr)
+            elif kind == "whale-link-cycle":
+                # Local stress test: drop the BLE link once and let it reconnect,
+                # optionally staying down long enough for the device's disconnect cue.
+                try:
+                    hold = float(document.get("hold") or 0)
+                except (TypeError, ValueError):
+                    hold = 0.0
+                self.model.link_hold = min(max(hold, 0.0), MAX_LINK_HOLD_SECONDS)
+                self.model.link_cycle.set()
+                self.model.changed.set()
             elif kind == "whale-visibility":
                 items = document.get("items")
                 if not isinstance(items,list): return
@@ -347,50 +464,62 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
     except ImportError as exc:
         raise SystemExit("bleak is required; install tools/requirements-client.txt") from exc
 
-    packets_sent = 0
+    link = model.link
+
+    def report(state: str, connected: bool = False, **fields: Any) -> None:
+        link.state = state
+        link.connected = connected
+        send_telemetry(telemetry, telemetry_port, connected=connected, state=state,
+                       device=device_name, packetsSent=model.packets_sent,
+                       **link.fields(), **fields)
+
+    async def wait_retry(delay: float, state: str, **fields: Any) -> None:
+        report(state, **fields)
+        await asyncio.sleep(delay)
+
     while True:
+        model.link_cycle.clear()
         try:
             device = address
             if device is None:
                 LOG.info("scanning for BLE device %s", device_name)
-                send_telemetry(telemetry, telemetry_port, connected=False,
-                               state="scanning", device=device_name,
-                               packetsSent=packets_sent)
+                report("scanning")
                 found = await BleakScanner.find_device_by_name(device_name, timeout=8.0)
                 if found is None:
-                    send_telemetry(telemetry, telemetry_port, connected=False,
-                                   state="not-found", device=device_name,
-                                   packetsSent=packets_sent)
-                    await asyncio.sleep(3)
+                    await wait_retry(link.lost("not-found"), "not-found")
                     continue
                 device = found
-            send_telemetry(telemetry, telemetry_port, connected=False,
-                           state="connecting", device=device_name,
-                           packetsSent=packets_sent)
+            report("connecting")
             async with BleakClient(device) as client:
                 LOG.info("BLE connected to %s", device_name)
-                send_telemetry(telemetry, telemetry_port, connected=True,
-                               state="connected", device=device_name,
-                               mtu=int(getattr(client, "mtu_size", 23) or 23),
-                               packetsSent=packets_sent)
+                mtu = int(getattr(client, "mtu_size", 23) or 23)
+                report("connected", True, mtu=mtu)
 
                 if client.services.get_service(whale_v2.SERVICE):
                     await pair_passport(client)
                     phase = "negotiating"
                     def record_write(ready):
-                        nonlocal packets_sent, phase
-                        packets_sent += 1
-                        if ready:
+                        nonlocal phase
+                        model.packets_sent += 1
+                        if ready and phase != "v2.2":
                             phase = "v2.2"
+                            link.up()
                     relay = asyncio.create_task(whale_v2.serve(client, model.workspace, record_write))
+                    cycle = asyncio.create_task(model.link_cycle.wait())
                     try:
                         while not relay.done():
-                            send_telemetry(telemetry,telemetry_port,connected=True,state=phase,device=device_name,packetsSent=packets_sent)
-                            await asyncio.wait({relay},timeout=2)
+                            if cycle.done():
+                                raise LinkCycle("stress-test cycle")
+                            report(phase, True, mtu=mtu)
+                            await asyncio.wait({relay, cycle}, timeout=2,
+                                               return_when=asyncio.FIRST_COMPLETED)
                         await relay
                     finally:
                         relay.cancel()
-                        await asyncio.gather(relay,return_exceptions=True)
+                        cycle.cancel()
+                        await asyncio.gather(relay, cycle, return_exceptions=True)
+                    # serve() returns once the peer has gone away.
+                    await wait_retry(link.lost("link-lost"), "reconnecting")
                     continue
                 def on_notify(_: Any, data: bytearray) -> None:
                     if len(data) >= 2 and data[0] == 0x07 and data[1] >= 0x10:
@@ -399,30 +528,39 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                         pass  # Legacy devices lack question identity; display only.
 
                 await client.start_notify(NOTIFY_UUID, on_notify)
+                link.up()
                 question_revision = -1
                 while client.is_connected:
+                    if model.link_cycle.is_set():
+                        raise LinkCycle("stress-test cycle")
                     model.changed.clear()
                     if question_revision != model.question_revision:
                         await write_frame(client, make_question_frame([]))
                         question_revision = model.question_revision
                     await write_frame(client, model.next_frame())
-                    packets_sent += 1
-                    send_telemetry(telemetry, telemetry_port, connected=True,
-                                   state="connected", device=device_name,
-                                   mtu=int(getattr(client, "mtu_size", 23) or 23),
-                                   packetsSent=packets_sent)
+                    model.packets_sent += 1
+                    report("connected", True, mtu=mtu)
                     try:
                         await asyncio.wait_for(model.changed.wait(), timeout=interval)
                     except asyncio.TimeoutError:
                         pass
+            await wait_retry(link.lost("link-lost"), "reconnecting")
         except asyncio.CancelledError:
             raise
+        except LinkCycle:
+            LOG.info("BLE link cycled by local stress test")
+            delay = link.hold(max(link.lost("stress-test", manual=True), model.link_hold))
+            model.link_hold = 0.0
+            await wait_retry(delay, "reconnecting")
+        except PairingDeclined as exc:
+            LOG.warning("BLE pairing declined: %s", exc)
+            link.lost(type(exc).__name__)
+            await wait_retry(link.hold(PAIRING_DECLINED_SECONDS), "reconnecting",
+                             error=type(exc).__name__)
         except Exception as exc:
-            LOG.warning("BLE reconnect after %s: %s", type(exc).__name__, exc)
-            send_telemetry(telemetry, telemetry_port, connected=False,
-                           state="reconnecting", device=device_name,
-                           error=type(exc).__name__, packetsSent=packets_sent)
-            await asyncio.sleep(60 if isinstance(exc, PairingDeclined) else 3)
+            delay = link.lost(type(exc).__name__)
+            LOG.warning("BLE reconnect in %.1fs after %s: %s", delay, type(exc).__name__, exc)
+            await wait_retry(delay, "reconnecting", error=type(exc).__name__)
 
 
 async def demo_loop(model: StatusModel) -> None:

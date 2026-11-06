@@ -35,7 +35,23 @@ type HardwareStatus = {
   mtu?: number
   packetsSent?: number
   error?: string
+  disconnects?: number
+  lastDisconnect?: string
+  lastDisconnectAt?: number
+  lastReconnectMs?: number
+  retryIn?: number
   receivedAt: number
+}
+
+function finite(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function ago(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 120) return `${seconds}s ago`
+  if (seconds < 7200) return `${Math.floor(seconds / 60)}m ago`
+  return `${Math.floor(seconds / 3600)}h ago`
 }
 
 function eventType(event: any): string {
@@ -297,6 +313,11 @@ export function apply(ctx: any) {
         mtu: Number.isFinite(message.mtu) ? Number(message.mtu) : undefined,
         packetsSent: Number.isFinite(message.packetsSent) ? Number(message.packetsSent) : undefined,
         error: message.error ? String(message.error) : undefined,
+        disconnects: finite(message.disconnects),
+        lastDisconnect: message.lastDisconnect ? String(message.lastDisconnect).slice(0, 64) : undefined,
+        lastDisconnectAt: finite(message.lastDisconnectAt),
+        lastReconnectMs: finite(message.lastReconnectMs),
+        retryIn: finite(message.retryIn),
         receivedAt: Date.now(),
       }
       if (next.connected !== hardware.connected || next.state !== hardware.state) {
@@ -471,6 +492,19 @@ export function apply(ctx: any) {
           `Packets: ${hardware.packetsSent ?? 0}`,
           `Agent mirror: ${agent?.state || 'idle'} / ${agent?.tool || 'none'}`,
           `Task title: ${agent?.title || 'waiting for title'}`,
+          ...(bridgeOnline && hardware.disconnects !== undefined
+            ? [`Disconnects: ${hardware.disconnects}`]
+            : []),
+          ...(bridgeOnline && hardware.lastDisconnect
+            ? [`Last disconnect: ${hardware.lastDisconnect}${
+              hardware.lastDisconnectAt ? ` (${ago(now - hardware.lastDisconnectAt)})` : ''}`]
+            : []),
+          ...(bridgeOnline && hardware.lastReconnectMs !== undefined
+            ? [`Last reconnect took: ${(hardware.lastReconnectMs / 1000).toFixed(1)}s`]
+            : []),
+          ...(bridgeOnline && !hardware.connected && hardware.retryIn !== undefined
+            ? [`Next retry in: ${hardware.retryIn.toFixed(1)}s`]
+            : []),
           ...(hardware.error ? [`Last reconnect reason: ${hardware.error}`] : []),
         ].join('\n'),
       }

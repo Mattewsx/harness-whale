@@ -1,0 +1,165 @@
+"""Reconnect backoff, disconnect accounting and the loopback stress-test hooks."""
+import asyncio
+import json
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness/bridge"))
+import harness_ble_bridge as bridge
+import whale_v2 as v
+
+
+class Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+class BackoffTests(unittest.TestCase):
+    def stats(self, rand=0.5):
+        clock = Clock()
+        return clock, bridge.LinkStats(clock=clock, wall=lambda: 1_700_000_000.0, rand=lambda: rand)
+
+    def test_failed_attempts_double_up_to_the_cap(self):
+        _, link = self.stats()
+        delays = [link.lost("not-found") for _ in range(10)]
+        self.assertEqual(delays[:4], [1.0, 2.0, 4.0, 8.0])
+        self.assertEqual(max(delays), bridge.RECONNECT_MAX_SECONDS)
+        self.assertEqual(link.disconnects, 0, "a scan miss is not a disconnect")
+
+    def test_jitter_stays_within_twenty_percent(self):
+        for rand, expected in ((0.0, 0.8), (1.0, 1.2)):
+            _, link = self.stats(rand)
+            self.assertAlmostEqual(link.lost("not-found"), expected)
+
+    def test_drop_counts_reason_and_reconnect_time(self):
+        clock, link = self.stats()
+        link.up()
+        clock.now += 5
+        link.lost("BleakError")
+        self.assertEqual(link.disconnects, 1)
+        self.assertEqual(link.fields()["lastDisconnect"], "BleakError")
+        self.assertEqual(link.fields()["lastDisconnectAt"], 1_700_000_000_000)
+        clock.now += 2.5
+        link.up()
+        self.assertEqual(link.fields()["lastReconnectMs"], 2500)
+        self.assertNotIn("retryIn", link.fields())
+
+    def test_short_lived_links_keep_backing_off(self):
+        clock, link = self.stats()
+        delays = []
+        for _ in range(4):
+            link.up()
+            clock.now += 3
+            delays.append(link.lost("link-lost"))
+        self.assertEqual(delays, [1.0, 2.0, 4.0, 8.0])
+
+    def test_stable_link_and_manual_cycle_restart_from_base(self):
+        clock, link = self.stats()
+        for _ in range(5):
+            link.lost("not-found")
+        link.up()
+        clock.now += bridge.RECONNECT_STABLE_SECONDS
+        self.assertEqual(link.lost("link-lost"), 1.0)
+        for _ in range(5):
+            link.lost("not-found")
+        self.assertEqual(link.lost("stress-test", manual=True), 1.0)
+
+    def test_pairing_hold_does_not_grow_backoff(self):
+        _, link = self.stats()
+        self.assertEqual(link.hold(60), 60)
+        self.assertEqual(link.fields()["retryIn"], 60)
+        self.assertEqual(link.lost("not-found"), 1.0)
+
+
+class LoopbackHooks(unittest.TestCase):
+    def test_status_report_has_counters_only(self):
+        model = bridge.StatusModel()
+        sent = []
+        model.datagram_transport = SimpleNamespace(sendto=lambda data, addr: sent.append(json.loads(data)))
+        protocol = bridge.HarnessDatagram(model)
+        protocol.datagram_received(b'{"kind":"whale-link-status"}', ("127.0.0.1", 5000))
+        self.assertEqual(sent[0]["kind"], "whale-link-status")
+        self.assertEqual(set(sent[0]), {"kind", "connected", "state", "packetsSent", "disconnects"})
+
+    def test_cycle_request_is_loopback_only(self):
+        model = bridge.StatusModel()
+        protocol = bridge.HarnessDatagram(model)
+        protocol.datagram_received(b'{"kind":"whale-link-cycle"}', ("192.168.1.9", 5000))
+        self.assertFalse(model.link_cycle.is_set())
+        protocol.datagram_received(b'{"kind":"whale-link-cycle"}', ("127.0.0.1", 5000))
+        self.assertTrue(model.link_cycle.is_set())
+
+
+class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
+    async def test_stress_cycle_drops_and_reconnects(self):
+        model = bridge.StatusModel()
+        connects = []
+
+        class Client:
+            mtu_size = 23
+            services = SimpleNamespace(get_service=lambda _: True)
+
+            def __init__(self):
+                self.is_connected = True
+
+            async def __aenter__(self):
+                connects.append(self)
+                return self
+
+            async def __aexit__(self, *exc):
+                self.is_connected = False
+
+            async def start_notify(self, _, callback):
+                self.notify = callback
+
+            async def write_gatt_char(self, _, data, response):
+                if data[1] == 1 and data[4] == 0:
+                    for kind, body, serial in [
+                        (2, v.pack("BBIHHB", 2, 2, 511, 20, 20, 0), 1),
+                        (0x10, v.pack("QIBB", 0, 0, 8, 0), 2),
+                    ]:
+                        for frame in v.fragments(kind, serial, body):
+                            self.notify(None, frame)
+
+        reports = []
+
+        class Telemetry:
+            def sendto(self, data, addr):
+                reports.append(json.loads(data))
+
+        fake = SimpleNamespace(BleakScanner=None, BleakClient=lambda _: Client())
+
+        async def paired(_):
+            pass
+
+        async def until(predicate):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        with patch.dict(sys.modules, bleak=fake), patch.object(bridge, "pair_passport", paired), \
+                patch.object(bridge, "RECONNECT_BASE_SECONDS", 0.05):
+            task = asyncio.create_task(
+                bridge.ble_loop(model, "fixture", "fixture", 0.01, Telemetry(), 0))
+            try:
+                await asyncio.wait_for(until(lambda: model.link.state == "v2.2"), 4)
+                model.link_cycle.set()
+                await asyncio.wait_for(until(lambda: len(connects) == 2 and model.link.state == "v2.2"), 4)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertFalse(connects[0].is_connected)
+        report = model.link_report()
+        self.assertEqual(report["disconnects"], 1)
+        self.assertEqual(report["lastDisconnect"], "stress-test")
+        self.assertIn("lastReconnectMs", report)
+        self.assertTrue(any(r.get("disconnects") == 1 and r["state"] == "v2.2" for r in reports))
+
+
+if __name__ == "__main__":
+    unittest.main()
