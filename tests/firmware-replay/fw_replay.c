@@ -60,5 +60,11 @@ uint32_t whale_audio_generation(void){return fake_audio_generation;}
 bool whale_audio_play(whale_audio_cmd_t c){(void)c;return true;}
 uint8_t whale_sound_load(void){return 1;}
 bool whale_sound_save(uint8_t mode){return mode<2;}
+bool whale_blob_load(const char *k,void *d,size_t n){(void)k;(void)d;(void)n;return false;}
+bool whale_blob_save(const char *k,const void *d,size_t n){(void)k;(void)d;(void)n;return true;}
+void whale_ble_set_slow(bool slow){(void)slow;}
+whale_sleep_info_t whale_sleep_boot_info(void){return (whale_sleep_info_t){0};}
+const char *whale_sleep_boot_name(whale_boot_t b){(void)b;return "power";}
+bool whale_sleep_enter(uint32_t t,uint32_t c){(void)t;(void)c;return false;}
 
 bool whale_audio_busy(void) { return false; }
