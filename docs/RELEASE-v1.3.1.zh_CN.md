@@ -25,7 +25,7 @@ python harness/tools/whale_stress.py --voice-rounds 5 --reconnects 10 --serial C
 
 ## 状态
 
-Build：未构建。`installer/firmware/manifest.json` 中完整镜像的 SHA-256 暂为 `pending-v1.3.1-build`，标准安装器会拒绝任何镜像；发布前须用 ESP-IDF 5.5.3 构建本源码并填入真实哈希。Host tests：见 PR。Device tests：未进行。未验证：上述压力测试本身的实机结果。
+Build：PASS — ESP-IDF 5.5.3 完整门禁、0x0 合并镜像及匹配 ELF/MAP 归档校验通过。Host tests：PASS — 82 项 Python 应用测试、固件静态／主机测试、三组跨语言回放、原生 LVGL 渲染、Python 编译检查和插件打包通过；门禁跳过了 Windows 下依赖符号链接的基础设施测试。Device tests：v1.3.1 未执行。未验证：真实蓝牙重连时序、反复录音与声音切换、诊断中的堆／栈余量及长期稳定性。本版是待实机验收候选，尚未正式发布。
 
 Firmware: `whale-v1.3.1`
 
@@ -34,6 +34,15 @@ Firmware: `whale-v1.3.1`
 本次仅电脑端修正已通过 82 项 Python 应用测试、Python 编译检查、插件打包
 （esbuild 0.25.12）、固件静态／主机门禁及三组 Python→C 回放。测试覆盖加抖动后的
 退避上限、完整 60 秒退避期间的心跳与倒计时、拒绝未完成握手的连接，以及保留部分
-结果的中断流程。主机门禁跳过了 Windows 下依赖符号链接的基础设施检查。本次修正
-没有修改固件源码，未构建新完整镜像，未执行实机压力测试；真实蓝牙时序和设备录音
-仍待验证。
+结果的中断流程。主机门禁跳过了 Windows 下依赖符号链接的基础设施检查。电脑端修正
+没有修改固件源码；整合后的 v1.3.1 候选已通过上述完整构建。未执行实机压力测试，
+真实蓝牙时序和设备录音仍待验证。
+
+
+## 构建身份
+
+Full image SHA-256: `068eecc60daf5c4739cabac84a5eb906b55550f217b851d252917eca53e8e660`
+
+ELF SHA-256: `8e2383099c2de9265b125f3f7ecf9956e7822efc10f53a4a42601e5480a71a80`
+
+完整镜像写入 `0x0`，可能重置配对和设置；单独的应用镜像仅在核对分区兼容后写入 `0x10000`。匹配调试归档位于 `build/firmware/<完整镜像哈希>/`。刷写须另行确认。

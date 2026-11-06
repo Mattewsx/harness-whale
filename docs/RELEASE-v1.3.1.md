@@ -25,7 +25,7 @@ python harness/tools/whale_stress.py --voice-rounds 5 --reconnects 10 --serial C
 
 ## Status
 
-Build: not built. The full-image SHA-256 in `installer/firmware/manifest.json` is `pending-v1.3.1-build`, so the standard installer refuses every image; before publishing, build this source with ESP-IDF 5.5.3 and record the real hash. Host tests: see the PR. Device tests: none yet. Unverified: real-device results of the stress run itself.
+Build: PASS — ESP-IDF 5.5.3 complete gate, verified merged 0x0 image and matching ELF/MAP archive. Host tests: PASS — 82 Python application tests, firmware static/host tests, three cross-language replays, native LVGL regression, Python compilation and plugin bundling. Windows symlink-dependent infrastructure tests were skipped by the gate. Device tests: NOT RUN for v1.3.1. Unverified: real BLE reconnect timing, repeated voice/cue transitions, diagnostic stack/heap readings and long-duration stability. This is a candidate for device acceptance, not a new public release.
 
 Firmware: `whale-v1.3.1`
 
@@ -36,5 +36,15 @@ plugin bundling (esbuild 0.25.12), the firmware static/host gate and all three P
 replay scenarios. Tests cover the post-jitter cap, heartbeat/countdown throughout a 60 s
 backoff, incomplete handshake rejection and interrupted runs with preserved partial results.
 Windows symlink-dependent infrastructure checks are skipped by the host gate. No firmware
-source changed in this correction; no new full image was built and no device stress run was
-performed. Real radio timing and on-device recording remain unverified.
+source changed in the desktop correction; the combined v1.3.1 candidate subsequently passed
+the build recorded above. No device stress run was performed. Real radio timing and on-device
+recording remain unverified.
+
+
+## Build identity
+
+Full image SHA-256: `068eecc60daf5c4739cabac84a5eb906b55550f217b851d252917eca53e8e660`
+
+ELF SHA-256: `8e2383099c2de9265b125f3f7ecf9956e7822efc10f53a4a42601e5480a71a80`
+
+The complete image is flashed at `0x0` and may reset pairing/settings. The separate application image is only for `0x10000` with a verified compatible partition layout. Debug archive: `build/firmware/<full-image-sha256>/`. Flashing requires separate approval.

@@ -2,9 +2,9 @@
 
 把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-当前分支为 **v1.3.0（社区提交准备中）**，新增陪伴互动、状态音效／语音、长标题滚动，见 [实现与操作说明](docs/V1.3-IMPLEMENTATION.zh_CN.md) 、[版本验收](docs/V1.3-VALIDATION.zh_CN.md) 和 [正式构建记录](docs/RELEASE-v1.3.0.zh_CN.md)。请使用同一交付包中的配套桥接器与固件，更新电脑组件后完全退出并重启 DSH。
+当前分支为 **v1.3.1（待实机验收，尚未发布）**，增加重连退避、连接健康统计与压力测试工具，并修正测试结果判定，见 [v1.3.1 发布与验证记录](docs/RELEASE-v1.3.1.zh_CN.md)。陪伴互动、状态音效／语音及导航沿用 v1.3.0。请使用同一交付包中的配套桥接器与固件，更新电脑组件后完全退出并重启 DSH。
 
-最新公开版：**v1.2.0 / 固件 R11.4 / 协议 2.2**。[下载](https://github.com/Mattewsx/harness-whale/releases/tag/v1.2.0) · [发布与验收](docs/RELEASE-v1.2.0.zh_CN.md) · [部署指南](docs/AI_DEPLOYMENT.md)
+AI Passport 社区已公开 **v1.3.0**（项目 1966，审核版本 4796）。GitHub Releases 最新下载仍为 **v1.2.0**，不包含 v1.3 的陪伴互动和状态声音。GitHub 主分支已包含 v1.3.0 源码；v1.3.1 完成验收后再同步正式发布。[v1.3.0 构建记录](docs/RELEASE-v1.3.0.zh_CN.md) · [旧版 v1.2.0 下载](https://github.com/Mattewsx/harness-whale/releases/tag/v1.2.0) · [部署指南](docs/AI_DEPLOYMENT.md)
 
 ![R10.1 界面预览](docs/images/r101-preview.png)
 
@@ -39,7 +39,7 @@
 
 ## 安装与升级
 
-v1.3.0 的源码位于 `feature/v1.3-companion-cues` 分支。下载该分支源码，或解压配套 `companion-installer.zip`，在其目录执行：
+v1.3.1 开发源码位于 `claude/project-thread-8wh5wm` 分支；当前社区 v1.3.0 用户应使用 `feature/v1.3-companion-cues` 分支。下载与固件匹配的分支源码，或解压同版配套 `companion-installer.zip`，在其目录执行：
 
 ```powershell
 python installer\install_companion.py --non-interactive --skip-key

@@ -1,8 +1,8 @@
 {
   "release": "v1.3.1",
   "firmware_version": "whale-v1.3.1",
-  "source_base_commit": "b2b282750192ef7b21483da0a9c8a27481c9c7c8",
-  "description": "v1.3.1: v1.3.0 plus the GCC sign-compare fix in whale_wire.c, serial-only heap/stack/BLE/cue diagnostics for the stress script, and the v1.3.1 version strings. Release image not yet built: the full-image SHA-256 in installer/firmware/manifest.json must be filled from the ESP-IDF 5.5.3 build of this exact source before publishing.",
+  "source_base_commit": "5ef2047d126cb80c7f9be1c59adf86b1124d4b9d",
+  "description": "v1.3.1 candidate: built with ESP-IDF 5.5.3 from these exact firmware inputs; includes GCC compatibility and serial health diagnostics. Desktop bridge/stress corrections are included in the matching package. Full-image SHA-256 is recorded in installer/firmware/manifest.json. Device acceptance is pending.",
   "sha256": {
     "CMakeLists.txt": "8918ce3a7a06bfa3afe2c5d0b704dac050f0acf348816176b6cf972d8f980bd9",
     "assets/README.md": "c1a67bd70c695bc02e982ae70d7d4503f637e6117756047ed472631a09cc1b02",
