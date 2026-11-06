@@ -17,6 +17,10 @@ AUDIO = '13b50203-663a-48c5-a224-37c1c2569080'
 HEADER = struct.Struct('<IIHBB')
 READY, DRAFT, SENT, QUEUED, FAILED, UNKNOWN, UNSUPPORTED, ASR_ERROR, ARCHIVED, QUESTION, EXPIRED, EMPTY, BROKEN = range(1, 14)
 MAX_TEXT = 1800
+STATUS_NAMES = {READY: 'ready', DRAFT: 'draft', SENT: 'sent', QUEUED: 'queued', FAILED: 'failed',
+                UNKNOWN: 'unknown', UNSUPPORTED: 'unsupported', ASR_ERROR: 'asr_error',
+                ARCHIVED: 'archived', QUESTION: 'question', EXPIRED: 'expired', EMPTY: 'empty',
+                BROKEN: 'broken'}
 
 
 def ogg_page(data, sequence, granule, flags=0):
@@ -75,6 +79,10 @@ class VoiceBridge:
         self.audio_supported = False
         self.submitting = False
         self.generation = 0
+        # Counts and timing only; never text or audio. Read by the stress report.
+        self.stats = {}
+        self.stt_started = None
+        self.last_stt_ms = None
 
     @staticmethod
     def _http(path, data=None):
@@ -93,6 +101,11 @@ class VoiceBridge:
         return struct.pack('<Q', self.model.epoch) + self.nonce
 
     def notice(self, status, text=None):
+        name = STATUS_NAMES.get(status, str(status))
+        self.stats[name] = self.stats.get(name, 0) + 1
+        if self.stt_started is not None and status in (DRAFT, EMPTY, ASR_ERROR, ARCHIVED):
+            self.last_stt_ms = round((time.monotonic() - self.stt_started) * 1000)
+            self.stt_started = None
         self.status = status
         if text is not None: self.text = text
         raw = self.text.encode() if status == DRAFT else b''
@@ -235,6 +248,7 @@ class VoiceBridge:
                         messages,self.out = self.out,[]
                         return messages
                     self.status = 0  # decoding; late audio cannot mutate the completed capture
+                    self.stt_started = now
                     self.launch(self.transcribe)
                 elif now-self.finish_at > 2: self.packets.clear(); self.notice(BROKEN)
             elif now-self.started > 70: self.packets.clear(); self.notice(BROKEN)

@@ -1,5 +1,6 @@
 #include "whale_ble.h"
 #include "esp_check.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "host/ble_att.h"
@@ -90,6 +91,7 @@ static int gap(struct ble_gap_event *e, void *arg) {
             break;
         }
         peer = h;
+        ESP_LOGI("whale_ble", "connected handle=%u", (unsigned)h);
         break;
     }
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -97,6 +99,7 @@ static int gap(struct ble_gap_event *e, void *arg) {
             audio_subscribed = e->subscribe.cur_notify;
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI("whale_ble", "disconnected reason=0x%x", (unsigned)e->disconnect.reason);
         audio_subscribed = false;
         peer = BLE_HS_CONN_HANDLE_NONE;
         pair_pending = false;

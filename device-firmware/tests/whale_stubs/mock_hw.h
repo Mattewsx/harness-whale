@@ -32,6 +32,8 @@ int nvs_flash_init(void);
 int64_t esp_timer_get_time(void);
 uint32_t esp_get_minimum_free_heap_size(void);
 uint32_t esp_get_free_heap_size(void);
+typedef void *TaskHandle_t;
+TaskHandle_t xTaskGetHandle(const char *name);
 unsigned uxTaskGetStackHighWaterMark(void *task);
 
 void esp_fill_random(void *p, size_t n);

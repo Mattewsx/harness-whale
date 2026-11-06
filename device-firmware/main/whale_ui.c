@@ -742,7 +742,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v1.3.0";
+            heading = "固件 v1.3.1";
             detail = "BLE 2.2";
             break;
         case LOADING:

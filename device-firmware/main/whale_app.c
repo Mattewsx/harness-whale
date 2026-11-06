@@ -27,6 +27,28 @@ static uint32_t disconnected_at, seek_session, title_requested_at;
 static bool disconnect_pending;
 static bool seek_to_list, priority_list;
 static char title_prefix[73];
+/* Serial-only health line for the hardware stress script. No session data. */
+#define WHALE_DIAG_MS 30000
+static volatile unsigned periph_stack_min;
+static unsigned stack_headroom(const char *task) {
+    TaskHandle_t handle = xTaskGetHandle(task);
+    return handle ? (unsigned)uxTaskGetStackHighWaterMark(handle) : 0;
+}
+static void log_diag(const char *why) {
+    unsigned main_stack = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    unsigned lvgl_stack = stack_headroom("taskLVGL");
+    unsigned ble_stack = stack_headroom("nimble_host");
+    ESP_LOGI("whale_diag",
+             "why=%s heap_free=%lu heap_min=%lu stack_main=%u stack_periph=%u "
+             "stack_lvgl=%u stack_ble=%u",
+             why, (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)esp_get_minimum_free_heap_size(), main_stack, periph_stack_min,
+             lvgl_stack, ble_stack);
+    (void)why;
+    (void)main_stack;
+    (void)lvgl_stack;
+    (void)ble_stack;
+}
 static bool queue_cue(uint8_t kind) {
     whale_audio_cmd_t cmd = {kind, a.sound_mode, whale_audio_generation()};
     return cues && xQueueSend(cues, &cmd, 0) == pdTRUE;
@@ -114,6 +136,7 @@ static void page(whale_page_t v) {
 }
 static void open_task(void);
 static void voice_page(unsigned phase) {
+    ESP_LOGI("whale_diag", "voice phase=%u", phase);
     a.voice_phase = phase;
     a.voice_at = a.now;
     page(VOICE);
@@ -1258,21 +1281,29 @@ static void peripheral_task(void *unused) {
             if (!initialized)
                 initialized = bsp_battery_init() == ESP_OK;
             int soc = initialized ? bsp_battery_soc() : -1;
+            periph_stack_min = (unsigned)uxTaskGetStackHighWaterMark(NULL);
             whale_post(&(whale_event_t){.kind = 99, .value = (uint32_t)soc});
         }
         /* Battery and codec share I2C. One worker serializes initialization;
          * no audio operation runs in the event dispatcher or under LVGL. */
         bool captured = whale_voice_pending();
-        if (captured)
+        if (captured) {
             whale_voice_run();
+            periph_stack_min = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+        }
         whale_audio_cmd_t cue;
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
                 if (cue.kind == 6) {
                     bool saved = whale_sound_save(cue.mode);
                     whale_post(&(whale_event_t){.kind = 98, .value = saved ? 1 : 0});
-                } else if (!whale_voice_busy())
-                    whale_audio_play(cue);
+                } else if (!whale_voice_busy()) {
+                    bool played = whale_audio_play(cue);
+                    ESP_LOGI("whale_diag", "cue kind=%u played=%d", (unsigned)cue.kind,
+                             (int)played);
+                    (void)played;
+                }
+                periph_stack_min = (unsigned)uxTaskGetStackHighWaterMark(NULL);
             }
         } else
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1301,6 +1332,7 @@ static void service(whale_event_t e) {
     }
     case WE_LINK:
         a.linked = true;
+        log_diag("link-up");
         break;
     case WE_PAIR:
         a.passkey = e.value;
@@ -1320,6 +1352,7 @@ static void service(whale_event_t e) {
         }
         break;
     case WE_DOWN:
+        log_diag("link-down");
         whale_audio_interrupt();
         if (a.linked) {
             disconnected_at = a.now;
@@ -1400,7 +1433,7 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "v1.3.0-dev / protocol 2.2 + companion cues; minimum free heap: %lu",
+    ESP_LOGI("whale", "v1.3.1 / protocol 2.2 + companion cues; minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
     cues = xQueueCreate(8, sizeof(whale_audio_cmd_t));
     if (!cues)
@@ -1408,6 +1441,7 @@ void app_main(void) {
     xTaskCreate(peripheral_task, "whale_periph", WHALE_PERIPHERAL_STACK_BYTES, NULL, 2, NULL);
     last_input = ms();
     bsp_display_backlight(75);
+    uint32_t diag_at = ms();
     for (;;) {
         whale_event_t e;
         bool have = xQueueReceive(events, &e, pdMS_TO_TICKS(40)) == pdTRUE;
@@ -1419,6 +1453,10 @@ void app_main(void) {
         }
         if (have)
             service(e);
+        if (a.now - diag_at >= WHALE_DIAG_MS) {
+            diag_at = a.now;
+            log_diag("periodic");
+        }
         if (a.view == VOICE) {
             uint32_t age = a.now - a.voice_at;
             if (a.voice_phase == VOICE_SENDING && age >= 5000)
