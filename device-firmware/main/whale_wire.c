@@ -46,7 +46,7 @@ int whale_receive(whale_rx_t *rx, const uint8_t *f, size_t n, uint32_t ms, whale
     uint8_t *buf = ctl ? rx->control : rx->data;
     uint16_t id = w16(f + 2), len = w16(f + 6);
     unsigned i = f[4], count = f[5];
-    if (!len || len > (ctl ? sizeof(rx->control) : sizeof(rx->data)) || count != (len + 11) / 12 ||
+    if (!len || len > (ctl ? sizeof(rx->control) : sizeof(rx->data)) || count != (len + 11u) / 12u ||
         i >= count)
         return -1;
     size_t offset = i * 12, part = len - offset;
