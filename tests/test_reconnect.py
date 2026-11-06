@@ -37,6 +37,22 @@ class BackoffTests(unittest.TestCase):
             _, link = self.stats(rand)
             self.assertAlmostEqual(link.lost("not-found"), expected)
 
+    def test_jitter_never_exceeds_sixty_seconds(self):
+        for rand in (0.0, 0.5, 1.0):
+            _, link = self.stats(rand)
+            delays = [link.lost("not-found") for _ in range(20)]
+            self.assertTrue(all(0 < d <= 60 for d in delays), delays)
+
+    def test_retry_countdown_uses_elapsed_time_and_clears_on_connection(self):
+        clock, link = self.stats()
+        link.hold(60)
+        clock.now += 17.5
+        self.assertEqual(link.fields()["retryIn"], 42.5)
+        clock.now += 60
+        self.assertEqual(link.fields()["retryIn"], 0)
+        link.up()
+        self.assertNotIn("retryIn", link.fields())
+
     def test_drop_counts_reason_and_reconnect_time(self):
         clock, link = self.stats()
         link.up()
@@ -97,6 +113,39 @@ class LoopbackHooks(unittest.TestCase):
 
 
 class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
+    async def test_long_backoff_keeps_heartbeat_and_countdown_alive(self):
+        clock = Clock()
+        model = bridge.StatusModel()
+        model.link = bridge.LinkStats(clock=clock, rand=lambda: 0.5)
+        model.link.attempt = 6  # Exercise the actual 60-second wait without wall-clock sleep.
+        reports = []
+        real_sleep = asyncio.sleep
+
+        async def sleep(seconds):
+            clock.now += seconds
+            await real_sleep(0)
+
+        scans = 0
+        async def scan(*args, **kwargs):
+            nonlocal scans
+            scans += 1
+            if scans > 1:
+                raise asyncio.CancelledError
+            return None
+
+        telemetry = SimpleNamespace(sendto=lambda data, _: reports.append((clock.now, json.loads(data))))
+        fake = SimpleNamespace(BleakScanner=SimpleNamespace(find_device_by_name=scan), BleakClient=None)
+        with patch.dict(sys.modules, bleak=fake), patch.object(bridge.asyncio, "sleep", sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                await bridge.ble_loop(model, "fixture", None, 0.01, telemetry, 0)
+        waiting = [(at, r) for at, r in reports if r['state'] == 'not-found']
+        self.assertEqual(waiting[0][1]['retryIn'], 60)
+        self.assertEqual(waiting[-1][1]['retryIn'], 0)
+        self.assertEqual(waiting[-1][0] - waiting[0][0], 60)
+        self.assertTrue(all(b[0]-a[0] < 7 for a, b in zip(waiting, waiting[1:])))
+        self.assertTrue(all(not r['connected'] for _, r in waiting))
+        self.assertNotIn('retryIn', reports[-1][1])  # Next scan is no longer in backoff.
+
     async def test_stress_cycle_drops_and_reconnects(self):
         model = bridge.StatusModel()
         connects = []

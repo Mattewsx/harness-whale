@@ -54,6 +54,7 @@ RECONNECT_BASE_SECONDS = 1.0
 RECONNECT_MAX_SECONDS = 60.0
 RECONNECT_STABLE_SECONDS = 30.0
 RECONNECT_JITTER = 0.2
+LINK_HEARTBEAT_SECONDS = 2.0
 PAIRING_DECLINED_SECONDS = 60.0
 MAX_LINK_HOLD_SECONDS = 30.0
 
@@ -139,7 +140,7 @@ class LinkStats:
         self.last_reason: str | None = None
         self.last_disconnect_at: int | None = None
         self.last_reconnect_ms: int | None = None
-        self.retry_delay: float | None = None
+        self.retry_at: float | None = None
         self.attempt = 0
         self.connected_at: float | None = None
         self.down_at: float | None = None
@@ -152,7 +153,7 @@ class LinkStats:
         if self.down_at is not None:
             self.last_reconnect_ms = round((now - self.down_at) * 1000)
             self.down_at = None
-        self.retry_delay = None
+        self.retry_at = None
 
     def lost(self, reason: str, manual: bool = False) -> float:
         """Record a failed attempt or a dropped link; return the delay before retrying."""
@@ -170,12 +171,11 @@ class LinkStats:
         delay = min(RECONNECT_MAX_SECONDS, RECONNECT_BASE_SECONDS * (2 ** min(self.attempt, 16)))
         delay *= 1 + RECONNECT_JITTER * (2 * self.rand() - 1)
         self.attempt += 1
-        self.retry_delay = round(delay, 2)
-        return delay
+        return self.hold(min(RECONNECT_MAX_SECONDS, delay))
 
     def hold(self, seconds: float) -> float:
         """A fixed wait (pairing declined) that does not grow the backoff."""
-        self.retry_delay = seconds
+        self.retry_at = self.clock() + seconds
         return seconds
 
     def fields(self) -> dict[str, Any]:
@@ -185,8 +185,8 @@ class LinkStats:
             fields["lastDisconnectAt"] = self.last_disconnect_at
         if self.last_reconnect_ms is not None:
             fields["lastReconnectMs"] = self.last_reconnect_ms
-        if self.retry_delay is not None:
-            fields["retryIn"] = self.retry_delay
+        if self.retry_at is not None:
+            fields["retryIn"] = round(max(0.0, self.retry_at - self.clock()), 2)
         return fields
 
 
@@ -474,10 +474,18 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                        **link.fields(), **fields)
 
     async def wait_retry(delay: float, state: str, **fields: Any) -> None:
-        report(state, **fields)
-        await asyncio.sleep(delay)
+        # Keep /whale alive during backoff; its heartbeat expires after 7 s.
+        # Use a deadline so telemetry work cannot extend the retry delay.
+        deadline = link.clock() + delay
+        while True:
+            report(state, **fields)
+            remaining = deadline - link.clock()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(LINK_HEARTBEAT_SECONDS, remaining))
 
     while True:
+        link.retry_at = None
         model.link_cycle.clear()
         try:
             device = address

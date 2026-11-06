@@ -25,6 +25,7 @@ reads session titles, replies or transcripts.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import re
 import socket
@@ -50,6 +51,9 @@ class Bridge:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.settimeout(timeout)
+
+    def close(self) -> None:
+        self.sock.close()
 
     def status(self) -> dict[str, Any] | None:
         self.sock.sendto(b'{"kind":"whale-link-status"}', self.address)
@@ -82,7 +86,8 @@ class Bridge:
 
 
 def ready(status: dict[str, Any]) -> bool:
-    return bool(status.get("connected")) and status.get("state") in ("v2.2", "connected")
+    # Physical BLE connection is reported before pairing and the v2.2 handshake.
+    return bool(status.get("connected")) and status.get("state") == "v2.2"
 
 
 class SerialMonitor(threading.Thread):
@@ -178,8 +183,11 @@ def spread(values: list[int]) -> dict[str, Any]:
             "max": max(values)}
 
 
-def voice_rounds(bridge: Bridge, rounds: int, timeout: float) -> list[dict[str, Any]]:
-    results = []
+def voice_rounds(bridge: Bridge, rounds: int, timeout: float,
+                 results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    # Append as rounds finish, so an interrupted run retains its completed work.
+    if results is None:
+        results = []
     for index in range(1, rounds + 1):
         before = bridge.status() or {}
         counts = dict(before.get("voice") or {})
@@ -205,8 +213,10 @@ def voice_rounds(bridge: Bridge, rounds: int, timeout: float) -> list[dict[str, 
 
 
 def reconnect_rounds(bridge: Bridge, rounds: int, cue_every: int, timeout: float,
-                     settle: float) -> list[dict[str, Any]]:
-    results = []
+                     settle: float,
+                     results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    if results is None:
+        results = []
     for index in range(1, rounds + 1):
         if bridge.wait(ready, timeout) is None:
             results.append({"round": index, "outcome": "not-ready"})
@@ -249,8 +259,14 @@ def main() -> int:
     parser.add_argument("--settle", type=float, default=3.0, help="seconds to keep each link up before dropping it")
     parser.add_argument("--out", type=Path, help="write the JSON report here")
     args = parser.parse_args()
+    if args.voice_rounds < 0 or args.reconnects < 0 or not (args.voice_rounds or args.reconnects):
+        parser.error("round counts must be nonnegative, with at least one round requested")
 
-    bridge = Bridge(args.bridge_port)
+    with closing(Bridge(args.bridge_port)) as bridge:
+        return run(args, bridge)
+
+
+def run(args: argparse.Namespace, bridge: Bridge) -> int:
     first = bridge.status()
     if first is None:
         print("没有连上本机桥接器：请先启动 Harness（或 harness_ble_bridge.py），并确认桥接器是 v1.3.1 或更新。",
@@ -264,33 +280,43 @@ def main() -> int:
                               "bridgeAtStart": first}
     voice: list[dict[str, Any]] = []
     link: list[dict[str, Any]] = []
+    interrupted = False
     try:
         if args.voice_rounds > 0:
-            voice = voice_rounds(bridge, args.voice_rounds, args.voice_timeout)
+            voice_rounds(bridge, args.voice_rounds, args.voice_timeout, results=voice)
         if args.reconnects > 0:
-            link = reconnect_rounds(bridge, args.reconnects, args.cue_every,
-                                    args.reconnect_timeout, args.settle)
+            reconnect_rounds(bridge, args.reconnects, args.cue_every,
+                             args.reconnect_timeout, args.settle, results=link)
     except KeyboardInterrupt:
+        interrupted = True
         print("已中断，只输出已完成的轮次", file=sys.stderr)
+    finally:
+        if monitor:
+            report["device"] = monitor.close()
     report["durationSeconds"] = round(time.time() - started)
     report["bridgeAtEnd"] = bridge.status()
     report["voice"] = {"rounds": voice,
+                       "requested": args.voice_rounds, "completed": len(voice),
                        "ok": sum(r["outcome"] == "draft" for r in voice),
                        "sttMs": spread([r["sttMs"] for r in voice if isinstance(r.get("sttMs"), int)])}
     plain = [r["reconnectMs"] for r in link
              if r["outcome"] == "ok" and not r["holdSeconds"] and isinstance(r.get("reconnectMs"), int)]
-    report["reconnect"] = {"rounds": link, "ok": sum(r["outcome"] == "ok" for r in link),
+    report["reconnect"] = {"rounds": link,
+                           "requested": args.reconnects, "completed": len(link),
+                           "ok": sum(r["outcome"] == "ok" for r in link),
                            "reconnectMs": spread(plain)}
-    if monitor:
-        report["device"] = monitor.close()
+    incomplete = len(voice) != args.voice_rounds or len(link) != args.reconnects
+    failed = (len(voice) - report["voice"]["ok"]) + (len(link) - report["reconnect"]["ok"])
+    crashed = bool(report.get("device", {}).get("crashes"))
+    report["interrupted"] = interrupted
+    report["status"] = ("interrupted" if interrupted else "incomplete" if incomplete
+                        else "failed" if failed or crashed else "passed")
 
     print(json.dumps({k: v for k, v in report.items() if k not in ("bridgeAtStart",)},
                      ensure_ascii=False, indent=2))
     if args.out:
         args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    failed = (len(voice) - report["voice"]["ok"]) + (len(link) - report["reconnect"]["ok"])
-    crashed = bool(report.get("device", {}).get("crashes"))
-    return 1 if failed or crashed else 0
+    return 130 if interrupted else 1 if incomplete or failed or crashed else 0
 
 
 if __name__ == "__main__":
