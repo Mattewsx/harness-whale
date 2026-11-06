@@ -54,6 +54,14 @@ void xTaskCreate(void (*fn)(void *), const char *name, int size, void *arg, int 
     (void)handle;
 }
 void vTaskDelay(int ticks) { (void)ticks; }
+TaskHandle_t xTaskGetHandle(const char *name) {
+    (void)name;
+    return NULL;
+}
+unsigned uxTaskGetStackHighWaterMark(void *task) {
+    (void)task;
+    return 4096;
+}
 int nvs_flash_init(void) { return 0; }
 int64_t esp_timer_get_time(void) { return 0; }
 void whale_pair(bool yes) { (void)yes; }

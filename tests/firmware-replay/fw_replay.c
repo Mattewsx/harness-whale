@@ -7,6 +7,7 @@ int bsp_display_init(void){return 0;}void *bsp_lvgl_init(void){return (void*)1;}
 void bsp_lvgl_unlock(void){}void bsp_display_backlight(int p){}
 int bsp_button_init(void(*f)(int,int,void*),void*p){return 0;}
 void xTaskCreate(void(*f)(void*),const char*c,int n,void*p,int i,void*q){}void vTaskDelay(int n){}
+TaskHandle_t xTaskGetHandle(const char*n){return 0;}unsigned uxTaskGetStackHighWaterMark(void*t){return 4096;}
 int nvs_flash_init(void){return 0;}int64_t esp_timer_get_time(void){return 0;}
 void whale_pair(bool y){}bool whale_unbind(void){return true;}void whale_ble_start(void){}
 void whale_ui_init(void){}void whale_ui_draw(const whale_app_t *app){}
