@@ -21,8 +21,9 @@ NOTIFY = "13b50202-663a-48c5-a224-37c1c2569080"
 HEADER = struct.Struct("<BBHBBH")
 IDENTITY = struct.Struct("<QIII")
 ROW = struct.Struct("<IIBBBIHHIB")
-CAPS = 2047  # bit 7 optionally carries per-run display detail
+CAPS = 4095  # bit 11: global work summary and live cue events (v1.3)
 CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
+CONTROL |= {0x50, 0x51, 0x52}
 END = 0xFFFFFFFF
 
 
@@ -389,6 +390,83 @@ class Link:
         self.limit = 8
         self.revision = -1
         self.order = []
+        self.global_cap = False
+        self.global_rows = None
+        self.global_seq = 0
+        self.global_summary = None
+        self.global_at = 0
+        self.announced = set()
+        self.global_initialized = False
+
+    def global_changes(self):
+        """Independent of the eight-row window; reconnect establishes a silent baseline.
+
+        0x51 carries the current valid cue as well as an optional live trigger.
+        A zero cue invalidates deferred audio after reads, new runs and deletion.
+        """
+        if not self.ready or not self.global_cap:
+            return []
+        m = self.model
+        current = {}
+        running = waiting = unread = 0
+        focus = 0
+        for sid, data in m.sessions.items():
+            row = m.row(sid, True)
+            state, flags = row[8], row[10]
+            busy = state in (2, 3, 4, 8)
+            qid = int.from_bytes(row[19:23], 'little')
+            old_value = (self.global_rows or {}).get(sid)
+            resolved = any(q.status != 4 and IDENTITY.unpack(q.identity)[1:3] == (sid, data['_rid'])
+                           for q in m.questions.values())
+            pending = bool(qid) or (state in (4, 8) and data.get('hint', 0) >= 2) or (state == 8 and not resolved)
+            running += busy
+            waiting += pending
+            unread += bool(flags & 24)
+            if busy and not focus:
+                focus = sid
+            cue = 1 if pending else 2 if flags & 16 else 3 if flags & 8 or (state == 5 and not data.get("replyId")) else 0
+            if state == 7: cue = 0  # user-initiated stop is always silent
+            if cue == 1:
+                token = (old_value[3] if old_value and old_value[0] == data['_rid'] and old_value[2] == 1 and old_value[5] in (0, qid) else qid or m.allocate())
+            else:
+                token = data['_rid'] if cue == 2 else data.get('_reply', 0) or data['_rid']
+            current[sid] = (data['_rid'], state, cue, token, data.get('_reply', 0), qid)
+        complete = m.roster is not None and m.roster <= m.keys.keys()
+        baseline = self.global_rows is None or not self.global_initialized
+        self.global_initialized = complete
+        out = []
+        previous = self.global_rows or {}
+        for sid in previous.keys() | current.keys():
+            value = current.get(sid, (0, 0, 0, 0, 0, 0))
+            if baseline or previous.get(sid) == value:
+                continue
+            run, state, cue, token, reply, qid = value
+            old = previous.get(sid, (0, 0, 0, 0, 0, 0))
+            trigger = 0
+            live = m.sessions.get(sid, {}).get('runId') not in (None, 'history')
+            identity = (sid, cue, run if cue == 3 else token)
+            new_cue = (cue, token) != old[2:4]
+            if cue == 3:
+                new_cue = bool(sid in previous and (reply != old[4] or (state == 5 and old[1] in (2, 3, 4, 8))))
+            if live and cue and new_cue and identity not in self.announced:
+                trigger = cue
+                self.announced.add(identity)
+            elif live and state in (2, 3) and (run != old[0] or old[1] not in (2, 3, 4, 8)):
+                trigger = 5  # work started; visual only
+            self.global_seq += 1
+            out.append((0x51, pack('QIIIIBB', m.epoch, self.global_seq, sid, run, token, cue, trigger)))
+        # Bound lifetime memory by retaining only current identities. The model's
+        # run/reply/question IDs never repeat, and ordinary heartbeat is unchanged.
+        if len(self.announced) > max(512, len(current) * 4):
+            self.announced.intersection_update((sid, v[2], v[0] if v[2] == 3 else v[3]) for sid, v in current.items())
+        self.global_rows = current
+        summary = (len(current), running, waiting, unread, focus, int(complete))
+        now = time.monotonic()
+        if baseline or summary != self.global_summary or now - self.global_at >= 10:
+            # Summary follows events so all invalidations reach the device first.
+            out.append((0x50, pack('QIHHHHIB', m.epoch, self.global_seq, *summary)))
+            self.global_summary, self.global_at = summary, now
+        return out
 
     def snapshot(self, cursor=0, limit=8, refresh_order=True):
         m = self.model
@@ -487,7 +565,7 @@ class Link:
                     count,txt=m.reply_cache[key]
                     out.append((0x1B,pack("QIIIIH",m.epoch,*key,count,len(txt))+txt))
                     self.pending_page=None
-        return out
+        return out + self.global_changes()
 
     def receive(self, kind, body):
         m = self.model
@@ -496,6 +574,7 @@ class Link:
             self.detail = bool(caps & 128)
             self.readable=bool(caps & 256)
             self.attention=bool(caps & 1024)
+            self.global_cap=bool(caps & 2048)
             self.ready = (
                 (major, minor, status) == (2, 2, 0)
                 and caps & 63 == 63
@@ -504,6 +583,13 @@ class Link:
             return []
         if not self.ready:
             return []
+        if kind == 0x52 and self.global_cap and len(body) == 12:
+            epoch, sid = struct.unpack('<QI', body)
+            if epoch != m.epoch or sid not in m.sessions:
+                return []
+            first = self.snapshot(0)
+            cursor = self.order.index(sid) // self.limit * self.limit
+            return self.snapshot(cursor, self.limit) if cursor else first
         if kind == 0x4a and self.attention and len(body) == 17:
             epoch,sid,revision,which = struct.unpack('<QIIB',body)
             if epoch == m.epoch: m.read_mark(sid,revision,which)

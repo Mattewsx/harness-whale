@@ -1,0 +1,15 @@
+Tool: built-in image_gen (completed successfully before download/inspection).
+Purpose: six new companion poses for the existing whale-girl; review assets, not a firmware release.
+Reference: device-firmware/assets/images/whale-atlas.png in this repository.
+Existing character provenance: retain repository LICENSES/ATTRIBUTION.txt and the existing project's source attribution.
+Output: companion-sheet.png, 1536 x 1024 RGBA, six 512 x 512 cells; alpha inspected on paper-colored background.
+Processing: equal-cell cropping and Lanczos resizing to 196 x 196, preserving transparency.
+
+Prompt:
+Create ONE production sprite sheet for the exact whale-girl character in the reference image, not a redesign. Wide 3:2 canvas, perfectly regular 3-column 2-row grid, six equal cells. Truly transparent, no text, labels, grid or borders. Same-size chibi complete in each cell with margins and the same baseline. Preserve blue curled hair, blue tail, tiny gold crown, white maid headband, navy dress with white details, blue bow, blue eyes and clean colored line art. No work props. Top row: idle half-lidded, blink in the same pose, greeting wave. Bottom row: happy closed eyes with blush for a head pat, no other person; tiny gold fish snack and chewing; sleepy yawn with hand at mouth. Fully visible, no crossing cell boundaries.
+
+Speech:
+Local System.Speech / Microsoft Huihui Desktop, rate +1, source WAV PCM16 mono 16000 Hz.
+Exact scripts: 忙完啦。 / 帮我选一下？ / 遇到问题啦，来看看。
+These are fixed synthesis review samples, not cloned character speech. Playback in the prototype uses embedded completed WAV files.
+Build script trims padding with 40 ms boundaries and normalizes with -3 dBFS peak protection; metrics and hashes are in asset-manifest.json.

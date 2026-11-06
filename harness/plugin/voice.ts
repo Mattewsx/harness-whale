@@ -52,6 +52,7 @@ export function createVoiceService(ctx: any, visible: (id: string) => boolean,
   const token = randomUUID(), life = new AbortController()
   const receipts = new Map<string, { sessionId: string, text: string, status: string }>()
   const pending = new Map<string, Promise<any>>()
+  const failedActivations = new Set<string>()
   const get = (name: string) => { try { return ctx.get?.(name) ?? ctx[name] } catch { return undefined } }
   const speech = () => get('speechToText')
   function ready() {
@@ -62,18 +63,33 @@ export function createVoiceService(ctx: any, visible: (id: string) => boolean,
     const phase = local?.preparation?.phase
     return Boolean((phase === 'ready' || phase === 'standby') && get('agents'))
   }
-  async function lookup(id: string) {
+  async function lookup(id: string): Promise<{ agent?: any, reason?: string }> {
     const agents = get('agents')
-    if (!visible(id)) return undefined
-    let agent = agents?.get(id)
-    if (!agent) {
-      // Use the host controller so persisted preset/model/CWD and ownership are
-      // restored exactly as in the desktop UI; never create a new session.
+    if (!visible(id)) return { reason: 'hidden' }
+    if (!agents) return { reason: 'agents_missing' }
+    let agent = agents.get(id)
+    if (agent) failedActivations.delete(id)
+    else {
+      // Only an explicitly confirmed submit may activate the desktop's session.
+      // Never repeat a failed activation automatically: broken host presets can
+      // roll back publication and remove the desktop row until it is refreshed.
+      if (failedActivations.has(id)) return { reason: 'open_on_computer' }
       const controller = get('sessionController')
-      const found = await controller?.resolveAgent?.(id)
-      if (found && !found.error) agent = found.agent
+      if (typeof controller?.resolveAgent !== 'function') return { reason: 'controller_missing' }
+      try {
+        const found = await controller.resolveAgent(id)
+        agent = found?.agent
+        if (!agent) throw new Error('host_activation_failed')
+      } catch {
+        failedActivations.add(id)
+        // Fail closed for further cold sessions if the bounded guard is full.
+        return { reason: 'host_activation_failed' }
+      }
     }
-    return agent && (agent.session?.id ?? agent.session?.header?.id) === id && main(agent.session) && visible(id) ? agent : undefined
+    if ((agent.session?.id ?? agent.session?.header?.id) !== id) return { reason: 'identity_mismatch' }
+    if (!main(agent.session)) return { reason: 'not_main' }
+    if (!visible(id)) return { reason: 'hidden' }
+    return { agent }
   }
   async function submit(req: any, query: boolean) {
     if (!uuid.test(req.id) || typeof req.sessionId !== 'string' || req.sessionId.length > 256)
@@ -85,15 +101,27 @@ export function createVoiceService(ctx: any, visible: (id: string) => boolean,
       return { status: previous.status }
     }
     if (!visible(req.sessionId)) return { status: 'archived' }
-    const agent = await lookup(req.sessionId)
-    if (!agent) return { status: 'unavailable' }
-    // Search durable inbox events as well as still-pending work. Native Inbox only
-    // deduplicates pending IDs and is insufficient after a message was consumed.
-    if (acceptedInSession(agent.session, req.id)) return { status: 'accepted' }
-    if (query) return { status: 'not_sent' }
+    // Receipt queries are strictly read-only, including after a plugin restart.
+    // A missing in-memory session is not evidence that a message was never sent.
+    if (query) {
+      const session = get('agents')?.get(req.sessionId)?.session ?? get('sessions')?.get(req.sessionId)
+      if (!session) return { status: 'unknown' }
+      if ((session.id ?? session.header?.id) !== req.sessionId || !main(session))
+        return { status: 'unavailable', reason: 'identity_mismatch' }
+      return { status: acceptedInSession(session, req.id) ? 'accepted' : 'not_sent' }
+    }
     if (waiting(req.sessionId)) return { status: 'question' }
     if (typeof req.text !== 'string' || !req.text.trim() || Buffer.byteLength(req.text) > MAX_TEXT ||
         /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(req.text)) return { status: 'invalid' }
+    if (failedActivations.size >= 128 && !get('agents')?.get(req.sessionId))
+      return { status: 'unavailable', reason: 'open_on_computer' }
+    const target = await lookup(req.sessionId)
+    const agent = target.agent
+    if (!agent) return { status: 'unavailable', reason: target.reason }
+    // Search durable inbox events as well as still-pending work. Native Inbox only
+    // deduplicates pending IDs and is insufficient after a message was consumed.
+    if (acceptedInSession(agent.session, req.id)) return { status: 'accepted' }
+    if (waiting(req.sessionId)) return { status: 'question' }
     if (!visible(req.sessionId)) return { status: 'archived' }
     const queued = agent.status === 'running'
     try {

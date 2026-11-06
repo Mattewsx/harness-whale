@@ -1,0 +1,20 @@
+{
+  "voice_label": "第 4 版发条少女声",
+  "voice_review": "audio-review-v4",
+  "voice_confirmed_by_user": true,
+  "modes": ["effects", "voice"],
+  "default_mode": "voice",
+  "voice_behavior": "Direct phrase for done/question/error/disconnect; user-initiated stop is silent in both modes; no leading effect before a phrase",
+  "speech_source": "zh-CN-XiaoyiNeural, rate -12%, pitch +2Hz; fixed local clockwork processing from review 4",
+  "effects_source": "audio-review-v2: original 8-bit event cues",
+  "files": {
+    "voice-done.wav": "audio-review-v4/clockwork-done.wav",
+    "voice-question.wav": "audio-review-v4/clockwork-question.wav",
+    "voice-error.wav": "audio-review-v4/clockwork-error.wav",
+    "voice-disconnect.wav": "voice-extra/voice-disconnect.wav",
+    "tone-done.wav": "audio-review-v2/chiptune-done.wav",
+    "tone-question.wav": "audio-review-v2/chiptune-question.wav",
+    "tone-error.wav": "audio-review-v2/chiptune-error.wav",
+    "tone-disconnect.wav": "audio-review-v2/chiptune-disconnect.wav"
+  }
+}

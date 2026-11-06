@@ -22,7 +22,8 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(manifest['offset'], '0x0')
         self.assertEqual(manifest['chip'], 'esp32c3')
         self.assertEqual(set(manifest['sha256']), {'Harness-Whale-ESP32C3-8MB.bin'})
-        self.assertEqual(manifest['version'], '1.2.0')
+        source = json.loads((ROOT / 'docs/release-source.json').read_text())
+        self.assertEqual(manifest['version'], source['release'].removeprefix('v'))
 
 
 if __name__ == '__main__':

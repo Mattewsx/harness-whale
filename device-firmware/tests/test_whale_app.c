@@ -19,7 +19,7 @@ int xQueueReceive(void *q, void *out, int wait) {
 }
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
-        assert(wait == 0 && *(const uint8_t *)in == 1);
+        assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 6));
         if (!cue_ok)
             return 0;
         cue_count++;
@@ -106,6 +106,10 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     return send_ok;
 }
 static void setup(void) {
+    memset(&reminders, 0, sizeof reminders);
+    disconnect_pending = false;
+    seek_session = 0;
+    seek_to_list = priority_list = false;
     whale_reply_cache_clear();
     memset(sounded, 0, sizeof sounded);
     sounded_next = cue_count = audio_plays = 0;
@@ -229,7 +233,9 @@ static void test_navigation_and_questions(void) {
     key(BSP_BTN_OK);
     unsigned before = sends;
     key(BSP_BTN_UP);
-    assert(a.view == HOME && sends == before);
+    assert(a.view == COMPANION && sends == before);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == HOME);
     a.rows[1].question = 40;
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
@@ -494,10 +500,10 @@ static void test_voice_direct_entry(void) {
     a.attention_cap = true;
     key(BSP_BTN_OK);
     assert(a.view == LIST_LOAD && sent_type == 0x10 && w32(sent_bytes + 8) == 0);
-    key(BSP_BTN_OK); /* old cached rows cannot be selected during a priority refresh */
+    key(BSP_BTN_OK); /* old cached rows cannot be selected during a priority
+                        refresh */
     assert(a.view == LIST_LOAD);
-    /* Highest-priority row is visible even when the previous task is retained
-     * lower down; background snapshots otherwise continue to track identity. */
+    /* Keep priority order while highlighting the current task by identity. */
     memset(&stage, 0, sizeof stage);
     stage.active = true;
     stage.epoch = a.epoch;
@@ -510,14 +516,247 @@ static void test_voice_direct_entry(void) {
     put32(end + 8, 2);
     end[12] = 2;
     apply_message((whale_msg_t){0x13, end, sizeof end});
-    assert(a.view == LIST && a.selected == 0 && a.rows[0].session == 11);
+    assert(a.view == LIST && a.selected == 1 && a.rows[0].session == 11);
     setup();
     a.attention_cap = true;
     a.linked = false;
     key(BSP_BTN_OK);
     assert(a.view == LIST && sends == 0);
 }
+static void summary(unsigned running, unsigned waiting, unsigned unread) {
+    uint8_t p[25] = {0};
+    put64(p, a.epoch);
+    put32(p + 8, reminders.seq);
+    put16(p + 12, 12);
+    put16(p + 14, running);
+    put16(p + 16, waiting);
+    put16(p + 18, unread);
+    put32(p + 20, 10);
+    p[24] = 1;
+    apply_message((whale_msg_t){0x50, p, sizeof p});
+}
+static void cue_event(unsigned seq, unsigned sid, unsigned token, unsigned valid,
+                      unsigned trigger) {
+    uint8_t p[26] = {0};
+    put64(p, a.epoch);
+    put32(p + 8, seq);
+    put32(p + 12, sid);
+    put32(p + 16, 20);
+    put32(p + 20, token);
+    p[24] = valid;
+    p[25] = trigger;
+    apply_message((whale_msg_t){0x51, p, sizeof p});
+}
+static void test_companion_and_global_cues(void) {
+    setup();
+    a.global_cap = true;
+    last_input = 0;
+    a.now = 120001;
+    summary(1, 0, 0);
+    companion_tick();
+    assert(a.view == HOME); /* background session blocks auto */
+    summary(0, 0, 1);
+    companion_tick();
+    assert(a.view == HOME);
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.view == COMPANION && last_input == 0);
+    for (unsigned i = 0; i < 4; i++) {
+        a.companion_choice = i;
+        key(BSP_BTN_OK);
+        assert(a.companion_action == i + 1);
+        uint32_t start = a.action_at;
+        key(BSP_BTN_OK);
+        assert(a.action_at == start);
+        a.now += 3000;
+        companion_tick();
+        assert(!a.companion_action);
+    }
+    a.companion_choice = 3;
+    key(BSP_BTN_OK);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == HOME && !a.companion_action);
+    key(BSP_BTN_UP);
+    assert(a.view == COMPANION);
+    cue_event(1, 10, 10, 0, 5);
+    assert(a.view == HOME); /* run start interrupts */
+    key(BSP_BTN_UP);
+    cue_event(2, 10, 20, 1, 1);
+    assert(a.view == LIST); /* no unread cleared */
+    assert(reminders.pending[15].kind == 1);
+    a.now += 1000;
+    companion_tick();
+    assert(cue_count == 1);
+    cue_event(2, 10, 20, 1, 1);
+    a.now += 1000;
+    companion_tick();
+    assert(cue_count == 1);
+    cue_event(3, 10, 21, 3, 3);
+    cue_event(4, 11, 22, 2, 2);
+    cue_event(5, 12, 23, 1, 1);
+    a.now += 1000;
+    companion_tick();
+    assert(cue_count == 2); /* one merged cue */
+    a.view = VOICE;
+    a.voice_phase = VOICE_RECORD;
+    cue_event(6, 10, 24, 3, 3);
+    a.now += 2000;
+    companion_tick();
+    assert(cue_count == 2);
+    cue_event(7, 10, 0, 0, 0);
+    a.voice_phase = VOICE_PREVIEW;
+    companion_tick();
+    assert(cue_count == 2);
+    cue_event(8, 11, 25, 2, 2);
+    a.voice_phase = VOICE_RECORD;
+    a.now += 1000;
+    companion_tick();
+    assert(cue_count == 2);
+    a.voice_phase = VOICE_PREVIEW;
+    companion_tick();
+    assert(cue_count == 3);
+    setup();
+    a.now = 120001;
+    last_input = 0;
+    companion_tick();
+    assert(a.view == HOME); /* old bridge */
+    a.linked = false;
+    companion_tick();
+    assert(a.view == COMPANION); /* offline allowed */
+    a.view = REPLY_READ;
+    a.now += 120000;
+    companion_tick();
+    assert(a.view == REPLY_READ);
+    setup();
+    service((whale_event_t){.kind = WE_DOWN});
+    a.now += 4999;
+    companion_tick();
+    assert(cue_count == 0);
+    a.now++;
+    companion_tick();
+    assert(cue_count == 0);
+    a.now += 1000;
+    companion_tick();
+    assert(cue_count == 1);
+    a.now += 20000;
+    companion_tick();
+    assert(cue_count == 1);
+    setup();
+    key(BSP_BTN_OK | 256);
+    assert(a.view == MANAGE);
+    key(BSP_BTN_OK);
+    assert(a.view == SOUND);
+    a.sound_choice = 1;
+    key(BSP_BTN_OK);
+    assert(a.sound_mode == 1 && a.sound_saved == 0);
+    service((whale_event_t){.kind = 98, .value = 1});
+    assert(a.sound_saved == 1);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == MANAGE);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == HOME);
+    puts("Companion actions, global idle, interruption, deferred/merged cues and "
+         "settings PASS");
+}
+static void key_event(unsigned k, unsigned ev) {
+    service((whale_event_t){.kind = WE_KEY, .value = k | (ev << 8)});
+}
+static void test_settings_navigation(void) {
+    setup();
+    a.selected = 1;
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    assert(a.view == HOME && a.confirm_holding && a.confirm_hold_ms == 500 && sends == 0);
+    a.now += 200;
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view == LIST && !a.confirm_holding && a.selected == 1 && !a.list_settings);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.list_settings && a.selected == 0);
+    a.rows[0].flags = 16;
+    key(BSP_BTN_OK);
+    assert(a.view == MANAGE && a.settings_return == LIST && a.rows[0].flags == 16);
+    key(BSP_BTN_OK);
+    assert(a.view == SOUND);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == MANAGE && a.settings_return == LIST);
+    a.menu_choice = 2;
+    key(BSP_BTN_OK);
+    assert(a.view == VERSION);
+    key(BSP_BTN_OK);
+    assert(a.view == MANAGE);
+    a.menu_choice = 3;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST && a.list_settings);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && !a.list_settings && !(a.rows[0].flags & 16));
+
+    setup();
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    a.now += 500;
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    assert(a.view == MANAGE && !a.confirm_holding && sends == 0);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view == MANAGE); /* release must not open the sound submenu */
+    key(BSP_BTN_OK | 256);
+    assert(a.view == HOME);
+    dim = true;
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    assert(!a.confirm_holding && !dim);
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view == HOME); /* waking consumes the whole gesture */
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    page(PAIR);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view == PAIR && !a.confirm_holding);
+
+    setup();
+    a.count = 0;
+    a.linked = a.ready = false;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST && a.list_settings);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.view == MANAGE && a.settings_return == LIST);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == LIST && a.list_settings);
+
+    setup();
+    a.attention_cap = a.global_cap = true;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST_LOAD && sent_type == 0x52 && seek_to_list && seek_session == 10);
+    /* Targeted response can locate the current task beyond the first page. */
+    uint8_t begin[27] = {0};
+    put64(begin, a.epoch);
+    put32(begin + 8, 2);
+    put32(begin + 16, 8);
+    put32(begin + 20, UINT32_MAX);
+    put16(begin + 24, 10);
+    begin[26] = 2;
+    apply_message((whale_msg_t){0x11, begin, sizeof begin});
+    assert(stage.active && stage.cursor == 8);
+    stage.rows[0] = a.rows[1];
+    stage.rows[1] = a.rows[0];
+    stage.taken = 2;
+    uint8_t end[17] = {0};
+    put64(end, a.epoch);
+    put32(end + 8, 2);
+    end[12] = 2;
+    put32(end + 13, stage.crc);
+    apply_message((whale_msg_t){0x13, end, sizeof end});
+    assert(a.view == LIST && a.cursor == 8 && a.selected == 1 && !seek_session);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.list_settings && a.cursor == 8);
+    key(BSP_BTN_UP);
+    assert(a.view == LIST_LOAD && requested_cursor == 0);
+    puts("Settings entry, hold/release, return, offline and paged list "
+         "navigation PASS");
+}
 int main(void) {
+    test_settings_navigation();
+    test_companion_and_global_cues();
     test_detail_and_reading();
     test_navigation_and_questions();
     test_new_reply_and_lifecycle();
@@ -526,7 +765,8 @@ int main(void) {
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();
-    puts("Whale R11.1 application state, direct voice entry and completion cue tests PASS");
+    puts("Whale R11.1 application state, direct voice entry and completion cue "
+         "tests PASS");
     return 0;
 }
 
@@ -551,3 +791,15 @@ bool whale_voice_busy(void) { return false; }
 bool whale_voice_pending(void) { return false; }
 void whale_voice_run(void) {}
 uint32_t whale_voice_milliseconds(void) { return 0; }
+
+static uint32_t fake_audio_generation;
+void whale_audio_interrupt(void) { fake_audio_generation++; }
+uint32_t whale_audio_generation(void) { return fake_audio_generation; }
+bool whale_audio_play(whale_audio_cmd_t c) {
+    (void)c;
+    return true;
+}
+uint8_t whale_sound_load(void) { return 1; }
+bool whale_sound_save(uint8_t mode) { return mode < 2; }
+
+bool whale_audio_busy(void) { return false; }

@@ -66,6 +66,7 @@ lines.append('assert 1 0 0')
 # Page to the last window, then remove its only row while selected.
 for i in range(17):m.update(dict(sessionId='s'+str(i),runId='r',title='同名',sentAt=11000))
 for kind,body in link.changes():send(kind,body)
+lines+=['key 1'] # Empty-list focus stays on settings; Down selects the first task.
 lines+=['key 1']*8
 for kind,body in link.snapshot(8):send(kind,body)
 lines+=['key 1']*8
@@ -91,3 +92,30 @@ print('PASS: Python bridge -> actual C firmware dispatcher; corrupt metadata rej
 
 assert 'tx 1a '+v.pack('QIII',m.epoch,sid,9,1).hex() in r.stdout
 print('PASS: latest reply -> continuous scroll -> cached reopen; wrong-session and old replies rejected')
+
+# v1.3 extension: real Python frames drive global state, silent baseline,
+# background completion and an off-page work interruption in production C.
+m=v.Workspace();m.set_roster({f'g{i}' for i in range(12)})
+for i in range(12):m.update(dict(sessionId=f'g{i}',runId='run',state='idle',title=f'Task {i}'))
+link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,v.CAPS,20,20,0));lines=[];serial=[0,0]
+send(1,v.pack('BBIHH',2,2,v.CAPS,20,20))
+for kind,body in link.snapshot()+link.changes():send(kind,body)
+lines+=['view 0','cues 0','key 0','view 24']
+sid=m.keys['g11'];m.update(dict(sessionId='g11',runId='run',state='thinking',title='Outside window'))
+for kind,body in link.changes():send(kind,body)
+lines+=['view 18']
+for kind,body in link.receive(0x52,v.pack('QI',m.epoch,sid)):send(kind,body)
+lines+=['view 0','key 0','view 24']
+m.update(dict(sessionId='g11',runId='run',state='done',replyId='final',title='Outside window'))
+changes=link.changes()
+for kind,body in changes:send(kind,body)
+lines+=['view 18']
+for kind,body in link.snapshot(0):send(kind,body)
+lines+=['view 1','advance 1001','cues 1']
+for kind,body in changes:
+    if kind==0x51:send(kind,body)
+lines+=['advance 1001','cues 1']
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+assert 'tx 52 '+v.pack('QI',m.epoch,sid).hex() in r.stdout
+print('PASS: v1.3 global frames, off-page work seek, attention interruption and duplicate cue suppression')

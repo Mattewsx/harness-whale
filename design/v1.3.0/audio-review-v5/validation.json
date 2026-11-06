@@ -1,0 +1,25 @@
+{
+  "playedToCompletion": [
+    "clockwork-three",
+    "cues-three",
+    "previous",
+    "clean-three",
+    "clean-done",
+    "clockwork-done",
+    "cue-done",
+    "clean-question",
+    "clockwork-question",
+    "cue-question",
+    "clean-error",
+    "clockwork-error",
+    "cue-error"
+  ],
+  "stopPassed": true,
+  "noHorizontalOverflowAt360": true,
+  "errors": [],
+  "externalRequests": [],
+  "subjectiveListening": "pending user review",
+  "deviceLoudness": "not tested",
+  "automationPlaybackRate": 4,
+  "note": "Accelerated decode/completion test; subjective age and tone await user review."
+}

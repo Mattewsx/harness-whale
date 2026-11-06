@@ -1,0 +1,59 @@
+{
+  "stage": "review only, selection pending",
+  "synthesis": "original pulse/triangle/noise cues; no game audio copied",
+  "sample_rate": 16000,
+  "channels": 1,
+  "bits": 16,
+  "target_device_effect_volume_percent": 85,
+  "browser_volume_is_not_device_loudness": true,
+  "events": [
+    {
+      "event": "done",
+      "file": "chiptune-done.wav",
+      "duration_ms": 150.0,
+      "peak_dbfs": -7.15,
+      "rms_dbfs": -14.5,
+      "pcm_bytes": 4800,
+      "sha256": "0e301ce22e5bbece2f4225273313b672a50c1596405b1a99e23fdb1df46717a5"
+    },
+    {
+      "event": "question",
+      "file": "chiptune-question.wav",
+      "duration_ms": 430.0,
+      "peak_dbfs": -5.0,
+      "rms_dbfs": -16.47,
+      "pcm_bytes": 13760,
+      "sha256": "b54aa861e6bf7361d2d1f1c826182e715b43b8d5fd4dbdd631af2cff124bda26"
+    },
+    {
+      "event": "error",
+      "file": "chiptune-error.wav",
+      "duration_ms": 370.0,
+      "peak_dbfs": -9.28,
+      "rms_dbfs": -14.5,
+      "pcm_bytes": 11840,
+      "sha256": "45e75a30b3e766a509cddf8d7f9a98c4140f4bd10f1e2c8cb326f0c0806f2a19"
+    },
+    {
+      "event": "stop",
+      "file": "chiptune-stop.wav",
+      "duration_ms": 85.0,
+      "peak_dbfs": -5.0,
+      "rms_dbfs": -15.68,
+      "pcm_bytes": 2720,
+      "sha256": "28fdeb37810dfd51d95def98af4631bc9e90ec4657f5f0fb7541b1a3ac06ee2b"
+    },
+    {
+      "event": "disconnect",
+      "file": "chiptune-disconnect.wav",
+      "duration_ms": 440.0,
+      "peak_dbfs": -5.0,
+      "rms_dbfs": -14.54,
+      "pcm_bytes": 14080,
+      "sha256": "391cfc8f254b4a583ecbbd6c23a7804dd7d9d5f74eca13b49c40716d9049b807"
+    }
+  ],
+  "missing_chinese": [],
+  "effects_pcm_bytes": 47200,
+  "budget_with_6_poses_and_voice_a": 926080
+}

@@ -62,3 +62,7 @@ BSP 在 `components/bsp/src/bsp_battery.c` 中嵌入这 80 字节，主机检查
 `fa7365671093ef449c5bdcfb4adb279e3d275f888109f50b6b2f21e9b96220d5`。
 这是电量计参数，不是充电配置，也不能通用于所有 500 mAh 电芯；详见
 [硬件指南](../docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md#9-cw2017-电池计)。
+
+## 鲸鱼陪伴 v1.3 素材
+
+已确认的六张姿态与两件咖啡道具存于 `images/companion-v130/`；四个原创 8-bit 音效与四句固定合成语音存于 `music/whale-cues-v130/`。原始图集、生成提示、语音选择及评审记录见 [`design/v1.3.0`](../../design/v1.3.0)。咖啡 PNG 由已评审 SVG 渲染；语音沿用已确认的晓伊合成与离线机械感处理，没有采样游戏角色原声。`tools/make_whale_companion.py` 将这些源素材转换成 Flash 中的 `main/companion.rgb`、`main/cues.pcm` 和偏移表，无需联网即可重建。

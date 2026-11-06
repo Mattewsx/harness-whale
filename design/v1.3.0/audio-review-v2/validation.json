@@ -1,0 +1,29 @@
+{
+  "playedToCompletion": [
+    "all",
+    "old-done",
+    "new-done",
+    "a-done",
+    "b-done",
+    "old-question",
+    "new-question",
+    "a-question",
+    "b-question",
+    "old-error",
+    "new-error",
+    "a-error",
+    "b-error",
+    "old-stop",
+    "new-stop",
+    "old-disconnect",
+    "new-disconnect",
+    "voice-a",
+    "voice-b"
+  ],
+  "stopPassed": true,
+  "noHorizontalOverflowAt360": true,
+  "errors": [],
+  "externalRequests": [],
+  "subjectiveListening": "pending user review",
+  "deviceLoudness": "not tested"
+}

@@ -1,0 +1,242 @@
+#include "lvgl.h"
+#include "whale_app.h"
+#include "whale_assets.h"
+#undef NDEBUG
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+uint8_t pose_bytes[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
+uint8_t companion_bytes[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
+static uint16_t pixels[240 * 320];
+static uint16_t buffer[240 * 20];
+static void memory(const char *label) {
+    lv_mem_monitor_t stats;
+    lv_mem_monitor(&stats);
+    printf("%s: used=%lu peak=%lu largest=%lu\n", label,
+           (unsigned long)(stats.total_size - stats.free_size), (unsigned long)stats.max_used,
+           (unsigned long)stats.free_biggest_size);
+    fflush(stdout);
+}
+static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *data) {
+    uint16_t *p = (uint16_t *)data;
+    for (int y = area->y1; y <= area->y2; y++)
+        for (int x = area->x1; x <= area->x2; x++)
+            pixels[y * 240 + x] = *p++;
+    lv_display_flush_ready(display);
+}
+static void save(const char *name) {
+    memory(name);
+    lv_refr_now(NULL);
+    char path[300];
+    snprintf(path, sizeof path, "%s.ppm", name);
+    FILE *out = fopen(path, "wb");
+    assert(out);
+    fputs("P6\n240 320\n255\n", out);
+    for (int i = 0; i < 240 * 320; i++) {
+        unsigned p = pixels[i];
+        fputc(((p >> 11) & 31) * 255 / 31, out);
+        fputc(((p >> 5) & 63) * 255 / 63, out);
+        fputc((p & 31) * 255 / 31, out);
+    }
+    fclose(out);
+}
+int main(void) {
+    FILE *f = fopen(WHALE_POSES_PATH, "rb");
+    assert(f && fread(pose_bytes, 1, sizeof pose_bytes, f) == sizeof pose_bytes);
+    fclose(f);
+    f = fopen(WHALE_COMPANION_PATH, "rb");
+    assert(f && fread(companion_bytes, 1, sizeof companion_bytes, f) == sizeof companion_bytes);
+    fclose(f);
+    lv_init();
+    lv_display_t *display = lv_display_create(240, 320);
+    lv_display_set_buffers(display, buffer, NULL, sizeof buffer, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(display, flush);
+    whale_ui_init();
+    memory("UI init");
+    whale_app_t a = {.soc = 96,
+                     .linked = true,
+                     .ready = true,
+                     .count = 2,
+                     .total = 2,
+                     .now = 1000,
+                     .view = HOME};
+    a.rows[0] = (whale_row_t){.session = 1, .run = 2, .state = 2, .elapsed = 461, .at = 1000};
+    strcpy(a.rows[0].title, "鲸鱼搭子界面改版");
+    a.replies[0].session = 1;
+    a.replies[0].revision = 3;
+    strcpy(a.replies[0].preview, "已完成任务详情页的设计");
+    whale_ui_draw(&a);
+    save("detail");
+    strcpy(a.rows[0].title, "鲸鱼工作台蓝牙多会话同步与任务详情界面改版");
+    whale_ui_draw(&a);
+    save("long-title");
+    strcpy(a.rows[0].title, "鲸鱼搭子界面改版");
+    a.view = REPLY_READ;
+    a.read_count = 3;
+    a.read_revision = 3;
+    strcpy(a.answer, "已完成任务详情页的设计。\n鲸鱼娘放大到画面中央，\n标题、状态和用时保"
+                     "留。\n\n按下键展开最近回复，\n确认键随时收回详情。");
+    whale_ui_draw(&a);
+    save("reply");
+    a.view = HOME;
+    a.rows[0].state = 5;
+    whale_ui_draw(&a);
+    save("done");
+    a.rows[0].state = 3;
+    a.rows[0].tool = 1;
+    a.rows[0].flags = 1;
+    a.rows[0].done = 2;
+    a.rows[0].total = 5;
+    whale_ui_draw(&a);
+    save("tool");
+    a.rows[0].state = 6;
+    a.rows[0].flags = 0;
+    a.soc = 4;
+    a.battery_level = 2;
+    whale_ui_draw(&a);
+    save("error-low-battery");
+    a.rows[0].state = 2;
+    a.rows[0].elapsed = 12345;
+    a.soc = -1;
+    whale_ui_draw(&a);
+    save("hours-unknown-battery");
+    a.view = REPLY_FAILED;
+    whale_ui_draw(&a);
+    save("read-failed");
+    a.view = LIST;
+    a.rows[1] = a.rows[0];
+    a.rows[1].session = 2;
+    a.rows[1].state = 5;
+    whale_ui_draw(&a);
+    save("list");
+    a.view = HOME;
+    a.soc = 68;
+    a.battery_level = 0;
+    a.rows[0].elapsed = 461;
+    for (int state = 0; state < 9; state++) {
+        char name[40];
+        snprintf(name, sizeof name, "state-%d", state);
+        a.rows[0].state = state;
+        whale_ui_draw(&a);
+        save(name);
+    }
+    a.rows[0].state = 3;
+    for (int hint = 1; hint <= 5; hint++) {
+        char name[40];
+        snprintf(name, sizeof name, "hint-%d", hint);
+        a.rows[0].hint = hint;
+        whale_ui_draw(&a);
+        save(name);
+    }
+    a.rows[0].hint = 0;
+    for (int tool = 0; tool < 8; tool++) {
+        char name[40];
+        snprintf(name, sizeof name, "tool-%d", tool);
+        a.rows[0].tool = tool;
+        whale_ui_draw(&a);
+        save(name);
+    }
+    for (int i = 0; i < 300; i++) {
+        a.view = (i % 2) ? HOME : REPLY_READ;
+        a.rows[0].state = i % 9;
+        a.now += 100;
+        whale_ui_draw(&a);
+        lv_refr_now(NULL);
+    }
+    a.view = VOICE;
+    a.soc = 68;
+    a.voice_ms = 12400;
+    strcpy(a.voice_title, "整理蓝牙连接文档");
+    strcpy(a.voice_text, "请把今天完成的修改整理成说明，先列出已经验证的功能，再"
+                         "列出仍然需要实机测试的项目。\n暂时不要提交或发布。");
+    for (int i = 0; i <= VOICE_MIC_ERROR; i++) {
+        a.voice_phase = i;
+        char name[40];
+        snprintf(name, sizeof name, "r11-voice-%02d", i);
+        whale_ui_draw(&a);
+        save(name);
+    }
+    a.view = LIST;
+    a.count = a.total = 3;
+    for (int i = 0; i < 3; i++) {
+        a.rows[i] = a.rows[0];
+        a.rows[i].session = i + 1;
+    }
+    a.rows[0].state = 5;
+    a.rows[0].flags = 8;
+    strcpy(a.rows[0].title, "整理连接说明");
+    a.rows[1].state = 8;
+    a.rows[1].question = 1;
+    a.rows[1].flags = 2;
+    strcpy(a.rows[1].title, "等待选择导出格式");
+    a.rows[2].state = 6;
+    a.rows[2].flags = 16;
+    strcpy(a.rows[2].title, "检查构建失败原因");
+    whale_row_t saved = a.rows[0];
+    a.rows[0] = a.rows[1];
+    a.rows[1] = a.rows[2];
+    a.rows[2] = saved;
+    whale_ui_draw(&a);
+    save("r11-list");
+    a.view = COMPANION;
+    a.soc = 76;
+    a.companion_at = a.now;
+    for (unsigned action = 0; action <= 4; action++) {
+        a.companion_action = action;
+        a.companion_choice = action ? action - 1 : 0;
+        a.action_at = a.now;
+        char name[40];
+        snprintf(name, sizeof name, "companion-%u", action);
+        whale_ui_draw(&a);
+        save(name);
+    }
+    a.now += 2400;
+    whale_ui_draw(&a);
+    save("coffee-finished");
+    a.companion_action = 0;
+    a.linked = a.ready = false;
+    whale_ui_draw(&a);
+    save("offline-companion");
+    a.linked = a.ready = true;
+    a.view = SOUND;
+    a.sound_mode = 1;
+    a.sound_choice = 1;
+    a.sound_saved = 1;
+    whale_ui_draw(&a);
+    save("sound-settings");
+    a.view = MANAGE;
+    whale_ui_draw(&a);
+    save("manage");
+    a.view = HOME;
+    a.rows[0].state = 2;
+    a.rows[0].run = 7;
+    a.title_session = a.rows[0].session;
+    a.title_run = 7;
+    strcpy(a.full_title, "整理 DeepSeek Harness 明天的开发计划与语音回复交互验收清单");
+    whale_ui_draw(&a);
+    save("scroll-start");
+    a.now += 6500;
+    whale_ui_draw(&a);
+    save("scroll-middle");
+    a.title_session = 0;
+    a.rows[0].state = 1;
+    a.confirm_holding = true;
+    a.confirm_at = a.now - 300;
+    a.confirm_hold_ms = 500;
+    whale_ui_draw(&a);
+    save("confirm-hold");
+    a.confirm_holding = false;
+    a.view = LIST;
+    a.list_settings = true;
+    whale_ui_draw(&a);
+    save("list-settings");
+    a.count = 0;
+    whale_ui_draw(&a);
+    save("list-empty");
+    lv_mem_monitor_t memory;
+    lv_mem_monitor(&memory);
+    printf("LVGL renderer PASS; peak pool used %lu / %lu bytes\n", (unsigned long)memory.max_used,
+           (unsigned long)memory.total_size);
+    return 0;
+}

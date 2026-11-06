@@ -1,11 +1,13 @@
 #include "lvgl.h"
 #include "whale_app.h"
+#include "whale_assets.h"
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
 uint8_t poses[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
+uint8_t companion[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
 static uint16_t buffer[240 * 40];
 static unsigned flushed_pixels;
 
@@ -23,6 +25,9 @@ static unsigned draw(whale_app_t *a) {
 int main(void) {
     FILE *file = fopen(WHALE_POSES_PATH, "rb");
     assert(file && fread(poses, 1, sizeof poses, file) == sizeof poses);
+    fclose(file);
+    file = fopen(WHALE_COMPANION_PATH, "rb");
+    assert(file && fread(companion, 1, sizeof companion, file) == sizeof companion);
     fclose(file);
     lv_init();
     lv_display_t *display = lv_display_create(240, 320);
@@ -87,10 +92,55 @@ int main(void) {
         draw(&a);
     }
     a.view = VOICE;
-    strcpy(a.voice_title, "Voice session");strcpy(a.voice_text,"Synthetic transcript line one\nAnother line");
-    for (unsigned phase=0;phase<=VOICE_MIC_ERROR;phase++) {
-        a.voice_phase=phase; draw(&a); assert(draw(&a)==0);
+    strcpy(a.voice_title, "Voice session");
+    strcpy(a.voice_text, "Synthetic transcript line one\nAnother line");
+    for (unsigned phase = 0; phase <= VOICE_MIC_ERROR; phase++) {
+        a.voice_phase = phase;
+        draw(&a);
+        assert(draw(&a) == 0);
     }
+    a.view = COMPANION;
+    a.companion_at = a.now;
+    for (unsigned action = 0; action <= 4; action++) {
+        a.companion_action = action;
+        a.action_at = a.now;
+        draw(&a);
+        for (unsigned frame = 0; frame < 24; frame++) {
+            a.now += 125;
+            draw(&a);
+        }
+    }
+    a.view = SOUND;
+    a.sound_mode = 1;
+    a.sound_saved = 1;
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.view = MANAGE;
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.view = LIST;
+    a.list_settings = true;
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.count = 0;
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.count = 1;
+    a.list_settings = false;
+    a.view = HOME;
+    a.rows[0].state = 5;
+    a.confirm_holding = true;
+    a.confirm_at = a.now;
+    a.confirm_hold_ms = 500;
+    draw(&a);
+    for (unsigned frame = 0; frame < 4; frame++) {
+        a.now += 125;
+        draw(&a);
+        assert(draw(&a) == 0);
+    }
+    a.confirm_holding = false;
+    draw(&a);
+    assert(draw(&a) == 0);
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     assert(memory.free_size > 4096 && lv_mem_test() == LV_RESULT_OK);
