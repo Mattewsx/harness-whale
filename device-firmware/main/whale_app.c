@@ -1400,7 +1400,7 @@ void app_main(void) {
     bsp_lvgl_unlock();
     ESP_ERROR_CHECK(bsp_button_init(button, NULL));
     whale_ble_start();
-    ESP_LOGI("whale", "v1.3.0-dev / protocol 2.2 + companion cues; minimum free heap: %lu",
+    ESP_LOGI("whale", "v1.3.0 / protocol 2.2 + companion cues; minimum free heap: %lu",
              (unsigned long)esp_get_minimum_free_heap_size());
     cues = xQueueCreate(8, sizeof(whale_audio_cmd_t));
     if (!cues)
