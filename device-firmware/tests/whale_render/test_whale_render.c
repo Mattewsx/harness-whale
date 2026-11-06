@@ -1,13 +1,15 @@
 #include "lvgl.h"
 #include "whale_app.h"
 #include "whale_assets.h"
+#include "whale_ota_core.h"
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
-uint8_t poses[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
-uint8_t companion[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
+static uint8_t poses[16 * 196 * 196 * 3];
+static uint8_t companion[WHALE_COMPANION_BYTES];
+const uint8_t *whale_poses = poses, *whale_companion = companion, *whale_pcm;
 static uint16_t buffer[240 * 40];
 static unsigned flushed_pixels;
 
@@ -141,6 +143,31 @@ int main(void) {
     a.confirm_holding = false;
     draw(&a);
     assert(draw(&a) == 0);
+    /* BLE OTA pages: confirm, rollback confirm, progress and every result. */
+    strcpy(a.ota_version, "whale-v1.4.0");
+    a.ota_size = 2200000;
+    const struct {
+        whale_page_t view;
+        uint8_t state, code;
+        bool low;
+    } ota_pages[] = {
+        {OTA_CONFIRM, WOTA_CONFIRM, 0, false},   {OTA_CONFIRM, WOTA_ROLLBACK_CONFIRM, 0, false},
+        {OTA_PROGRESS, WOTA_RECEIVING, 0, false}, {OTA_PROGRESS, WOTA_VERIFYING, 0, false},
+        {OTA_RESULT, WOTA_DONE, 0, false},        {OTA_RESULT, WOTA_CANCELLED, 0, true},
+        {OTA_RESULT, WOTA_FAILED, WOTA_E_HASH, false},
+        {OTA_RESULT, WOTA_FAILED, WOTA_E_TIMEOUT, false},
+    };
+    for (unsigned i = 0; i < sizeof ota_pages / sizeof ota_pages[0]; i++) {
+        a.view = ota_pages[i].view;
+        a.ota_state = ota_pages[i].state;
+        a.ota_code = ota_pages[i].code;
+        a.ota_low_battery = ota_pages[i].low;
+        a.ota_percent = (uint8_t)(i * 13);
+        assert(draw(&a) > 0);
+        assert(draw(&a) == 0);
+    }
+    a.view = HOME;
+    draw(&a);
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     assert(memory.free_size > 4096 && lv_mem_test() == LV_RESULT_OK);

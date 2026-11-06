@@ -77,6 +77,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-firmware-${{ github.run_id }}
-          path: device-firmware/build/FoloToy-AI-Passport-full.bin
+          path: |
+            device-firmware/build/FoloToy-AI-Passport-full.bin
+            device-firmware/build/FoloToy-AI-Passport-ota.bin
+            device-firmware/build/whale-ota.json
           if-no-files-found: error
           retention-days: 7

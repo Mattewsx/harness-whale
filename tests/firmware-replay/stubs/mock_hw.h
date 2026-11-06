@@ -21,3 +21,4 @@ typedef void* TaskHandle_t;TaskHandle_t xTaskGetHandle(const char*);unsigned uxT
 int nvs_flash_init(void);int64_t esp_timer_get_time(void);
 
 void esp_fill_random(void *p, size_t n);
+void esp_restart(void);

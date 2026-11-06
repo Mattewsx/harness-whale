@@ -62,3 +62,13 @@ uint8_t whale_sound_load(void){return 1;}
 bool whale_sound_save(uint8_t mode){return mode<2;}
 
 bool whale_audio_busy(void) { return false; }
+
+void whale_ota_boot(void) {}
+bool whale_ota_pending(void) { return false; }
+void whale_ota_assets_checked(bool ok) { (void)ok; }
+bool whale_assets_init(bool full) { (void)full; return true; }
+void whale_ota_healthy(void) {}
+void whale_ota_reply(bool yes) { (void)yes; }
+void whale_ota_cancel(void) {}
+void whale_ota_offer(char *version, size_t cap, uint32_t *size) { if (cap) version[0] = 0; *size = 0; }
+void esp_restart(void) {}

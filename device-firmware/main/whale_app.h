@@ -28,7 +28,10 @@ typedef enum {
     REPLY_FAILED,
     VOICE,
     COMPANION,
-    SOUND
+    SOUND,
+    OTA_CONFIRM,
+    OTA_PROGRESS,
+    OTA_RESULT
 } whale_page_t;
 typedef struct {
     whale_row_t rows[8];
@@ -68,6 +71,11 @@ typedef struct {
     uint16_t confirm_hold_ms;
     whale_page_t settings_return;
     whale_page_t view;
+    /* BLE OTA (docs/OTA.md); states and codes from whale_ota_core.h */
+    uint8_t ota_state, ota_code, ota_percent;
+    bool ota_low_battery;
+    char ota_version[32];
+    uint32_t ota_size;
 } whale_app_t;
 void whale_ui_init(void);
 void whale_ui_draw(const whale_app_t *app);

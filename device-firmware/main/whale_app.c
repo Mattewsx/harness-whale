@@ -13,6 +13,9 @@
 #include "nvs_flash.h"
 #include "whale_audio.h"
 #include "whale_cues.h"
+#include "whale_ota.h"
+#include "whale_ota_core.h"
+#include "whale_assets.h"
 #include "whale_reply_cache.h"
 #include "whale_settings.h"
 #include <stdio.h>
@@ -610,6 +613,23 @@ static void key(uint32_t code) {
     }
     if (a.view == VOICE) {
         voice_key(k, hold);
+        return;
+    }
+    if (a.view == OTA_CONFIRM) {
+        /* Short confirm installs; long press declines. The page changes when
+         * the OTA worker reports the new state. */
+        if (k == BSP_BTN_OK)
+            whale_ota_reply(!hold);
+        return;
+    }
+    if (a.view == OTA_PROGRESS) {
+        if (k == BSP_BTN_OK && hold && a.ota_state == WOTA_RECEIVING)
+            whale_ota_cancel();
+        return;
+    }
+    if (a.view == OTA_RESULT) {
+        if (k == BSP_BTN_OK && a.ota_state != WOTA_DONE)
+            page(HOME);
         return;
     }
     if (a.view == PAIR) {
@@ -1331,6 +1351,7 @@ static void service(whale_event_t e) {
         break;
     }
     case WE_LINK:
+        whale_ota_healthy(); /* authenticated link: the OTA self-test passed */
         a.linked = true;
         log_diag("link-up");
         break;
@@ -1406,6 +1427,36 @@ static void service(whale_event_t e) {
     case 98:
         a.sound_saved = e.value ? 1 : -1;
         break;
+    case WE_OTA: {
+        uint8_t state = e.value & 255;
+        a.ota_state = state;
+        a.ota_code = (e.value >> 8) & 255;
+        a.ota_percent = (e.value >> 16) & 255;
+        bool ota_view = a.view == OTA_CONFIRM || a.view == OTA_PROGRESS || a.view == OTA_RESULT;
+        if (state == WOTA_CONFIRM || state == WOTA_ROLLBACK_CONFIRM) {
+            whale_ota_offer(a.ota_version, sizeof a.ota_version, &a.ota_size);
+            a.ota_low_battery = a.soc >= 0 && a.soc < 20 && state == WOTA_CONFIRM;
+            if (a.ota_low_battery || a.view == VOICE || whale_voice_busy()) {
+                whale_ota_reply(false); /* never interrupt a recording */
+                if (a.ota_low_battery)
+                    page(OTA_RESULT);
+                break;
+            }
+            last_input = a.now;
+            if (dim) {
+                dim = false;
+                bsp_display_backlight(75);
+            }
+            page(OTA_CONFIRM);
+        } else if (state == WOTA_RECEIVING || state == WOTA_VERIFYING) {
+            if (a.view != OTA_PROGRESS)
+                page(OTA_PROGRESS);
+        } else if (state == WOTA_DONE || ((state == WOTA_FAILED || state == WOTA_CANCELLED) &&
+                                          ota_view && !a.ota_low_battery)) {
+            page(OTA_RESULT);
+        }
+        break;
+    }
     case 99:
         if (e.value <= 100) {
             a.soc = e.value;
@@ -1422,6 +1473,9 @@ static void service(whale_event_t e) {
 }
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
+    whale_ota_boot();
+    /* Full SHA-256 of the asset pack only during the OTA self-test boot. */
+    whale_ota_assets_checked(whale_assets_init(whale_ota_pending()));
     a.sound_mode = whale_sound_load();
     a.sound_saved = 1;
     events = xQueueCreate(40, sizeof(whale_event_t));
@@ -1515,6 +1569,10 @@ void app_main(void) {
                 page(LIST_FAILED);
             } else
                 snap(requested_cursor);
+        }
+        if (a.view == OTA_RESULT && a.ota_state == WOTA_DONE && a.now - a.page_at >= 1500) {
+            ESP_LOGI("whale", "restarting into the new boot slot");
+            esp_restart();
         }
         companion_tick();
         bool busy = false;

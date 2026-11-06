@@ -1,6 +1,7 @@
 #include "lvgl.h"
 #include "whale_app.h"
 #include "whale_assets.h"
+#include "whale_ota_core.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,8 +17,6 @@ LV_FONT_DECLARE(lv_font_cn_16);
 LV_FONT_DECLARE(lv_font_cn_18);
 LV_FONT_DECLARE(lv_font_cn_21);
 unsigned whale_glyph_advance(unsigned cp);
-extern const uint8_t whale_poses[] asm("_binary_poses_rgb_start");
-extern const uint8_t companion_poses[] asm("_binary_companion_rgb_start");
 static lv_image_dsc_t sprites[22], props[2];
 static lv_obj_t *coffee_cup, *coffee_steam, *title_clip, *title_text;
 static uint32_t title_started, title_session;
@@ -121,6 +120,8 @@ static void center(int y, const char *s, int fg, int bg) {
     label(12, y, 216, s, fg, bg, LV_TEXT_ALIGN_CENTER);
 }
 static void pose_at(int index, int x, int y, unsigned scale) {
+    if (!whale_poses || !whale_companion)
+        return; /* Asset partition missing or mismatched: text-only UI. */
     painted_pose = true;
     lv_obj_remove_flag(image, LV_OBJ_FLAG_HIDDEN);
     lv_image_set_pivot(image, 0, 0);
@@ -141,7 +142,7 @@ void whale_ui_init(void) {
         lv_obj_remove_style_all(*panels[i]);
         lv_obj_remove_flag(*panels[i], LV_OBJ_FLAG_SCROLLABLE);
     }
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; whale_poses && i < 16; i++)
         sprites[i] = (lv_image_dsc_t){.header = {.magic = LV_IMAGE_HEADER_MAGIC,
                                                  .cf = LV_COLOR_FORMAT_RGB565A8,
                                                  .w = 196,
@@ -149,7 +150,7 @@ void whale_ui_init(void) {
                                                  .stride = 392},
                                       .data_size = 115248,
                                       .data = whale_poses + i * 115248};
-    for (unsigned i = 0; i < 8; i++) {
+    for (unsigned i = 0; whale_companion && i < 8; i++) {
         const whale_image_asset_t *v = &whale_image_assets[i];
         lv_image_dsc_t d = {.header = {.magic = LV_IMAGE_HEADER_MAGIC,
                                        .cf = LV_COLOR_FORMAT_RGB565A8,
@@ -157,7 +158,7 @@ void whale_ui_init(void) {
                                        .h = v->height,
                                        .stride = v->width * 2},
                             .data_size = v->width * v->height * 3,
-                            .data = companion_poses + v->offset};
+                            .data = whale_companion + v->offset};
         if (i < 6)
             sprites[16 + i] = d;
         else
@@ -487,7 +488,7 @@ void whale_ui_draw(const whale_app_t *a) {
                 if (elapsed >= 2200) {
                     n = 19;
                     line = "嗯，精神一点啦。";
-                } else {
+                } else if (whale_companion) {
                     painted_coffee = true;
                     lv_obj_remove_flag(coffee_cup, LV_OBJ_FLAG_HIDDEN);
                     lv_obj_remove_flag(coffee_steam, LV_OBJ_FLAG_HIDDEN);
@@ -744,6 +745,49 @@ void whale_ui_draw(const whale_app_t *a) {
         case VERSION:
             heading = "固件 v1.3.1";
             detail = "BLE 2.2";
+            break;
+        case OTA_CONFIRM:
+            if (a->ota_state == WOTA_ROLLBACK_CONFIRM) {
+                heading = "用回上一版固件";
+                detail = "当前版本会停用";
+                foot = "确认回上一版  长按取消";
+            } else {
+                heading = "蓝牙更新固件";
+                snprintf(value, sizeof value, "%.24s  %lu KB", a->ota_version,
+                         (unsigned long)(a->ota_size / 1024));
+                detail = value;
+                foot = "确认更新  长按取消";
+            }
+            n = 11;
+            break;
+        case OTA_PROGRESS:
+            heading = a->ota_state == WOTA_VERIFYING ? "正在核对固件" : "正在接收固件";
+            snprintf(value, sizeof value, "已完成 %u%%", (unsigned)a->ota_percent);
+            detail = value;
+            foot = "长按取消  原固件保留";
+            n = 2;
+            break;
+        case OTA_RESULT:
+            if (a->ota_low_battery) {
+                heading = "请先接电";
+                detail = "接电后再更新";
+            } else if (a->ota_state == WOTA_DONE) {
+                heading = "更新完成";
+                detail = "正在重启";
+            } else if (a->ota_state == WOTA_CANCELLED) {
+                heading = "已取消更新";
+                detail = "原固件保留";
+            } else {
+                heading = "更新失败";
+                detail = a->ota_code == WOTA_E_HASH     ? "核对失败"
+                         : a->ota_code == WOTA_E_IMAGE  ? "固件不可用"
+                         : a->ota_code == WOTA_E_FLASH  ? "保存失败"
+                         : a->ota_code == WOTA_E_LINK   ? "蓝牙已断开"
+                         : a->ota_code == WOTA_E_TIMEOUT ? "传输中断"
+                                                         : "原固件保留";
+            }
+            foot = a->ota_state == WOTA_DONE ? "" : "确认返回";
+            n = a->ota_state == WOTA_DONE ? 12 : 14;
             break;
         case LOADING:
             heading = a->meta ? "正在读取选项" : "正在读取题干";

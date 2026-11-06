@@ -13,14 +13,16 @@
 #include "nvs.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "whale_ota.h"
 #include <string.h>
 void ble_store_config_init(void);
 
 #define UUID(n)                                                                                    \
     BLE_UUID128_INIT(0x80, 0x90, 0x56, 0xc2, 0xc1, 0x37, 0x24, 0xa2, 0xc5, 0x48, 0x3a, 0x66, n,    \
                      0x02, 0xb5, 0x13)
-static const ble_uuid128_t svc = UUID(0), cmd = UUID(1), notify = UUID(2), audio = UUID(3);
-static uint16_t notify_attr, audio_attr, serial[2];
+static const ble_uuid128_t svc = UUID(0), cmd = UUID(1), notify = UUID(2), audio = UUID(3),
+                           ota = UUID(4);
+static uint16_t notify_attr, audio_attr, ota_attr, serial[2];
 static volatile bool audio_subscribed;
 static SemaphoreHandle_t send_lock;
 static volatile uint16_t peer = BLE_HS_CONN_HANDLE_NONE;
@@ -47,6 +49,19 @@ static int access_cb(uint16_t h, uint16_t attr, struct ble_gatt_access_ctxt *ctx
     e.len = len;
     return whale_post(&e) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
+/* OTA uses its own characteristic and framing so it is independent of the
+ * 2.x fragmenter. Same pairing requirement as the command characteristic. */
+static int ota_access_cb(uint16_t h, uint16_t attr, struct ble_gatt_access_ctxt *ctx, void *arg) {
+    static uint8_t buf[248]; /* host task stack is tight; callbacks are serialized */
+    uint16_t len = 0;
+    if (!authorized(h))
+        return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+    if (ctx->op != BLE_GATT_ACCESS_OP_WRITE_CHR || ble_hs_mbuf_to_flat(ctx->om, buf, sizeof buf, &len) ||
+        !len)
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    whale_ota_rx(buf, len);
+    return 0;
+}
 static const struct ble_gatt_chr_def chars[] = {
     {.uuid = &cmd.u,
      .access_cb = access_cb,
@@ -59,6 +74,11 @@ static const struct ble_gatt_chr_def chars[] = {
      .access_cb = access_cb,
      .flags = BLE_GATT_CHR_F_NOTIFY,
      .val_handle = &audio_attr},
+    {.uuid = &ota.u,
+     .access_cb = ota_access_cb,
+     .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_AUTHEN |
+              BLE_GATT_CHR_F_NOTIFY,
+     .val_handle = &ota_attr},
     {0}};
 static const struct ble_gatt_svc_def services[] = {
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &svc.u, .characteristics = chars}, {0}};
@@ -103,6 +123,7 @@ static int gap(struct ble_gap_event *e, void *arg) {
         audio_subscribed = false;
         peer = BLE_HS_CONN_HANDLE_NONE;
         pair_pending = false;
+        whale_ota_link_lost();
         whale_post(&(whale_event_t){.kind = WE_DOWN});
         advertise();
         break;
@@ -211,4 +232,12 @@ bool whale_ble_audio_send(const uint8_t *p, size_t n) {
         return false;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(p, n);
     return om && ble_gatts_notify_custom(peer, audio_attr, om) == 0;
+}
+
+bool whale_ble_ota_notify(const uint8_t *p, size_t n) {
+    uint16_t h = peer;
+    if (!authorized(h) || n + 3 > ble_att_mtu(h))
+        return false;
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(p, n);
+    return om && ble_gatts_notify_custom(h, ota_attr, om) == 0;
 }

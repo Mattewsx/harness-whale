@@ -26,5 +26,22 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(manifest['version'], source['release'].removeprefix('v'))
 
 
+    def test_ota_payload_matches_layout_and_asset_pack(self):
+        import importlib.util
+        manifest = json.loads((ROOT / 'installer/firmware/manifest.json').read_text())
+        ota = manifest['ota']
+        self.assertNotEqual(ota['file'], 'Harness-Whale-ESP32C3-8MB.bin')
+        self.assertIn(manifest['version'], ota['file'])
+        spec = importlib.util.spec_from_file_location(
+            'make_whale_asset_pack', ROOT / 'device-firmware/tools/make_whale_asset_pack.py')
+        pack = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pack)
+        main = ROOT / 'device-firmware/main'
+        built = pack.build([(n, (main / n).read_bytes())
+                            for n in ('poses.rgb', 'companion.rgb', 'cues.pcm')])
+        # The OTA image refuses to install over a different asset pack.
+        self.assertEqual(pack.parse(built)['sha256'], ota['asset_pack_sha256'])
+
+
 if __name__ == '__main__':
     unittest.main()

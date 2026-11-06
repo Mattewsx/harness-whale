@@ -34,6 +34,10 @@ run_static_checks() {
     "${test_dir}/test_whale_wire"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_whale_voice_window.c main/whale_voice_window.c -o "${test_dir}/test_whale_voice_window"
     "${test_dir}/test_whale_voice_window"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_whale_ota_core.c \
+        main/whale_ota_core.c main/whale_asset_pack.c main/whale_wire.c \
+        -o "${test_dir}/test_whale_ota_core"
+    "${test_dir}/test_whale_ota_core"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/voice_stubs -Itests/whale_stubs -Imain \
         tests/test_whale_voice.c main/whale_voice_window.c -o "${test_dir}/test_whale_voice"
     "${test_dir}/test_whale_voice"
@@ -90,6 +94,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_battery_profile.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_whale_fonts.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_whale_memory.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_whale_ota_layout.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
@@ -118,12 +123,18 @@ run_firmware_checks() (
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     python3 tools/verify_firmware.py "${validation_build_dir}"
+    python3 tools/verify_whale_ota_layout.py "${validation_build_dir}" \
+        --ota-json "${validation_build_dir}/whale-ota.json"
     PYTHONDONTWRITEBYTECODE=1 python3 tools/archive_firmware.py create \
         "${validation_build_dir}" --archive-root "${repo_root}/build/firmware"
     mkdir -p "${repo_root}/build"
     install -m 0644 \
         "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \
         "${repo_root}/build/FoloToy-AI-Passport-full.bin"
+    # BLE OTA payload: the application image alone plus its metadata.
+    install -m 0644 "${validation_build_dir}/FoloToy-AI-Passport.bin" \
+        "${repo_root}/build/FoloToy-AI-Passport-ota.bin"
+    install -m 0644 "${validation_build_dir}/whale-ota.json" "${repo_root}/build/whale-ota.json"
     echo "Firmware build: PASS"
 )
 

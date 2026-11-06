@@ -474,6 +474,83 @@ static void test_voice_and_attention(void) {
     flush_reads();
     assert(sends == before + 1 && sent_type == 0x4a);
 }
+
+/* BLE OTA glue (whale_ota.c) is replaced by recorders. */
+static int ota_replies[2], ota_cancels, restarts;
+void whale_ota_boot(void) {}
+bool whale_ota_pending(void) { return false; }
+void whale_ota_assets_checked(bool ok) { (void)ok; }
+bool whale_assets_init(bool full) {
+    (void)full;
+    return true;
+}
+static int ota_healthy;
+void whale_ota_healthy(void) { ota_healthy++; }
+void whale_ota_reply(bool yes) { ota_replies[yes]++; }
+void whale_ota_cancel(void) { ota_cancels++; }
+void whale_ota_offer(char *version, size_t cap, uint32_t *size) {
+    snprintf(version, cap, "%s", "whale-v1.4.0");
+    *size = 2200000;
+}
+void esp_restart(void) { restarts++; }
+static void ota_event(uint8_t state, uint8_t code, uint8_t percent) {
+    service((whale_event_t){.kind = WE_OTA,
+                            .value = WHALE_OTA_EVENT(state, code, percent)});
+}
+static void test_ota_pages(void) {
+    setup();
+    a.view = LIST;
+    a.soc = 80;
+    ota_event(WOTA_CONFIRM, WOTA_OK, 0);
+    assert(a.view == OTA_CONFIRM && !strcmp(a.ota_version, "whale-v1.4.0"));
+    assert(a.ota_size == 2200000);
+    key(BSP_BTN_UP);
+    assert(a.view == OTA_CONFIRM && !ota_replies[0] && !ota_replies[1]);
+    key(BSP_BTN_OK);
+    assert(ota_replies[1] == 1);
+    ota_event(WOTA_RECEIVING, WOTA_OK, 0);
+    assert(a.view == OTA_PROGRESS);
+    ota_event(WOTA_RECEIVING, WOTA_OK, 42);
+    assert(a.view == OTA_PROGRESS && a.ota_percent == 42);
+    key(BSP_BTN_OK); /* a short press does not cancel */
+    assert(!ota_cancels);
+    key(BSP_BTN_OK | 256);
+    assert(ota_cancels == 1);
+    ota_event(WOTA_CANCELLED, WOTA_OK, 42);
+    assert(a.view == OTA_RESULT);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME);
+
+    /* Long press declines; a decline elsewhere does not steal the screen. */
+    ota_event(WOTA_CONFIRM, WOTA_OK, 0);
+    key(BSP_BTN_OK | 256);
+    assert(ota_replies[0] == 1);
+
+    /* Low battery: refused without asking. */
+    setup();
+    a.soc = 12;
+    ota_replies[0] = 0;
+    ota_event(WOTA_CONFIRM, WOTA_OK, 0);
+    assert(ota_replies[0] == 1 && a.view == OTA_RESULT && a.ota_low_battery);
+    ota_event(WOTA_CANCELLED, WOTA_E_DECLINED, 0);
+    assert(a.view == OTA_RESULT);
+
+    /* Success: the result page restarts after 1.5 s; keys cannot leave it. */
+    setup();
+    a.view = OTA_PROGRESS;
+    ota_event(WOTA_VERIFYING, WOTA_OK, 100);
+    assert(a.view == OTA_PROGRESS);
+    ota_event(WOTA_DONE, WOTA_OK, 100);
+    assert(a.view == OTA_RESULT);
+    key(BSP_BTN_OK);
+    assert(a.view == OTA_RESULT);
+
+    /* An authenticated link completes the self-test. */
+    ota_healthy = 0;
+    service((whale_event_t){.kind = WE_LINK});
+    assert(ota_healthy == 1);
+    puts("BLE OTA confirmation, progress, cancel, low battery and self-test PASS");
+}
 static void test_voice_direct_entry(void) {
     setup();
     a.voice_cap = true;
@@ -773,6 +850,7 @@ int main(void) {
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();
+    test_ota_pages();
     puts("Whale R11.1 application state, direct voice entry and completion cue "
          "tests PASS");
     return 0;

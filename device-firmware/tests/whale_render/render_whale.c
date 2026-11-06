@@ -6,8 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
-uint8_t pose_bytes[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
-uint8_t companion_bytes[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
+static uint8_t pose_bytes[16 * 196 * 196 * 3];
+static uint8_t companion_bytes[WHALE_COMPANION_BYTES];
+const uint8_t *whale_poses = pose_bytes, *whale_companion = companion_bytes, *whale_pcm;
 static uint16_t pixels[240 * 320];
 static uint16_t buffer[240 * 20];
 static void memory(const char *label) {

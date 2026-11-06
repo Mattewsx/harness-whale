@@ -37,3 +37,4 @@ TaskHandle_t xTaskGetHandle(const char *name);
 unsigned uxTaskGetStackHighWaterMark(void *task);
 
 void esp_fill_random(void *p, size_t n);
+void esp_restart(void);

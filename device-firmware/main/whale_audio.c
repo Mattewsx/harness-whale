@@ -4,14 +4,14 @@
 #include "whale_assets.h"
 #include <stdatomic.h>
 #include <string.h>
-extern const uint8_t whale_pcm[] __asm__("_binary_cues_pcm_start");
 static atomic_uint generation;
 static atomic_bool playing;
 bool whale_audio_busy(void) { return atomic_load(&playing); }
 void whale_audio_interrupt(void) { atomic_fetch_add(&generation, 1); }
 uint32_t whale_audio_generation(void) { return atomic_load(&generation); }
 bool whale_audio_play(whale_audio_cmd_t cue) {
-    if (cue.kind < 1 || cue.kind > 4 || cue.mode > 1 || cue.generation != whale_audio_generation())
+    if (!whale_pcm || cue.kind < 1 || cue.kind > 4 || cue.mode > 1 ||
+        cue.generation != whale_audio_generation())
         return false;
     const whale_pcm_asset_t *asset = &whale_pcm_assets[cue.mode * 4 + cue.kind - 1];
     atomic_store(&playing, true);

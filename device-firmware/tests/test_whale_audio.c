@@ -1,6 +1,7 @@
 #include "../main/whale_audio.c"
 #include <stdio.h>
-uint8_t test_pcm[WHALE_PCM_BYTES] __asm__("_binary_cues_pcm_start");
+static uint8_t test_pcm[WHALE_PCM_BYTES];
+const uint8_t *whale_pcm = test_pcm, *whale_poses, *whale_companion;
 static int fail_at, writes, sleeps, volume, samples, nonzero, interrupt_at;
 esp_err_t bsp_audio_init(void) { return fail_at == 1 ? ESP_FAIL : ESP_OK; }
 esp_err_t bsp_audio_wake(void) { return fail_at == 2 ? ESP_FAIL : ESP_OK; }
