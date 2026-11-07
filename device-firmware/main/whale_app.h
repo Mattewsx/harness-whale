@@ -73,6 +73,8 @@ typedef struct {
     uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
     bool back_focus, defer_question, locked_notice;
     uint32_t activity_at, mood_at;
+    uint8_t bond_today; /* bond gained on bond_day, capped by WHALE_BOND_DAILY_MAX */
+    uint32_t bond_day;  /* local day number from the synced wall clock */
     whale_page_t view;
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;

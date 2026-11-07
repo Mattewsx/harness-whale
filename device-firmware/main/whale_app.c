@@ -34,6 +34,10 @@ static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
 #define WHALE_CMD_SLEEP 7
 #define WHALE_CMD_ROOM_SAVE 8
+/* Bond earned from interactions per local day. Without a synced clock the
+ * day never rolls over, so the count keeps limiting until the next sync. */
+#define WHALE_BOND_DAILY_MAX 5
+#define WHALE_BOND_MAX 99
 static bool room_unsaved, previous_window;
 static uint32_t save_retry_at;
 /* Serial-only health line for the hardware stress script. No session data. */
@@ -428,14 +432,27 @@ static void companion_work(uint32_t session, bool attention) {
         open_list();
     }
 }
+static void bond_gain(void) {
+    uint32_t day;
+    if (whale_clock_day(whale_sleep_clock(), rtc_seconds(), &day) && day != a.bond_day) {
+        a.bond_day = day & 0x1FFFFF;
+        a.bond_today = 0;
+    }
+    if (a.bond_today < WHALE_BOND_DAILY_MAX && a.bond < WHALE_BOND_MAX) {
+        a.bond++;
+        a.bond_today++;
+    }
+}
 static void companion_tick(void) {
     if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
         a.companion_action = 0;
         dirty = true;
     }
     if (room_unsaved && cues && (int32_t)(a.now - save_retry_at) >= 0) {
+        /* generation: unlocked[0..2] worn[3..5] today[6..10] day[11..31] */
         whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
-                                 (uint32_t)a.unlocked | ((uint32_t)a.worn << 8)};
+                                 (a.unlocked & 7u) | (a.worn & 7u) << 3 |
+                                     (a.bond_today & 31u) << 6 | a.bond_day << 11};
         if (xQueueSend(cues, &cmd, 0) == pdTRUE)
             room_unsaved = false;
     }
@@ -792,8 +809,7 @@ static void key(uint32_t code) {
                 static const uint8_t after[] = {4, 5, 0, 3};
                 a.activity = after[*choice];
                 a.activity_at = a.mood_at = a.action_at = a.now;
-                if (a.bond < 99)
-                    a.bond++;
+                bond_gain();
                 room_unsaved = true;
             }
         } else if (a.view == WARDROBE) {
@@ -1481,7 +1497,7 @@ static void apply_message(whale_msg_t msg) {
 }
 static bool main_view(void) {
     return a.view == HOME || a.view == TASK_DETAIL || a.view == LIST || a.view == COMPANION ||
-           a.view == DESK;
+           a.view == WARDROBE || a.view == DESK;
 }
 static void power_step(void) {
     bool hold = whale_voice_busy() || whale_audio_busy() || reminders.batching || a.view == PAIR ||
@@ -1576,8 +1592,12 @@ static void peripheral_task(void *unused) {
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
                 if (cue.kind == WHALE_CMD_ROOM_SAVE) {
-                    uint8_t profile[] = {cue.mode, cue.generation & 6, (cue.generation >> 8) & 6};
-                    if (!whale_blob_save("room_v1", profile, sizeof profile))
+                    uint32_t g = cue.generation, day = g >> 11;
+                    uint8_t profile[] = {cue.mode,          g & 6,
+                                         (g >> 3) & 6,      (g >> 6) & 31,
+                                         (uint8_t)day,      (uint8_t)(day >> 8),
+                                         (uint8_t)(day >> 16)};
+                    if (!whale_blob_save("room_v2", profile, sizeof profile))
                         whale_post(&(whale_event_t){.kind = 96});
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
                     if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
@@ -1723,11 +1743,15 @@ static void service(whale_event_t e) {
 }
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
-    uint8_t profile[3];
-    if (whale_blob_load("room_v1", profile, sizeof profile) && profile[0] <= 99) {
+    uint8_t profile[7] = {0};
+    if ((whale_blob_load("room_v2", profile, sizeof profile) ||
+         whale_blob_load("room_v1", profile, 3)) &&
+        profile[0] <= WHALE_BOND_MAX) {
         a.bond = profile[0];
         a.unlocked = profile[1] & 6;
         a.worn = profile[2] & a.unlocked;
+        a.bond_today = profile[3] <= WHALE_BOND_DAILY_MAX ? profile[3] : WHALE_BOND_DAILY_MAX;
+        a.bond_day = profile[4] | (uint32_t)profile[5] << 8 | (uint32_t)(profile[6] & 0x1F) << 16;
     }
     a.sound_mode = whale_sound_load();
     a.sound_saved = 1;
@@ -1821,11 +1845,14 @@ void app_main(void) {
                 memset(sounded, 0, sizeof sounded);
                 sounded_next = 0;
                 uint8_t mode = a.sound_mode;
-                uint8_t profile[] = {a.bond, a.unlocked, a.worn};
+                uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today};
+                uint32_t bond_day = a.bond_day;
                 memset(&a, 0, sizeof a);
                 a.bond = profile[0];
                 a.unlocked = profile[1];
                 a.worn = profile[2];
+                a.bond_today = profile[3];
+                a.bond_day = bond_day;
                 a.dock = 1;
                 a.sound_mode = mode;
                 memset(&reminders, 0, sizeof reminders);

@@ -33,3 +33,5 @@ bool whale_clock_sync(whale_clock_t *c, uint32_t rtc_s, int64_t unix_s, int tz_m
 bool whale_clock_local(const whale_clock_t *c, uint32_t rtc_s, whale_local_time_t *out);
 void whale_clock_civil(int64_t local_s, whale_local_time_t *out);
 bool whale_clock_night(const whale_local_time_t *t);
+/* Local calendar day number (days since 1970-01-01 local); false if unsynced. */
+bool whale_clock_day(const whale_clock_t *c, uint32_t rtc_s, uint32_t *day);
