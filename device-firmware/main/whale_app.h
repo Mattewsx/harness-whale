@@ -74,7 +74,8 @@ typedef struct {
     bool back_focus, defer_question, locked_notice;
     uint32_t activity_at, mood_at;
     uint8_t bond_today; /* bond gained on bond_day, capped by WHALE_BOND_DAILY_MAX */
-    uint32_t bond_day;  /* local day number from the synced wall clock */
+    uint8_t bond_undated; /* part of bond_today earned without a valid clock */
+    uint32_t bond_day;  /* latest credited local day, zero until first sync */
     whale_page_t view;
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;

@@ -1163,41 +1163,68 @@ static void test_bond_daily_cap(void) {
         interact();
     assert(a.bond == 12 + WHALE_BOND_DAILY_MAX && a.bond_today == WHALE_BOND_DAILY_MAX);
     assert(room_unsaved && a.bond_day == 0);
-    /* First sync on a new day resets the count. */
-    uint32_t rtc = rtc_seconds();
+    /* First sync dates the offline gains even without a further interaction. */
     int64_t day_start = 1793750400LL; /* 2026-11-04 00:00 UTC */
-    assert(whale_clock_sync(whale_sleep_clock(), rtc, day_start + 3600, 0));
     uint32_t today = (uint32_t)(day_start / 86400);
-    for (int i = 0; i < 8; i++)
+    wall_clock(a.epoch, day_start + 3600, 0);
+    assert(a.bond_day == today && a.bond_today == 5 && !a.bond_undated);
+    interact();
+    wall_clock(a.epoch, day_start - 3600, 0);
+    interact();
+    wall_clock(a.epoch, day_start + 3600, 0);
+    interact();
+    assert(a.bond == 17 && a.bond_day == today && a.bond_today == 5);
+    /* A new local date from the UTC offset rolls once, including after clock loss. */
+    wall_clock(a.epoch, day_start + 23 * 3600, 120);
+    assert(a.bond_day == today + 1 && !a.bond_today);
+    interact();
+    *whale_sleep_clock() = (whale_clock_t){0};
+    interact();
+    interact();
+    assert(a.bond_today == 3 && a.bond_undated == 2);
+    whale_audio_cmd_t sent = {0};
+    last_cue_capture = &sent;
+    save_retry_at = a.now;
+    companion_tick();
+    assert(sent.kind == WHALE_CMD_ROOM_SAVE && (uint8_t)(sent.generation >> 6) == 0x23);
+    wall_clock(a.epoch, day_start + 2 * 86400, 0);
+    assert(a.bond_day == today + 2 && a.bond_today == 2 && !a.bond_undated);
+    for (int i = 0; i < 6; i++)
         interact();
-    assert(a.bond == 12 + 2 * WHALE_BOND_DAILY_MAX && a.bond_day == today);
+    assert(a.bond == 23 && a.bond_today == 5);
     /* Next local day: five more, never above 99. */
-    assert(whale_clock_sync(whale_sleep_clock(), rtc, day_start + 86400 + 3600, 0));
+    wall_clock(a.epoch, day_start + 3 * 86400, 0);
     a.bond = 97;
     for (int i = 0; i < 4; i++)
         interact();
-    assert(a.bond == WHALE_BOND_MAX && a.bond_today == 2 && a.bond_day == today + 1);
+    assert(a.bond == WHALE_BOND_MAX && a.bond_today == 2 && a.bond_day == today + 3);
     /* The save carries bond, the daily count and the day. */
-    whale_audio_cmd_t sent = {0};
     room_unsaved = true;
-    save_retry_at = a.now;
-    last_cue_capture = &sent;
     companion_tick();
     last_cue_capture = NULL;
     assert(!room_unsaved && sent.kind == WHALE_CMD_ROOM_SAVE && sent.mode == WHALE_BOND_MAX);
-    assert(((sent.generation >> 6) & 31) == 2 && (sent.generation >> 11) == today + 1);
-    /* The wardrobe page lets the screen dim and turn off like the other main pages. */
-    power_reset(true);
-    a.view = WARDROBE;
-    a.rows[0].state = 5;
-    a.now += WHALE_POWER_OFF_MS;
-    power_step();
-    assert(screen_applied == WHALE_SCREEN_OFF);
-    puts("Bond daily cap and wardrobe screen-off PASS");
+    assert((uint8_t)(sent.generation >> 6) == 2 && (sent.generation >> 14) == today + 3);
+}
+static void test_wardrobe_screen_off(void) {
+    const uint8_t states[] = {5, 2, 8}; /* finished, thinking, pending question */
+    for (unsigned i = 0; i < sizeof states; i++) {
+        power_reset(true);
+        a.view = WARDROBE;
+        a.rows[0].state = states[i];
+        a.rows[0].question = states[i] == 8 ? 42 : 0;
+        a.now += WHALE_POWER_DIM_MS;
+        power_step();
+        assert(screen_applied == WHALE_SCREEN_DIM);
+        a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+        power_step();
+        assert(a.view == WARDROBE && screen_applied == WHALE_SCREEN_OFF && !sleep_commands);
+    }
+    puts("Wardrobe screen dim/off with idle and active sessions PASS");
 }
 int main(void) {
     test_power();
     test_bond_daily_cap();
+    test_wardrobe_screen_off();
     test_large_frame_negotiation();
     test_settings_navigation();
     test_companion_and_global_cues();

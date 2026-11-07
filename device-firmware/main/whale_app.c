@@ -432,15 +432,32 @@ static void companion_work(uint32_t session, bool attention) {
         open_list();
     }
 }
-static void bond_gain(void) {
+static bool sync_bond_day(void) {
     uint32_t day;
-    if (whale_clock_day(whale_sleep_clock(), rtc_seconds(), &day) && day != a.bond_day) {
-        a.bond_day = day & 0x1FFFFF;
-        a.bond_today = 0;
+    if (!whale_clock_day(whale_sleep_clock(), rtc_seconds(), &day))
+        return false;
+    if (day > a.bond_day) {
+        /* On first sync, all gains belong to this day. On later advances,
+         * carry only gains earned since the clock lost its date. */
+        if (a.bond_day)
+            a.bond_today = a.bond_undated;
+        a.bond_day = day;
+        room_unsaved = true;
     }
+    if (a.bond_undated) {
+        a.bond_undated = 0;
+        room_unsaved = true;
+    }
+    return true;
+}
+static void bond_gain(void) {
+    bool dated = sync_bond_day();
     if (a.bond_today < WHALE_BOND_DAILY_MAX && a.bond < WHALE_BOND_MAX) {
         a.bond++;
         a.bond_today++;
+        if (!dated)
+            a.bond_undated++;
+        room_unsaved = true;
     }
 }
 static void companion_tick(void) {
@@ -449,10 +466,11 @@ static void companion_tick(void) {
         dirty = true;
     }
     if (room_unsaved && cues && (int32_t)(a.now - save_retry_at) >= 0) {
-        /* generation: unlocked[0..2] worn[3..5] today[6..10] day[11..31] */
+        /* Two counter nibbles and an 18-bit day cover the supported clock range. */
+        uint8_t counters = a.bond_today | (a.bond_undated << 4);
         whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
                                  (a.unlocked & 7u) | (a.worn & 7u) << 3 |
-                                     (a.bond_today & 31u) << 6 | a.bond_day << 11};
+                                     (uint32_t)counters << 6 | a.bond_day << 14};
         if (xQueueSend(cues, &cmd, 0) == pdTRUE)
             room_unsaved = false;
     }
@@ -810,7 +828,6 @@ static void key(uint32_t code) {
                 a.activity = after[*choice];
                 a.activity_at = a.mood_at = a.action_at = a.now;
                 bond_gain();
-                room_unsaved = true;
             }
         } else if (a.view == WARDROBE) {
             uint8_t bit = 1u << *choice;
@@ -1316,8 +1333,10 @@ static void apply_message(whale_msg_t msg) {
     if (msg.type == 0x53 && n == 18) {
         /* Wall clock: epoch, Unix seconds (int64), local UTC offset minutes. */
         if (whale_clock_sync(whale_sleep_clock(), rtc_seconds(), (int64_t)w64(p + 8),
-                             (int16_t)w16(p + 16)))
+                             (int16_t)w16(p + 16))) {
             clock_step();
+            sync_bond_day();
+        }
         return;
     }
     if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
@@ -1514,9 +1533,8 @@ static void power_step(void) {
     for (int i = 0; a.linked && i < a.count; i++)
         if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
             busy = true;
-    /* The desk display follows the normal dim / screen-off / sleep policy,
-     * day and night. */
-    if (a.view == COMPANION || a.view == DESK)
+    /* Background work may keep a task visible, but never keeps these pages lit. */
+    if (a.view == COMPANION || a.view == WARDROBE || a.view == DESK)
         busy = false;
     whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
     apply_screen(plan.screen);
@@ -1592,9 +1610,9 @@ static void peripheral_task(void *unused) {
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
                 if (cue.kind == WHALE_CMD_ROOM_SAVE) {
-                    uint32_t g = cue.generation, day = g >> 11;
+                    uint32_t g = cue.generation, day = g >> 14;
                     uint8_t profile[] = {cue.mode,          g & 6,
-                                         (g >> 3) & 6,      (g >> 6) & 31,
+                                         (g >> 3) & 6,      (uint8_t)(g >> 6),
                                          (uint8_t)day,      (uint8_t)(day >> 8),
                                          (uint8_t)(day >> 16)};
                     if (!whale_blob_save("room_v2", profile, sizeof profile))
@@ -1750,7 +1768,10 @@ void app_main(void) {
         a.bond = profile[0];
         a.unlocked = profile[1] & 6;
         a.worn = profile[2] & a.unlocked;
-        a.bond_today = profile[3] <= WHALE_BOND_DAILY_MAX ? profile[3] : WHALE_BOND_DAILY_MAX;
+        /* Earlier room_v2 profiles stored only the daily total in this byte. */
+        uint8_t used = profile[3] & 15, undated = profile[3] >> 4;
+        a.bond_today = used <= WHALE_BOND_DAILY_MAX ? used : WHALE_BOND_DAILY_MAX;
+        a.bond_undated = undated <= a.bond_today ? undated : a.bond_today;
         a.bond_day = profile[4] | (uint32_t)profile[5] << 8 | (uint32_t)(profile[6] & 0x1F) << 16;
     }
     a.sound_mode = whale_sound_load();
@@ -1845,13 +1866,14 @@ void app_main(void) {
                 memset(sounded, 0, sizeof sounded);
                 sounded_next = 0;
                 uint8_t mode = a.sound_mode;
-                uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today};
+                uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated};
                 uint32_t bond_day = a.bond_day;
                 memset(&a, 0, sizeof a);
                 a.bond = profile[0];
                 a.unlocked = profile[1];
                 a.worn = profile[2];
                 a.bond_today = profile[3];
+                a.bond_undated = profile[4];
                 a.bond_day = bond_day;
                 a.dock = 1;
                 a.sound_mode = mode;
