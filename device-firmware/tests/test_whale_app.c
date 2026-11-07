@@ -19,10 +19,14 @@ int xQueueReceive(void *q, void *out, int wait) {
     (void)wait;
     return 0;
 }
+static whale_audio_cmd_t *last_cue_capture;
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
-        if (*(const uint8_t *)in == WHALE_CMD_ROOM_SAVE)
+        if (*(const uint8_t *)in == WHALE_CMD_ROOM_SAVE) {
+            if (last_cue_capture)
+                *last_cue_capture = *(const whale_audio_cmd_t *)in;
             return 1;
+        }
         assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7));
         if (*(const uint8_t *)in == WHALE_CMD_SLEEP)
             sleep_commands++;
@@ -1143,8 +1147,57 @@ static void test_large_frame_negotiation(void) {
     assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
     frame_limit = WHALE_FRAME_LEGACY;
 }
+static void interact(void) {
+    a.view = COMPANION;
+    a.back_focus = false;
+    a.companion_choice = 0;
+    a.companion_action = 0;
+    key(BSP_BTN_OK);
+    assert(a.companion_action == 1);
+}
+static void test_bond_daily_cap(void) {
+    /* Unsynced clock: the cap still holds and the day never rolls over. */
+    setup();
+    a.bond = 12;
+    for (int i = 0; i < 8; i++)
+        interact();
+    assert(a.bond == 12 + WHALE_BOND_DAILY_MAX && a.bond_today == WHALE_BOND_DAILY_MAX);
+    assert(room_unsaved && a.bond_day == 0);
+    /* First sync on a new day resets the count. */
+    uint32_t rtc = rtc_seconds();
+    int64_t day_start = 1793750400LL; /* 2026-11-04 00:00 UTC */
+    assert(whale_clock_sync(whale_sleep_clock(), rtc, day_start + 3600, 0));
+    uint32_t today = (uint32_t)(day_start / 86400);
+    for (int i = 0; i < 8; i++)
+        interact();
+    assert(a.bond == 12 + 2 * WHALE_BOND_DAILY_MAX && a.bond_day == today);
+    /* Next local day: five more, never above 99. */
+    assert(whale_clock_sync(whale_sleep_clock(), rtc, day_start + 86400 + 3600, 0));
+    a.bond = 97;
+    for (int i = 0; i < 4; i++)
+        interact();
+    assert(a.bond == WHALE_BOND_MAX && a.bond_today == 2 && a.bond_day == today + 1);
+    /* The save carries bond, the daily count and the day. */
+    whale_audio_cmd_t sent = {0};
+    room_unsaved = true;
+    save_retry_at = a.now;
+    last_cue_capture = &sent;
+    companion_tick();
+    last_cue_capture = NULL;
+    assert(!room_unsaved && sent.kind == WHALE_CMD_ROOM_SAVE && sent.mode == WHALE_BOND_MAX);
+    assert(((sent.generation >> 6) & 31) == 2 && (sent.generation >> 11) == today + 1);
+    /* The wardrobe page lets the screen dim and turn off like the other main pages. */
+    power_reset(true);
+    a.view = WARDROBE;
+    a.rows[0].state = 5;
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF);
+    puts("Bond daily cap and wardrobe screen-off PASS");
+}
 int main(void) {
     test_power();
+    test_bond_daily_cap();
     test_large_frame_negotiation();
     test_settings_navigation();
     test_companion_and_global_cues();

@@ -47,6 +47,16 @@ bool whale_clock_local(const whale_clock_t *c, uint32_t rtc_s, whale_local_time_
     return true;
 }
 
+bool whale_clock_day(const whale_clock_t *c, uint32_t rtc_s, uint32_t *day) {
+    if (!whale_clock_valid(c))
+        return false;
+    int64_t d = floor_div((int64_t)rtc_s + c->offset + (int64_t)c->tz_min * 60, 86400);
+    if (d < 0)
+        return false;
+    *day = (uint32_t)d;
+    return true;
+}
+
 bool whale_clock_night(const whale_local_time_t *t) {
     return t->hour >= WHALE_NIGHT_START_HOUR || t->hour < WHALE_NIGHT_END_HOUR;
 }
