@@ -18,6 +18,11 @@ void whale_reply_cache_forget(uint32_t session, uint32_t keep_revision) {
         if (entries[i].session == session && entries[i].revision != keep_revision)
             memset(&entries[i], 0, sizeof entries[i]);
 }
+void whale_reply_cache_discard(uint32_t session, uint32_t revision) {
+    for (unsigned i = 0; i < WHALE_REPLY_CACHE_SLOTS; i++)
+        if (entries[i].session == session && entries[i].revision == revision)
+            memset(&entries[i], 0, sizeof entries[i]);
+}
 bool whale_reply_cache_get(uint64_t epoch, uint32_t session, uint32_t revision, uint32_t part,
                            char *text, uint32_t *count) {
     for (unsigned i = 0; i < WHALE_REPLY_CACHE_SLOTS; i++) {

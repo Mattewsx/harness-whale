@@ -12,7 +12,10 @@ int nvs_flash_init(void){return 0;}int64_t esp_timer_get_time(void){return 0;}
 void whale_pair(bool y){}bool whale_unbind(void){return true;}void whale_ble_start(void){}
 void whale_ui_init(void){}void whale_ui_draw(const whale_app_t *app){}
 bool whale_audio_done(void){return true;}
-bool whale_displayable(const char *s){return true;}bool whale_text_wide(const char *s){return false;}int whale_scroll_max(const char *s){return 0;}
+bool whale_displayable(const char *s){return true;}
+/* Long-prompt fixtures use ASCII. Font metrics are covered by the LVGL renderer. */
+bool whale_text_wide(const char *s){return strlen(s)>30;}
+int whale_scroll_max(const char *s){return 0;}
 // Fixture lines are separated by newlines and fit the screen width.
 int whale_home_scroll_max(const char *s){
     int lines=*s?1:0;while(*s){if(*s++=='\n')lines++;}
@@ -38,6 +41,15 @@ int main(void){
         }else if(sscanf(line,"limit %u",&val)==1){frame_limit=val;}
         else if(sscanf(line,"frame %u",&val)==1){if(rx.frame!=(val>20?val:0)||tx_frame!=val){fprintf(stderr,"frame %u/%u expected %u\n",rx.frame,tx_frame,val);return 1;}}else if(sscanf(line,"key %u",&val)==1){key(val);}
         else if(sscanf(line,"advance %u",&val)==1){a.now+=val;companion_tick();}
+        else if(!strncmp(line,"draw",4)){acknowledge_visible();}
+        else if(sscanf(line,"badge %u",&val)==1){assert(a.global_unread==val);}
+        else if(sscanf(line,"options %u",&val)==1){assert(a.options==val);}
+        else if(!strncmp(line,"cached ",7)){
+            unsigned sid,rev,expected;
+            char text[WHALE_REPLY_BYTES+1];uint32_t count;
+            assert(sscanf(line+7,"%u%u%u",&sid,&rev,&expected)==3);
+            assert(whale_reply_cache_get(a.epoch,sid,rev,0,text,&count)==(bool)expected);
+        }
         else if(sscanf(line,"cues %u",&val)==1){assert(queued_cues==val);}
         else if(sscanf(line,"view %u",&val)==1){assert(a.view==val);}
         else if(sscanf(line,"scroll %u",&val)==1){assert(a.scroll==(int)val);}

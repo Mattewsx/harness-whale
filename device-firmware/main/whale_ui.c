@@ -1,6 +1,7 @@
 #include "lvgl.h"
 #include "whale_app.h"
 #include "whale_assets.h"
+#include "room_icons.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,9 +28,9 @@ static char shown_title[513];
 static bool title_visible;
 enum { LABEL_COUNT = 22 };
 static lv_obj_t *labels[LABEL_COUNT], *image;
-static lv_obj_t *sea, *sheet, *status_box, *footer_line, *link_dot;
+static lv_obj_t *sea, *sheet, *top_bar, *action_bar, *status_box;
 static lv_obj_t *menu_box, *hold_box, *hold_track, *hold_fill;
-static lv_obj_t **const panels[] = {&sea,      &sheet,    &status_box, &footer_line, &link_dot,
+static lv_obj_t **const panels[] = {&sea,      &sheet,    &top_bar,    &action_bar, &status_box,
                                     &menu_box, &hold_box, &hold_track, &hold_fill};
 static unsigned visible_panels;
 static unsigned used;
@@ -37,8 +38,10 @@ static bool painted_pose;
 static lv_obj_t *battery_box, *battery_fill;
 static int previous_pose = -1;
 #define NAV 0x253853
-#define TEAL 0x446f9c
-#define PAPER 0xfaf9f4
+#define TEAL 0x396f67
+#define PAPER 0xfffaf1
+#define BAR 0xe1ece3
+#define BAR_DUSK 0xbfcfca
 #define MUT 0x62738a
 #define RED 0x963f46
 #define GOLD 0xe9b64b
@@ -101,7 +104,7 @@ static void label(int x, int y, int w, const char *s, int fg, int bg, lv_text_al
     if (y == 3 && x >= 110)
         font = &lv_font_cn_12;
     if (y == 40)
-        font = &lv_font_cn_21;
+        font = &lv_font_cn_18;
     text_at(x, y, w, y == 40 ? 26 : 20, font, s, fg, bg, align);
 }
 static void panel(lv_obj_t *obj, int x, int y, int w, int h, int color, int radius) {
@@ -133,6 +136,72 @@ static void pose_at(int index, int x, int y, unsigned scale) {
     }
 }
 static void pose(int index, int y) { pose_at(index, 64, y, 146); }
+static lv_obj_t *icon_slots[10];
+static lv_image_dsc_t masks[sizeof icon_pixels / sizeof icon_pixels[0]];
+static unsigned icon_count;
+static bool room_visible, room_night;
+static void icon_at(enum room_icon id, int x, int y, int color) {
+    if (icon_count >= sizeof icon_slots / sizeof icon_slots[0])
+        return;
+    lv_obj_t *o = icon_slots[icon_count++];
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(o, x, y);
+    if (!lv_color_eq(lv_obj_get_style_image_recolor(o, 0), lv_color_hex(color)))
+        lv_obj_set_style_image_recolor(o, lv_color_hex(color), 0);
+    if (lv_image_get_src(o) != &masks[id])
+        lv_image_set_src(o, &masks[id]);
+}
+static void parent_icon(enum room_icon id, bool focused) {
+    panel(menu_box, 9, 32, 37, 25, focused ? 0xbad9c9 : 0xeaf1e8, 7);
+    text_at(11, 35, 10, 18, &lv_font_cn_14, "‹", TEAL, -1, LV_TEXT_ALIGN_CENTER);
+    icon_at(id, 22, 34, TEAL);
+}
+static void strip(const enum room_icon *icons, const char *const *names, int count, int selected,
+                  int active, unsigned locked, bool home) {
+    int step = home ? 66 : count == 5 ? 43 : 55;
+    panel(action_bar, 0, 252, 240, 68, home && room_night ? BAR_DUSK : BAR, 0);
+    for (int i = 0; i < count; ++i) {
+        int x = 120 + (2 * i - count + 1) * step / 2;
+        if (i == selected)
+            panel(status_box, x - 18, 257, 36, 32, home && room_night ? 0x9dbcb2 : 0xb9d5c6, 10);
+        icon_at(icons[i], x - 10, 263, i == selected ? NAV : TEAL);
+        if (locked & (1u << i))
+            icon_at(ICON_lock, x + 8, 246, MUT);
+        if (i == active)
+            text_at(x + 9, 251, 15, 16, &lv_font_cn_12, "●", TEAL, -1, LV_TEXT_ALIGN_CENTER);
+        if (i == selected)
+            text_at(home ? x - 30 : 10, 295, home ? 60 : 220, 20, &lv_font_cn_14, names[i], NAV, -1,
+                    LV_TEXT_ALIGN_CENTER);
+    }
+}
+static void dressed(const whale_app_t *a, int pose_id, int x, int y, unsigned scale) {
+    pose_at(pose_id, x, y, scale);
+    int size = 196 * scale / 256;
+    int eye = pose_id == 15 || pose_id == 1 ? 52 : 44;
+    if (a->worn & 2)
+        icon_at(ICON_flower, x + size * 32 / 100 - 10, y + size * (eye - 14) / 100 - 10, GOLD);
+    if (a->worn & 4)
+        icon_at(ICON_glasses, x + size / 2 - 10, y + size * eye / 100 - 10, NAV);
+}
+/* Static RGB565 landscapes in flash. LVGL clips them to the invalidated
+ * rectangle; the display never allocates a full scene buffer in RAM. */
+extern const uint8_t room_scenes[] asm("_binary_room_rgb_start");
+enum { ROOM_SCENE_BYTES = 240 * 228 * 2 };
+static lv_image_dsc_t landscapes[2], sky_rows[2];
+static void draw_landscape(lv_event_t *event) {
+    if (!room_visible)
+        return;
+    lv_draw_image_dsc_t draw;
+    lv_draw_image_dsc_init(&draw);
+    draw.src = &sky_rows[room_night];
+    draw.tile = true;
+    lv_area_t sky = {0, 0, 239, 23};
+    lv_draw_image(lv_event_get_layer(event), &draw, &sky);
+    draw.src = &landscapes[room_night];
+    draw.tile = false;
+    lv_area_t bounds = {0, 24, 239, 251};
+    lv_draw_image(lv_event_get_layer(event), &draw, &bounds);
+}
 void whale_ui_init(void) {
     lv_obj_t *screen = lv_screen_active();
     lv_obj_set_style_bg_color(screen, lv_color_hex(PAPER), 0);
@@ -142,6 +211,20 @@ void whale_ui_init(void) {
         lv_obj_remove_style_all(*panels[i]);
         lv_obj_remove_flag(*panels[i], LV_OBJ_FLAG_SCROLLABLE);
     }
+    for (unsigned i = 0; i < 2; i++) {
+        landscapes[i] = (lv_image_dsc_t){.header = {.magic = LV_IMAGE_HEADER_MAGIC,
+                                                    .cf = LV_COLOR_FORMAT_RGB565,
+                                                    .w = 240,
+                                                    .h = 228,
+                                                    .stride = 480},
+                                         .data_size = ROOM_SCENE_BYTES,
+                                         .data = room_scenes + i * ROOM_SCENE_BYTES};
+        /* Extend the actual skyline into the status bar, one flash-backed row per scene. */
+        sky_rows[i] = landscapes[i];
+        sky_rows[i].header.h = 1;
+        sky_rows[i].data_size = sky_rows[i].header.stride;
+    }
+    lv_obj_add_event_cb(sea, draw_landscape, LV_EVENT_DRAW_MAIN_END, NULL);
     for (int i = 0; i < 16; i++)
         sprites[i] = (lv_image_dsc_t){.header = {.magic = LV_IMAGE_HEADER_MAGIC,
                                                  .cf = LV_COLOR_FORMAT_RGB565A8,
@@ -169,6 +252,18 @@ void whale_ui_init(void) {
     lv_image_set_src(coffee_cup, &props[0]);
     coffee_steam = lv_image_create(screen);
     lv_image_set_src(coffee_steam, &props[1]);
+    for (unsigned i = 0; i < sizeof masks / sizeof masks[0]; ++i)
+        masks[i] = (lv_image_dsc_t){.header = {.magic = LV_IMAGE_HEADER_MAGIC,
+                                               .cf = LV_COLOR_FORMAT_A8,
+                                               .w = 20,
+                                               .h = 20,
+                                               .stride = 20},
+                                    .data_size = 400,
+                                    .data = icon_pixels[i]};
+    for (unsigned i = 0; i < sizeof icon_slots / sizeof icon_slots[0]; ++i) {
+        icon_slots[i] = lv_image_create(screen);
+        lv_obj_set_style_image_recolor_opa(icon_slots[i], LV_OPA_COVER, 0);
+    }
     title_clip = lv_obj_create(screen);
     lv_obj_remove_style_all(title_clip);
     lv_obj_remove_flag(title_clip, LV_OBJ_FLAG_SCROLLABLE);
@@ -240,14 +335,14 @@ static const char *next_line(const char *s, char *line) {
     line[bytes] = 0;
     return s;
 }
-static const char *title_line(const char *s, char *line, const lv_font_t *font,
+static const char *title_line(const char *s, char *line, size_t capacity, const lv_font_t *font,
                               unsigned max_width) {
     unsigned bytes = 0, width = 0;
     while (*s) {
         const char *next = s;
         uint32_t cp = decode(&next);
         unsigned advance = lv_font_get_glyph_width(font, cp, 0);
-        if (bytes && width + advance > max_width)
+        if (bytes + (size_t)(next - s) + sizeof("…") > capacity || (bytes && width + advance > max_width))
             break;
         memcpy(line + bytes, s, next - s);
         bytes += next - s;
@@ -306,15 +401,32 @@ static const char *hint_text[] = {
     "", "工具出错·继续", "请在电脑审批", "请在电脑多选", "请在电脑输入", "请在电脑处理"};
 static const int state_pose[] = {15, 0, 2, 9, 10, 12, 13, 14, 11};
 static const int tool_pose[] = {9, 3, 4, 5, 6, 7, 8, 9};
+static int task_pose(const whale_row_t *r) {
+    if (r->hint)
+        return r->hint == 1 ? 9 : 10;
+    return r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
+}
+static void list_state_icon(const whale_row_t *row, int y) {
+    /* Row states use the same wire order as the detail screen. */
+    static const struct {
+        enum room_icon icon;
+        int color;
+    } state[] = {{ICON_offline, 0x737886}, {ICON_idle, 0x627587},    {ICON_thinking, 0x596c99},
+                 {ICON_executing, 0x37746f}, {ICON_waiting, 0x876b37}, {ICON_completed, 0x39745d},
+                 {ICON_failed, 0xa2474d},  {ICON_stopped, 0x697785}, {ICON_question, 0x975315}};
+    unsigned index = whale_row_needs_answer(row) ? 8 : row->state;
+    icon_at(state[index].icon, 11, y + 7, state[index].color);
+    if (row->flags & (8 | 16 | 32 | 64))
+        icon_at(ICON_unread, 16, y + 3, TEAL);
+}
 void whale_ui_draw(const whale_app_t *a) {
     char text[160], value[64];
-    used = 0;
+    used = icon_count = 0;
     whale_row_t empty = {.state = a->linked ? 1 : 0};
     const whale_row_t *r = a->count ? &a->rows[a->selected] : &empty;
     bool animate = a->battery_level != 2;
     bool painted_coffee = false;
-    bool holding = a->view == HOME && a->confirm_holding && a->now - a->confirm_at >= 125;
-    if (a->view != HOME) {
+    if (a->view != TASK_DETAIL) {
         title_visible = false;
         lv_obj_add_flag(title_clip, LV_OBJ_FLAG_HIDDEN);
     }
@@ -323,47 +435,39 @@ void whale_ui_draw(const whale_app_t *a) {
     visible_panels = 0;
     bool desk = a->view == DESK;
     if (!desk) {
-        panel(link_dot, 13, 11, 5, 5, a->ready ? 0x558c82 : 0x9ca5b2, LV_RADIUS_CIRCLE);
-        text_at(23, 4, 90, 18, &lv_font_cn_12,
-                a->view == COMPANION ? (a->ready    ? "电脑已连接"
-                                        : a->linked ? "正在同步"
-                                                    : "电脑未连接")
-                : a->ready
-                    ? (a->recovered && a->now - a->recovered < 1200 ? "同步已恢复" : "蓝牙已连")
-                : a->linked ? "正在同步"
-                : a->count  ? "正在重连"
-                            : "等待连接",
-                MUT, PAPER, LV_TEXT_ALIGN_LEFT);
-        if (a->view == HOME) {
-            text_at(93, 4, 54, 18, &lv_font_cn_12, r->question && a->ready ? "● 回答" : "● 列表",
-                    TEAL, PAPER, LV_TEXT_ALIGN_CENTER);
-        } else if (a->count && !inline_reply && a->view != COMPANION && a->view != SOUND &&
-                   a->view != MANAGE) {
-            snprintf(text, sizeof text, "%lu/%u", (unsigned long)a->cursor + a->selected + 1,
-                     a->total);
-            text_at(111, 4, 47, 18, &lv_font_cn_12, text, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
-        }
+        bool dark_sky = a->view == HOME && a->night;
+        if (a->view != HOME)
+            panel(top_bar, 0, 0, 240, 24, BAR, 0);
+        icon_at(a->ready ? ICON_bt : ICON_btOff, 10, 3,
+                dark_sky ? (a->ready ? 0xc7f4e5 : 0xd1d9e0) : (a->ready ? TEAL : MUT));
+        if (a->view == HOME || a->view == COMPANION)
+            icon_at(ICON_bond0 + (a->bond * 10 + 49) / 99, 110, 3, dark_sky ? 0xffc5d2 : 0xb75f70);
         if (a->soc < 0)
             snprintf(value, sizeof value, "--%%");
         else
             snprintf(value, sizeof value, "%s%d%%", a->soc_stale ? "~" : "", a->soc);
-        label(180, 3, 44, value,
-              a->battery_level == 0   ? MUT
-              : a->battery_level == 1 ? GOLD
-                                      : RED,
-              PAPER, LV_TEXT_ALIGN_RIGHT);
+        enum { battery_right = 240 - 10, icon_width = 17, icon_gap = 4 };
+        lv_point_t text_size;
+        lv_text_get_size(&text_size, value, &lv_font_cn_12, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        int value_x = battery_right - text_size.x;
+        const int level_color = a->battery_level == 0   ? (dark_sky ? 0xffffff : NAV)
+                                : a->battery_level == 1 ? (dark_sky ? 0xffdf9b : 0x815719)
+                                                        : (dark_sky ? 0xffc1b8 : RED);
+        text_at(value_x, 6, text_size.x, 18, &lv_font_cn_12, value, level_color, -1, LV_TEXT_ALIGN_RIGHT);
         if (!battery_box) {
             battery_box = lv_obj_create(lv_screen_active());
             lv_obj_remove_style_all(battery_box);
-            lv_obj_set_pos(battery_box, 161, 8);
-            lv_obj_set_size(battery_box, 17, 9);
+            lv_obj_set_size(battery_box, icon_width, 9);
             lv_obj_set_style_border_width(battery_box, 1, 0);
-            lv_obj_set_style_border_color(battery_box, lv_color_hex(MUT), 0);
             battery_fill = lv_obj_create(battery_box);
             lv_obj_remove_style_all(battery_fill);
             lv_obj_set_pos(battery_fill, 1, 1);
             lv_obj_set_style_bg_opa(battery_fill, LV_OPA_COVER, 0);
         }
+        lv_color_t outline = lv_color_hex(dark_sky ? 0xe7f1f2 : MUT);
+        if (!lv_color_eq(lv_obj_get_style_border_color(battery_box, 0), outline))
+            lv_obj_set_style_border_color(battery_box, outline, 0);
+        lv_obj_set_pos(battery_box, value_x - icon_gap - icon_width, 8);
         lv_obj_set_size(battery_fill, a->soc > 0 ? (a->soc * 13 + 99) / 100 : 0, 5);
         lv_color_t battery_color = lv_color_hex(a->battery_level ? GOLD : 0xa8ddd3);
         if (!lv_color_eq(lv_obj_get_style_bg_color(battery_fill, 0), battery_color))
@@ -377,7 +481,27 @@ void whale_ui_draw(const whale_app_t *a) {
             lv_obj_remove_flag(battery_box, LV_OBJ_FLAG_HIDDEN);
     }
     const char *foot = "长按确认返回";
-    if (a->view == HOME || inline_reply) {
+    bool was_room = room_visible;
+    room_visible = a->view == HOME;
+    if (room_visible) {
+        panel(sea, 0, 0, 240, 252, 0xe2ecde, 0);
+        if (!was_room || room_night != a->night)
+            lv_obj_invalidate(sea);
+        room_night = a->night;
+        static const int life[] = {20, 19, 15, 3, 18, 19, 10, 1};
+        int y = 45 + (animate && (a->now / 900) % 2);
+        dressed(a, life[a->activity % 8], 22, y, 256);
+        if (a->activity == 1)
+            icon_at(ICON_cola, 148, y + 108, 0xab473d);
+        static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
+        static const char *const names[] = {"互动", "会话", "设置"};
+        strip(icons, names, 3, a->dock, -1, 0, true);
+        if (a->global_unread) {
+            snprintf(value, sizeof value, "%u", a->global_unread);
+            panel(menu_box, 130, 250, 29, 16, 0xeac58c, 8);
+            text_at(130, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        }
+    } else if (a->view == TASK_DETAIL || inline_reply) {
         int n = r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
         if (r->hint)
             n = r->hint == 1 ? 9 : 10;
@@ -418,8 +542,8 @@ void whale_ui_draw(const whale_app_t *a) {
         if (inline_reply) {
             pose_at(n, 13, 28, 67);
             char short_title[80];
-            if (*title_line(title, short_title, &lv_font_cn_14, 154)) {
-                title_line(title, short_title, &lv_font_cn_14, 140);
+            if (*title_line(title, short_title, sizeof short_title, &lv_font_cn_14, 154)) {
+                title_line(title, short_title, sizeof short_title, &lv_font_cn_14, 140);
                 strcat(short_title, "…");
             }
             text_at(74, 34, 154, 20, &lv_font_cn_14, short_title, NAV, PAPER, LV_TEXT_ALIGN_LEFT);
@@ -429,6 +553,8 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(16, 105, 140, 20, &lv_font_cn_14, newer ? "最近回复 · 有更新" : "最近回复", NAV,
                     0xffffff, LV_TEXT_ALIGN_LEFT);
             if (a->view == REPLY_READ) {
+                if (!a->read_revision)
+                    center(164, "还没有最终回复", MUT, -1);
                 const char *body = a->answer;
                 char line[80];
                 for (int j = 0; j < a->scroll && *body; j++)
@@ -451,34 +577,47 @@ void whale_ui_draw(const whale_app_t *a) {
                                       a->scroll >= whale_home_scroll_max(a->answer)
                                   ? "↑ 上翻  已读完"
                                   : "↑↓ 阅读";
-            panel(footer_line, 16, 292, 208, 1, 0xe9edf1, 0);
-            text_at(16, 298, 132, 18, &lv_font_cn_12, nav, MUT, 0xffffff, LV_TEXT_ALIGN_LEFT);
-            text_at(151, 298, 73, 18, &lv_font_cn_12, "确认 收起", MUT, 0xffffff,
+            panel(action_bar, 0, 292, 240, 28, BAR, 0);
+            text_at(16, 298, 132, 18, &lv_font_cn_12, nav, NAV, -1, LV_TEXT_ALIGN_LEFT);
+            text_at(151, 298, 73, 18, &lv_font_cn_12, "确认 收起", NAV, -1,
                     LV_TEXT_ALIGN_RIGHT);
         } else {
+            parent_icon(ICON_chat, false);
+            text_at(151, 35, 76, 18, &lv_font_cn_12, value, MUT, PAPER, LV_TEXT_ALIGN_RIGHT);
+            lv_obj_set_pos(title_clip, 16, 62);
             home_title(a, title);
-            pose_at(n, 15, 61 + (animate && r->state >= 2 && r->state <= 4 && a->now % 1700 < 650),
-                    274);
+            pose_at(n, 29, 87 + (animate && r->state >= 2 && r->state <= 4 && a->now % 1700 < 650),
+                    236);
             if (todo)
                 snprintf(text, sizeof text, "%s %u/%u", r->state == 3 ? "执行" : states[r->state],
                          r->done, r->total);
             else
                 snprintf(text, sizeof text, "%s", status);
-            if (!holding) {
-                text_at(14, 273, 142, 18, &lv_font_cn_12, text, accent, PAPER, LV_TEXT_ALIGN_LEFT);
-                text_at(157, 273, 69, 18, &lv_font_cn_12, value, NAV, PAPER, LV_TEXT_ALIGN_RIGHT);
+            text_at(14, 268, 148, 20, &lv_font_cn_12,
+                    r->question ? "?  长按↓作答"
+                    : todo || r->hint || r->state == 8 || r->state == 6 || !a->linked ? text
+                                                                                      : "",
+                    accent, PAPER, LV_TEXT_ALIGN_LEFT);
+
+            panel(action_bar, 0, 292, 240, 28, BAR, 0);
+            static const char *const keys[] = {"↑", "●", "↓"};
+            static const enum room_icon shortcuts[] = {ICON_chat, ICON_mic, ICON_read};
+            for (int i = 0; i < 3; i++) {
+                text_at(26 + i * 73, 298, 16, 19, &lv_font_cn_14, keys[i], TEAL, -1,
+                        LV_TEXT_ALIGN_CENTER);
+                icon_at(shortcuts[i], 44 + i * 73, 297, TEAL);
             }
-            panel(footer_line, 0, 295, 240, 1, 0xe2e6e9, 0);
-            text_at(8, 300, 224, 18, &lv_font_cn_12, "↑陪伴  长按↑语音  ↓回复", TEAL, PAPER,
-                    LV_TEXT_ALIGN_CENTER);
+            if (r->flags & 8)
+                panel(menu_box, 210, 296, 5, 5, TEAL, 3);
         }
     } else if (a->view == COMPANION) {
-        static const char *choices[] = {"打招呼", "摸摸", "喂小鱼", "喝咖啡", "返回任务"};
+        static const char *choices[] = {"打招呼", "摸摸", "喂小鱼", "喝咖啡", "服饰"};
         static const char *lines[] = {"我在呢，慢慢来。", "嗨，我在这里呀。", "嘿嘿，再摸摸嘛。",
                                       "啊呜，谢谢你的小鱼。", "喝咖啡"};
         unsigned action = a->companion_action <= 4 ? a->companion_action : 0;
         unsigned elapsed = a->now - a->action_at;
-        int n = 16, x = 22, y = 39;
+        /* Leave a clear line for action feedback above the dock. */
+        int n = 16, x = 22, y = 44;
         const char *line = lines[action];
         if (!action) {
             unsigned phase = (a->now - a->companion_at) % 24000;
@@ -505,17 +644,29 @@ void whale_ui_draw(const whale_app_t *a) {
                     lv_obj_remove_flag(coffee_cup, LV_OBJ_FLAG_HIDDEN);
                     lv_obj_remove_flag(coffee_steam, LV_OBJ_FLAG_HIDDEN);
                     lv_obj_set_pos(coffee_cup, x + 78, y + 104);
-                    lv_obj_set_pos(coffee_steam, 143, 126 - (animate ? (elapsed / 250) % 4 : 0));
+                    lv_obj_set_pos(coffee_steam, x + 121,
+                                   y + 72 - (animate ? (elapsed / 250) % 4 : 0));
                 }
             }
         }
-        pose_at(n, x, y, 256);
-        text_at(8, 235, 224, 21, &lv_font_cn_14, line, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
-        panel(status_box, 36, 263, 168, 24, 0xe6edf3, 12);
-        snprintf(text, sizeof text, "‹  %s  ›",
-                 action ? "陪伴中…" : choices[a->companion_choice % 5]);
-        text_at(40, 266, 160, 18, &lv_font_cn_12, text, TEAL, -1, LV_TEXT_ALIGN_CENTER);
-        foot = action ? "长按确认中断并返回" : "↑↓选择  确认互动";
+        dressed(a, n, x, y, 256);
+        parent_icon(ICON_home, a->back_focus);
+        text_at(54, 35, 132, 18, &lv_font_cn_14, "互动", NAV, -1, LV_TEXT_ALIGN_CENTER);
+        if (action)
+            text_at(8, 232, 224, 21, &lv_font_cn_14, line, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        static const enum room_icon icons[] = {ICON_wave, ICON_pat, ICON_fish, ICON_coffee,
+                                               ICON_hanger};
+        strip(icons, choices, 5, a->back_focus ? -1 : a->companion_choice, -1, 0, false);
+    } else if (a->view == WARDROBE) {
+        dressed(a, 16, 22, 44, 256);
+        parent_icon(ICON_heart, a->back_focus);
+        center(35, "服饰", NAV, -1);
+        static const enum room_icon icons[] = {ICON_remove, ICON_flower, ICON_glasses};
+        static const char *const names[] = {"一键脱下", "雏菊发夹", "圆框眼镜"};
+        strip(icons, names, 3, a->back_focus ? -1 : a->outfit_choice, -1, (~a->unlocked) & 6,
+              false);
+        if (a->locked_notice)
+            center(232, "尚未解锁", MUT, -1);
     } else if (desk) {
         static const char *week[] = {"日", "一", "二", "三", "四", "五", "六"};
         const whale_local_time_t *t = &a->clock;
@@ -549,37 +700,42 @@ void whale_ui_draw(const whale_app_t *a) {
                     LV_TEXT_ALIGN_CENTER);
         }
     } else if (a->view == MANAGE || a->view == SOUND) {
-        text_at(12, 40, 216, 26, &lv_font_cn_18, a->view == SOUND ? "声音提醒" : "设备设置", NAV,
-                PAPER, LV_TEXT_ALIGN_CENTER);
-        const char *manage[] = {"声音提醒", "连接管理", "版本信息", "返回上页"};
-        const char *sound[] = {"音效", "语音", "试听当前模式", "返回设置"};
-        unsigned selection = a->view == SOUND ? a->sound_choice : a->menu_choice;
-        for (unsigned i = 0; i < 4; i++) {
-            snprintf(text, sizeof text, "%s%s", a->view == SOUND ? sound[i] : manage[i],
-                     a->view == SOUND && i < 2 && i == a->sound_mode ? " · 已选" : "");
-            text_at(18, 91 + i * 40, 204, 29, &lv_font_cn_16, text, i == selection ? PAPER : NAV,
-                    i == selection ? NAV : 0xe6edf3, LV_TEXT_ALIGN_CENTER);
-        }
-        if (a->view == SOUND)
-            text_at(16, 258, 208, 21, &lv_font_cn_12,
-                    a->sound_saved < 0 ? "保存失败，请重试"
-                    : a->sound_saved   ? "设置已保存"
-                                       : "正在保存…",
-                    a->sound_saved < 0 ? RED : MUT, PAPER, LV_TEXT_ALIGN_CENTER);
-        foot = "↑↓选择 确认进入 长按确认返回";
+        bool sound = a->view == SOUND;
+        parent_icon(sound ? ICON_settings : ICON_home, a->back_focus);
+        center(35, sound ? "声音提醒" : "设备设置", NAV, -1);
+        pose_at(sound ? 18 : 9, 22, 60, 245);
+        static const enum room_icon settings[] = {ICON_speaker, ICON_bt, ICON_info};
+        static const enum room_icon modes[] = {ICON_music, ICON_voice};
+        static const char *const names[] = {"声音提醒", "蓝牙连接", "版本信息"};
+        static const char *const sounds[] = {"音效", "语音"};
+        strip(sound ? modes : settings, sound ? sounds : names, sound ? 2 : 3,
+              a->back_focus ? -1
+              : sound       ? a->sound_choice
+                            : a->menu_choice,
+              sound ? a->sound_mode : -1, 0, false);
+        if (a->sound_saved < 0)
+            center(228, "保存失败，请重试", RED, -1);
     } else if (a->view == VOICE) {
         unsigned v = a->voice_phase;
         if (v == VOICE_PREVIEW) {
             fulltext("核对语音文字", a->voice_text, a->scroll);
             foot = "上下阅读  确认看操作";
         } else if (v == VOICE_ACTIONS) {
-            center(46, "发送给当前会话", NAV, PAPER);
-            label(16, 85, 208, a->voice_title, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
-            const char *choices[] = {"发送这段文字", "重新录音", "取消并返回"};
-            for (unsigned i = 0; i < 3; i++)
-                label(16, 146 + i * 42, 208, choices[i], i == a->voice_choice ? PAPER : NAV,
-                      i == a->voice_choice ? NAV : 0xe5f0e9, LV_TEXT_ALIGN_CENTER);
-            foot = "上下选择  确认执行";
+            text_at(16, 40, 208, 24, &lv_font_cn_18, "核对识别文字", NAV, PAPER,
+                    LV_TEXT_ALIGN_CENTER);
+            text_at(12, 73, 216, 20, &lv_font_cn_14, a->voice_title, MUT, PAPER,
+                    LV_TEXT_ALIGN_CENTER);
+            const char *body = a->voice_text;
+            char line[80];
+            for (int j = 0; j < 6 && *body; j++) {
+                body = next_line(body, line);
+                text_at(15, 107 + j * 22, 210, 21, &lv_font_cn_16, line, NAV, PAPER,
+                        LV_TEXT_ALIGN_LEFT);
+            }
+            static const enum room_icon choices[] = {ICON_send, ICON_cancel};
+            static const char *const names[] = {"发送", "取消"};
+            strip(choices, names, 2, a->voice_choice, -1, 0, false);
+            foot = NULL;
         } else {
             static const char *headings[] = {
                 "语音回复",   "正在准备",         "我在听",           "正在识别",
@@ -688,43 +844,53 @@ void whale_ui_draw(const whale_app_t *a) {
             center(244, detail, MUT, PAPER);
         }
     } else if (a->view == LIST) {
-        center(40, "任务列表", NAV, PAPER);
-        panel(menu_box, 10, 70, 220, 32, a->list_settings ? NAV : 0xebeff3, 8);
-        text_at(18, 75, 204, 23, &lv_font_cn_16, "设备设置  ›", a->list_settings ? PAPER : NAV, -1,
-                LV_TEXT_ALIGN_LEFT);
-        int start = (a->selected / 3) * 3;
-        if (!a->count) {
-            pose(0, 115);
-            center(244, "还没有任务", MUT, PAPER);
-        }
+        parent_icon(ICON_home, a->list_back);
+        center(35, "会话", NAV, -1);
+        pose_at(task_pose(r), 52, 54, 178);
+        int start = a->selected > 2 ? a->selected - 2 : 0;
+        if (!a->count)
+            center(238, "还没有任务", MUT, PAPER);
         for (int j = start; j < start + 3 && j < a->count; j++) {
             const whale_row_t *t = &a->rows[j];
-            int y = 112 + (j - start) * 57;
-            bool selected = !a->list_settings && j == a->selected;
-            bool waiting = t->question || t->state == 8 || t->state == 4;
-            bool error = t->state == 6 || (t->flags & 16);
-            bool fresh = t->state == 5 || (t->flags & 8);
-            int color = waiting                          ? (selected ? 0xffd68a : 0x876020)
-                        : error                          ? (selected ? 0xffb3b8 : RED)
-                        : fresh                          ? (selected ? 0xa5e5ca : 0x306d59)
-                        : t->state == 2 || t->state == 3 ? (selected ? 0xb4d5ff : 0x38689c)
-                                                         : (selected ? 0xc2ccda : MUT);
-            lv_obj_t *cards[] = {sea, sheet, status_box};
-            panel(cards[j - start], 10, y, 220, 51, selected ? NAV : 0xebeff3, 8);
-            text_at(18, y + 5, 204, 21, &lv_font_cn_16, t->title[0] ? t->title : "未命名会话",
-                    selected ? PAPER : NAV, -1, LV_TEXT_ALIGN_LEFT);
-            text_at(18, y + 28, 204, 19, &lv_font_cn_14,
-                    waiting           ? "等你回答"
-                    : (t->flags & 16) ? "出错 · 未读"
-                    : (t->flags & 8)  ? (t->state == 6 ? "出错 · 有新回复" : "有新回复")
-                                      : states[t->state],
-                    color, -1, LV_TEXT_ALIGN_LEFT);
+            int y = 201 + 38 * (j - start);
+            bool selected = j == a->selected && !a->list_back;
+            if (selected)
+                panel(status_box, 8, y, 218, 34, 0xd6e7da, 7);
+            list_state_icon(t, y);
+            char short_title[80];
+            if (*title_line(t->title[0] ? t->title : "未命名会话", short_title, sizeof short_title, &lv_font_cn_14,
+                            128)) {
+                title_line(t->title, short_title, sizeof short_title, &lv_font_cn_14, 114);
+                strcat(short_title, "…");
+            }
+            text_at(38, y + 6, 129, 21, &lv_font_cn_14, short_title, NAV, -1, LV_TEXT_ALIGN_LEFT);
+            uint32_t sec = t->elapsed;
+            if (a->ready && (t->state == 2 || t->state == 3 || t->state == 4 || t->state == 8))
+                sec += (a->now - t->at) / 1000;
+            snprintf(value, sizeof value, "%lu:%02lu", (unsigned long)sec / 60,
+                     (unsigned long)sec % 60);
+            text_at(169, y + 8, 54, 19, &lv_font_cn_12, value, MUT, -1, LV_TEXT_ALIGN_RIGHT);
         }
-        foot = a->list_settings && a->cursor ? "↑上一页 ↓任务 确认设置"
-                                             : "↑↓选择 确认进入 长按确认返回";
+        if (a->total > 3) {
+            unsigned visible = a->count - start < 3 ? a->count - start : 3;
+            int h = 108 * visible / a->total;
+            if (h < 6)
+                h = 6;
+            unsigned first = a->cursor + start;
+            if (first > (unsigned)a->total - visible)
+                first = a->total - visible;
+            panel(hold_track, 230, 203, 3, 108, 0xe1e7de, 2);
+            panel(hold_fill, 230, 203 + (108 - h) * first / (a->total - visible), 3, h, TEAL, 2);
+        }
     } else if (a->view == QUESTION) {
         center(41, r->title[0] ? r->title : "当前会话", NAV, PAPER);
-        if (!whale_text_wide(a->prompt) && strlen(a->prompt) <= 27) {
+        bool long_prompt = whale_text_wide(a->prompt);
+        if (long_prompt) {
+            char brief[80];
+            title_line(a->prompt, brief, sizeof brief, &lv_font_cn_16, 190);
+            strcat(brief, "…");
+            center(74, brief, NAV, PAPER);
+        } else if (strlen(a->prompt) <= 27) {
             pose_at(11, 182, 60, 55);
             label(12, 74, 166, a->prompt, NAV, PAPER, LV_TEXT_ALIGN_LEFT);
         } else
@@ -732,9 +898,16 @@ void whale_ui_draw(const whale_app_t *a) {
         snprintf(text, sizeof text, "第 %u/%u 页", a->page + 1, a->pages);
         center(109, text, TEAL, PAPER);
         for (int j = 0; j < a->options; j++)
-            label(12, 144 + 42 * j, 216, a->labels[j], j == a->focus ? PAPER : NAV,
-                  j == a->focus ? NAV : 0xe5f0e9, LV_TEXT_ALIGN_LEFT);
-        foot = whale_text_wide(a->labels[a->focus]) ? "确认展开全文" : "上下选择  确认提交";
+            label(12, 144 + 42 * j, 216, a->labels[j],
+                  !a->defer_question && j == a->focus ? PAPER : NAV,
+                  !a->defer_question && j == a->focus ? NAV : 0xe5f0e9, LV_TEXT_ALIGN_LEFT);
+        if (a->defer_question)
+            parent_icon(ICON_chat, true);
+        foot = a->defer_question                      ? "确认 暂不回答"
+               : long_prompt && whale_text_wide(a->labels[a->focus]) ? "长按↓读题  确认展开全文"
+               : long_prompt                          ? "长按↓读题  确认提交"
+               : whale_text_wide(a->labels[a->focus]) ? "确认展开全文"
+                                                      : "上下选择  确认提交";
     } else if (a->view == OPTION || a->view == PROMPT) {
         fulltext(a->view == PROMPT ? "问题全文" : "选项全文",
                  a->view == PROMPT ? a->prompt : a->labels[a->focus], a->scroll);
@@ -770,7 +943,7 @@ void whale_ui_draw(const whale_app_t *a) {
             detail = "确认管理  上下看版本";
             break;
         case KEEP:
-            heading = "保留当前绑定";
+            heading = a->ready ? "蓝牙已连接" : "电脑未连接";
             detail = "下键选择解除绑定";
             break;
         case REVOKE:
@@ -787,8 +960,8 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v1.4.0";
-            detail = "BLE 2.2";
+            heading = "固件 v0.15.0 Demo";
+            detail = "HARNESS-WHALE · BLE 2.3";
             break;
         case LOADING:
             heading = a->meta ? "正在读取选项" : "正在读取题干";
@@ -832,30 +1005,23 @@ void whale_ui_draw(const whale_app_t *a) {
         center(172, heading, PAPER, TEAL);
         center(217, detail, NAV, PAPER);
     }
-    if (holding) {
-        uint32_t elapsed = a->now - a->confirm_at;
-        unsigned duration = a->confirm_hold_ms ? a->confirm_hold_ms : 500;
-        unsigned width = elapsed >= duration ? 188 : elapsed * 188 / duration;
-        panel(hold_box, 10, 215, 220, 76, 0xe6edf3, 10);
-        panel(hold_track, 26, 251, 188, 5, 0xcbdbe7, 2);
-        panel(hold_fill, 26, 251, width, 5, TEAL, 2);
-        text_at(16, 225, 208, 21, &lv_font_cn_14, "继续按住，进入设置", NAV, -1,
-                LV_TEXT_ALIGN_CENTER);
-        text_at(16, 267, 208, 18, &lv_font_cn_12,
-                r->question && a->ready ? "松开则回答问题" : "松开则打开列表", MUT, -1,
-                LV_TEXT_ALIGN_CENTER);
-    }
+    for (unsigned i = icon_count; i < sizeof icon_slots / sizeof icon_slots[0]; i++)
+        lv_obj_add_flag(icon_slots[i], LV_OBJ_FLAG_HIDDEN);
     if (!painted_coffee) {
         lv_obj_add_flag(coffee_cup, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(coffee_steam, LV_OBJ_FLAG_HIDDEN);
     }
     if (!painted_pose)
         lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
+    if (a->view != HOME && a->view != WARDROBE && a->view != LIST && a->view != MANAGE &&
+        a->view != SOUND && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
+        !desk && foot) {
+        panel(action_bar, 0, 292, 240, 28, BAR, 0);
+        text_at(8, 297, 224, 19, &lv_font_cn_12, foot, NAV, -1, LV_TEXT_ALIGN_CENTER);
+    }
     for (unsigned i = 0; i < sizeof panels / sizeof panels[0]; i++)
         if (!(visible_panels & (1u << i)))
             lv_obj_add_flag(*panels[i], LV_OBJ_FLAG_HIDDEN);
-    if (a->view != HOME && !inline_reply && !desk)
-        text_at(8, 297, 224, 19, &lv_font_cn_12, foot, MUT, PAPER, LV_TEXT_ALIGN_CENTER);
     for (unsigned i = used; i < LABEL_COUNT; i++)
         lv_obj_add_flag(labels[i], LV_OBJ_FLAG_HIDDEN);
 }

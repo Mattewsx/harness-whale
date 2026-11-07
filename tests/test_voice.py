@@ -21,7 +21,7 @@ class AttentionTests(unittest.TestCase):
         link=Link(m);link.attention=True;link.ready=True
         link.snapshot()
         def names():return [m.sessions[s]['sessionId'] for s in link.rows]
-        self.assertEqual(names()[:4],['waiting','error','reply','working'])
+        self.assertEqual(names()[:4],['error','reply','working','waiting'])
         order=list(link.order)
         m.read_mark(m.keys['error'],m.sessions[m.keys['error']]['_rid'],2)
         m.read_mark(m.keys['reply'],m.sessions[m.keys['reply']]['_reply'],1)
@@ -31,7 +31,7 @@ class AttentionTests(unittest.TestCase):
         link.changes()
         self.assertEqual(link.order[:len(order)],order)
         link.snapshot()
-        self.assertEqual(names()[:3],['waiting','new-question','working'])
+        self.assertEqual(names()[:3],['new-question','working','waiting'])
         removed=m.keys['waiting'];m.evict('waiting');link.changes()
         self.assertNotIn(removed,link.order)
         link.snapshot(8)

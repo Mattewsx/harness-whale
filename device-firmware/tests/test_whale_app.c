@@ -21,6 +21,8 @@ int xQueueReceive(void *q, void *out, int wait) {
 }
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
+        if (*(const uint8_t *)in == WHALE_CMD_ROOM_SAVE)
+            return 1;
         assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7));
         if (*(const uint8_t *)in == WHALE_CMD_SLEEP)
             sleep_commands++;
@@ -135,6 +137,7 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     return send_ok;
 }
 static void setup(void) {
+    room_unsaved = previous_window = false;
     memset(&reminders, 0, sizeof reminders);
     disconnect_pending = false;
     seek_session = 0;
@@ -145,7 +148,9 @@ static void setup(void) {
     cues = (void *)2;
     cue_ok = true;
     bad_snapshot_crc = false;
-    a = (whale_app_t){.soc = -1,
+    a = (whale_app_t){.dock = 1,
+                      .bond = 12,
+                      .soc = -1,
                       .next = UINT32_MAX,
                       .count = 2,
                       .total = 2,
@@ -225,7 +230,7 @@ static void snapshot(bool keep_first) {
 static void test_detail_and_reading(void) {
     setup();
     preview(10, 30);
-    assert(a.view == HOME && sends == 0);
+    assert(a.view == TASK_DETAIL && sends == 0);
     key(BSP_BTN_DOWN);
     assert(a.view == REPLY_LOAD && sent_type == 0x1a && w32(sent_bytes + 8) == 10);
     reply(11, 30, 0, "wrong session");
@@ -245,35 +250,31 @@ static void test_detail_and_reading(void) {
         key(BSP_BTN_UP);
     assert(a.scroll == 0);
     key(BSP_BTN_UP);
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     key(BSP_BTN_DOWN);
     assert(a.view == REPLY_READ && sends == before);
     key(BSP_BTN_OK);
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     reply(10, 30, 0, "late");
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
 }
 static void test_navigation_and_questions(void) {
     setup();
+    page(HOME);
     key(BSP_BTN_OK);
     assert(a.view == LIST);
     key(BSP_BTN_DOWN);
     assert(a.selected == 1);
     key(BSP_BTN_OK);
-    assert(a.view == HOME && sends == 0);
+    assert(a.view == TASK_DETAIL && sends == 0);
     key(BSP_BTN_DOWN);
     assert(a.view == REPLY_LOAD && w32(sent_bytes + 8) == 11);
     key(BSP_BTN_OK);
-    unsigned before = sends;
     key(BSP_BTN_UP);
-    assert(a.view == COMPANION && sends == before);
-    key(BSP_BTN_OK | 256);
-    assert(a.view == HOME);
+    assert(a.view == LIST && a.selected == 1);
+    key(BSP_BTN_OK);
     a.rows[1].question = 40;
-    key(BSP_BTN_DOWN);
-    key(BSP_BTN_OK);
-    assert(a.view == HOME && answers == 0);
-    key(BSP_BTN_OK);
+    key(BSP_BTN_DOWN | 256);
     assert(a.view == LOADING && sent_type == 0x24);
     key(BSP_BTN_OK);
     assert(answers == 0);
@@ -315,13 +316,14 @@ static void test_new_reply_and_lifecycle(void) {
     key(BSP_BTN_DOWN);
     reply(10, 30, 0, "latest");
     preview(10, 0);
-    assert(a.view == HOME && !a.answer[0]);
+    assert(a.view == TASK_DETAIL && !a.answer[0]);
 }
 static void test_failure_empty_battery_and_key_release(void) {
     setup();
     a.replies[0].revision = 0;
     key(BSP_BTN_DOWN);
-    assert(a.view == HOME && sends == 0);
+    assert(a.view == REPLY_READ && !a.read_revision && sends == 0);
+    key(BSP_BTN_OK);
     preview(10, 30);
     send_ok = false;
     key(BSP_BTN_DOWN);
@@ -331,7 +333,7 @@ static void test_failure_empty_battery_and_key_release(void) {
     assert(a.view == REPLY_LOAD);
     service((whale_event_t){.kind = WE_DOWN});
     key(BSP_BTN_OK);
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     service((whale_event_t){.kind = 99, .value = 96});
     assert(a.soc == 96 && !a.soc_stale);
     service((whale_event_t){.kind = 99, .value = 41});
@@ -370,7 +372,7 @@ static void test_continuous_cache_and_offline(void) {
     unsigned before = sends;
     for (unsigned i = 0; i < 100 && a.view == REPLY_READ; i++)
         key(BSP_BTN_UP);
-    assert(a.view == HOME && sends == before);
+    assert(a.view == TASK_DETAIL && sends == before);
     service((whale_event_t){.kind = WE_DOWN});
     key(BSP_BTN_DOWN);
     assert(a.view == REPLY_READ && sends == before);
@@ -440,7 +442,7 @@ static void test_completion_cues(void) {
 static void test_voice_and_attention(void) {
     setup();
     a.voice_cap = true;
-    key(BSP_BTN_UP | 256);
+    key(BSP_BTN_OK);
     assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sent_type == 0x40);
     assert(voice_starts == 0);
     uint8_t ready[27] = {0};
@@ -461,8 +463,7 @@ static void test_voice_and_attention(void) {
     memcpy(b + 27, "hello", 5);
     unsigned before = sends;
     apply_message((whale_msg_t){0x41, b, 32});
-    assert(a.voice_phase == VOICE_PREVIEW && sends == before && !strcmp(a.voice_text, "hello"));
-    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_ACTIONS && sends == before && !strcmp(a.voice_text, "hello"));
     assert(a.voice_phase == VOICE_ACTIONS && sends == before);
     key(BSP_BTN_OK);
     assert(a.voice_phase == VOICE_SENDING && sent_type == 0x45);
@@ -476,62 +477,105 @@ static void test_voice_and_attention(void) {
     apply_message((whale_msg_t){0x41, b, 27});
     assert(a.voice_phase == VOICE_SENT);
     key(BSP_BTN_OK);
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     setup();
     a.rows[0].flags = 24;
     a.rows[0].state = 6;
     page(LIST);
     key(BSP_BTN_OK);
-    assert(a.view == HOME && !(a.rows[0].flags & 16) && a.rows[0].state == 6 &&
-           (a.rows[0].flags & 8));
-    preview(10, 30);
-    key(BSP_BTN_DOWN);
-    assert(a.rows[0].flags & 8);
+    assert(a.rows[0].flags == 24);
+    acknowledge_visible();
+    assert(a.view == REPLY_LOAD && a.rows[0].flags == 24);
     reply(10, 30, 0, "read this");
-    assert(!(a.rows[0].flags & 8) && sent_type == 0x4a);
+    acknowledge_visible();
+    assert(a.rows[0].flags == 16 && sent_type == 0x4a && sent_bytes[16] == 1);
+    key(BSP_BTN_OK);
+    acknowledge_visible();
+    assert(a.view == TASK_DETAIL && !a.rows[0].flags && sent_bytes[16] == 2);
+    page(LIST);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL);
     a.rows[0].flags |= 8;
-    page(HOME);
+    page(TASK_DETAIL);
     a.ready = false;
     before = sends;
     key(BSP_BTN_DOWN);
+    acknowledge_visible();
     assert(a.view == REPLY_READ && !(a.rows[0].flags & 8) && sends == before);
     a.ready = true;
     flush_reads();
     assert(sends == before + 1 && sent_type == 0x4a);
 }
+static void test_unread_route_before_preview(void) {
+    setup();
+    uint8_t update[37] = {0};
+    put64(update, a.epoch);
+    put32(update + 8, 1);
+    put32(update + 13, 10);
+    put32(update + 17, 20);
+    update[21] = 5;
+    update[23] = 8;
+    apply_message((whale_msg_t){0x14, update, sizeof update});
+    assert(a.rows[0].flags == 8 && !a.replies[0].revision);
+    page(LIST);
+    key(BSP_BTN_OK);
+    assert(a.view == REPLY_LOAD && a.read_revision == 0 && sends == 0);
+    acknowledge_visible();
+    assert(a.rows[0].flags == 8);
+    preview(11, 31);
+    assert(sends == 0);
+    reply_count(10, 0, 0, 1, "stale");
+    assert(a.view == REPLY_LOAD && !a.read_used);
+    preview(10, 33);
+    assert(a.view == REPLY_LOAD && sent_type == 0x1a && a.read_revision == 33);
+    key(BSP_BTN_OK);
+    reply_count(10, 33, 0, 1, "late");
+    acknowledge_visible();
+    assert(a.view == TASK_DETAIL && a.rows[0].flags == 8);
+    a.rows[0].flags |= 32;
+    page(LIST);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL && !answers); /* Computer-only question. */
+    a.rows[0].flags = 8;
+    a.rows[0].question = 42;
+    page(LIST);
+    key(BSP_BTN_OK);
+    assert(a.view == LOADING && sent_type == 0x24 && !answers);
+}
 static void test_voice_direct_entry(void) {
     setup();
     a.voice_cap = true;
-    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_UP | (BSP_BTN_PRESS << 8)});
-    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_UP | (BSP_BTN_LONG << 8)});
+    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_OK | (BSP_BTN_PRESS << 8)});
+    assert(a.view == TASK_DETAIL && sends == 0);
+    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_OK | (BSP_BTN_RELEASE << 8)});
     assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sends == 1);
-    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_UP | (BSP_BTN_RELEASE << 8)});
+    service((whale_event_t){.kind = WE_KEY, .value = BSP_BTN_OK | (BSP_BTN_RELEASE << 8)});
     assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sends == 1);
     uint8_t ready[27] = {0};
     memcpy(ready, a.voice_identity, 24);
     ready[24] = 1;
     key(BSP_BTN_UP); /* cancellation before readiness must never open the mic */
     apply_message((whale_msg_t){0x41, ready, sizeof ready});
-    assert(a.view == HOME && voice_starts == 0);
+    assert(a.view == TASK_DETAIL && voice_starts == 0);
     setup();
     a.ready = false;
-    key(BSP_BTN_UP | 256);
+    key(BSP_BTN_OK);
     assert(a.voice_phase == VOICE_DISCONNECTED && voice_starts == 0 && sends == 0);
     setup();
-    key(BSP_BTN_UP | 256);
+    key(BSP_BTN_OK);
     assert(a.voice_phase == VOICE_UNSUPPORTED && voice_starts == 0 && sends == 0);
     setup();
     a.voice_cap = true;
     a.rows[0].question = 40;
-    key(BSP_BTN_UP | 256);
-    assert(a.voice_phase == VOICE_QUESTION && voice_starts == 0 && sends == 0);
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_PREPARE && voice_starts == 0 && sends == 1);
     setup();
     a.count = 0;
-    key(BSP_BTN_UP | 256);
-    assert(a.view == HOME && voice_starts == 0 && sends == 0);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL && voice_starts == 0 && sends == 0);
     setup();
     a.attention_cap = true;
-    key(BSP_BTN_OK);
+    key(BSP_BTN_UP);
     assert(a.view == LIST_LOAD && sent_type == 0x10 && w32(sent_bytes + 8) == 0);
     key(BSP_BTN_OK); /* old cached rows cannot be selected during a priority
                         refresh */
@@ -553,7 +597,7 @@ static void test_voice_direct_entry(void) {
     setup();
     a.attention_cap = true;
     a.linked = false;
-    key(BSP_BTN_OK);
+    key(BSP_BTN_UP);
     assert(a.view == LIST && sends == 0);
 }
 static void summary(unsigned running, unsigned waiting, unsigned unread) {
@@ -587,10 +631,10 @@ static void test_companion_and_global_cues(void) {
     a.now = 120001;
     summary(1, 0, 0);
     companion_tick();
-    assert(a.view == HOME); /* background session blocks auto */
+    assert(a.view == TASK_DETAIL); /* background session blocks auto */
     summary(0, 0, 1);
     companion_tick();
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     summary(0, 0, 0);
     companion_tick();
     assert(a.view == DESK && last_input == 0); /* idle home becomes the desk display */
@@ -612,11 +656,12 @@ static void test_companion_and_global_cues(void) {
     key(BSP_BTN_OK);
     key(BSP_BTN_OK | 256);
     assert(a.view == HOME && !a.companion_action);
-    key(BSP_BTN_UP);
+    a.dock = 0;
+    key(BSP_BTN_OK);
     assert(a.view == COMPANION);
     cue_event(1, 10, 10, 0, 5);
-    assert(a.view == HOME); /* run start interrupts */
-    key(BSP_BTN_UP);
+    assert(a.view == COMPANION); /* manual room interaction stays open */
+    enter_desk();
     cue_event(2, 10, 20, 1, 1);
     assert(a.view == LIST); /* no unread cleared */
     assert(reminders.pending[15].kind == 1);
@@ -655,7 +700,7 @@ static void test_companion_and_global_cues(void) {
     a.now = 120001;
     last_input = 0;
     companion_tick();
-    assert(a.view == HOME); /* old bridge */
+    assert(a.view == TASK_DETAIL); /* old bridge */
     a.linked = false;
     companion_tick();
     assert(a.view == DESK); /* offline allowed */
@@ -678,7 +723,9 @@ static void test_companion_and_global_cues(void) {
     companion_tick();
     assert(cue_count == 1);
     setup();
-    key(BSP_BTN_OK | 256);
+    page(HOME);
+    a.dock = 2;
+    key(BSP_BTN_OK);
     assert(a.view == MANAGE);
     key(BSP_BTN_OK);
     assert(a.view == SOUND);
@@ -687,10 +734,9 @@ static void test_companion_and_global_cues(void) {
     assert(a.sound_mode == 1 && a.sound_saved == 0);
     service((whale_event_t){.kind = 98, .value = 1});
     assert(a.sound_saved == 1);
-    key(BSP_BTN_OK | 256);
     assert(a.view == MANAGE);
-    key(BSP_BTN_OK | 256);
-    assert(a.view == HOME);
+    key(BSP_BTN_UP | 256);
+    assert(a.view == HOME && a.dock == 1);
     puts("Companion actions, global idle, interruption, deferred/merged cues and "
          "settings PASS");
 }
@@ -723,11 +769,11 @@ static void test_desk_display(void) {
     a.now += WHALE_DESK_IDLE_MS - 1;
     summary(0, 0, 0);
     companion_tick();
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     a.now++;
     summary(0, 1, 0);
     companion_tick();
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     summary(0, 0, 0);
     companion_tick();
     assert(a.view == DESK);
@@ -740,13 +786,13 @@ static void test_desk_display(void) {
     assert(screen_applied == WHALE_SCREEN_OFF && a.view == DESK && sleep_commands == 0);
     /* A session starting work returns to its task home. */
     cue_event(1, 11, 21, 0, 5);
-    assert(a.view == HOME && a.selected == 1);
+    assert(a.view == TASK_DETAIL && a.selected == 1);
     /* Any summary that shows work also leaves, not only the first one. */
     enter_desk();
     summary(0, 0, 0);
     assert(a.view == DESK);
     summary(1, 0, 0);
-    assert(a.view == HOME);
+    assert(a.view == TASK_DETAIL);
     enter_desk();
     summary(0, 1, 0);
     assert(a.view == LIST && a.selected == 0); /* waiting work opens the list */
@@ -803,74 +849,73 @@ static void test_desk_display(void) {
     companion_tick();
     assert(a.view == HOME);
     key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
     companion_tick();
     assert(a.view == COMPANION);
     puts("Desk display entry, wall clock sync, exits, night and offline power PASS");
 }
 static void test_settings_navigation(void) {
     setup();
-    a.selected = 1;
-    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
-    assert(a.view == HOME && a.confirm_holding && a.confirm_hold_ms == 500 && sends == 0);
-    a.now += 200;
-    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
-    assert(a.view == LIST && !a.confirm_holding && a.selected == 1 && !a.list_settings);
-    key(BSP_BTN_UP);
-    key(BSP_BTN_UP);
-    assert(a.list_settings && a.selected == 0);
-    a.rows[0].flags = 16;
+    page(HOME);
+    key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
-    assert(a.view == MANAGE && a.settings_return == LIST && a.rows[0].flags == 16);
-    key(BSP_BTN_OK);
-    assert(a.view == SOUND);
-    key(BSP_BTN_OK | 256);
-    assert(a.view == MANAGE && a.settings_return == LIST);
-    a.menu_choice = 2;
+    assert(a.view == MANAGE);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
     assert(a.view == VERSION);
     key(BSP_BTN_OK);
-    assert(a.view == MANAGE);
-    a.menu_choice = 3;
+    assert(a.view == MANAGE && a.menu_choice == 2);
+    key(BSP_BTN_DOWN);
+    assert(a.back_focus);
     key(BSP_BTN_OK);
-    assert(a.view == LIST && a.list_settings);
+    assert(a.view == HOME && a.dock == 2);
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
-    assert(a.view == HOME && !a.list_settings && !(a.rows[0].flags & 16));
-
-    setup();
-    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
-    a.now += 500;
-    key_event(BSP_BTN_OK, BSP_BTN_LONG);
-    assert(a.view == MANAGE && !a.confirm_holding && sends == 0);
-    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
-    assert(a.view == MANAGE); /* release must not open the sound submenu */
-    key(BSP_BTN_OK | 256);
-    assert(a.view == HOME);
+    assert(a.view == COMPANION);
+    a.companion_choice = 4;
+    key(BSP_BTN_OK);
+    assert(a.view == WARDROBE);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.locked_notice && !a.worn);
+    a.unlocked = 6;
+    key(BSP_BTN_OK);
+    assert(a.worn == 2);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.worn == 6);
+    key(BSP_BTN_OK);
+    assert(a.worn == 2);
+    a.outfit_choice = 0;
+    key(BSP_BTN_OK);
+    assert(!a.worn);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
+    assert(a.view == COMPANION && a.companion_choice == 4);
+    key_event(BSP_BTN_UP, BSP_BTN_PRESS);
+    key_event(BSP_BTN_UP, BSP_BTN_LONG);
+    key_event(BSP_BTN_UP, BSP_BTN_RELEASE);
+    assert(a.view == HOME && a.dock == 1);
     dim = true;
     key_event(BSP_BTN_OK, BSP_BTN_PRESS);
-    assert(!a.confirm_holding && !dim);
-    key_event(BSP_BTN_OK, BSP_BTN_LONG);
     key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
-    assert(a.view == HOME); /* waking consumes the whole gesture */
+    assert(!dim && a.view == HOME);
     key_event(BSP_BTN_OK, BSP_BTN_PRESS);
     page(PAIR);
     key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
-    assert(a.view == PAIR && !a.confirm_holding);
-
+    assert(a.view == PAIR);
     setup();
     a.count = 0;
     a.linked = a.ready = false;
+    page(HOME);
     key(BSP_BTN_OK);
-    assert(a.view == LIST && a.list_settings);
-    key(BSP_BTN_DOWN);
+    assert(a.view == LIST && a.list_back);
     key(BSP_BTN_OK);
-    assert(a.view == MANAGE && a.settings_return == LIST);
-    key(BSP_BTN_OK | 256);
-    assert(a.view == LIST && a.list_settings);
-
+    assert(a.view == HOME);
     setup();
     a.attention_cap = a.global_cap = true;
-    key(BSP_BTN_OK);
+    key(BSP_BTN_UP);
     assert(a.view == LIST_LOAD && sent_type == 0x52 && seek_to_list && seek_session == 10);
     /* Targeted response can locate the current task beyond the first page. */
     uint8_t begin[27] = {0};
@@ -894,9 +939,26 @@ static void test_settings_navigation(void) {
     assert(a.view == LIST && a.cursor == 8 && a.selected == 1 && !seek_session);
     key(BSP_BTN_UP);
     key(BSP_BTN_UP);
-    assert(a.list_settings && a.cursor == 8);
-    key(BSP_BTN_UP);
     assert(a.view == LIST_LOAD && requested_cursor == 0);
+    setup();
+    a.rows[0].question = 42;
+    a.rows[0].flags = 32;
+    a.global_unread = 1;
+    key(BSP_BTN_DOWN | 256);
+    assert(a.view == LOADING);
+    acknowledge_visible();
+    assert(a.global_unread == 1);
+    a.meta = true;
+    page(QUESTION);
+    screen_applied = WHALE_SCREEN_OFF;
+    acknowledge_visible();
+    assert(a.global_unread == 1);
+    screen_applied = WHALE_SCREEN_ON;
+    acknowledge_visible();
+    assert(!a.global_unread && sent_type == 0x4a && sent_bytes[16] == 3);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL && a.rows[0].question == 42 && answers == 0);
     puts("Settings entry, hold/release, return, offline and paged list "
          "navigation PASS");
 }
@@ -1033,7 +1095,8 @@ static void test_large_frame_negotiation(void) {
     frame_limit = WHALE_FRAME_MAX;
     hello(4095, 20, 20);
     assert(hello_reply[0] == 2 && hello_reply[1] == 2 && !hello_reply[10]);
-    assert(w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20 && w16(hello_reply + 8) == 20);
+    assert(w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20 &&
+           w16(hello_reply + 8) == 20);
     assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
 
     // A 2.3 bridge at MTU 247 gets minor 3, bit 12 and the largest common frame.
@@ -1091,6 +1154,7 @@ int main(void) {
     test_new_reply_and_lifecycle();
     test_failure_empty_battery_and_key_release();
     test_continuous_cache_and_offline();
+    test_unread_route_before_preview();
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();

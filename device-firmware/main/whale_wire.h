@@ -28,6 +28,7 @@ static inline void put64(uint8_t *p, uint64_t n) {
 // Protocol 2.3: capability bit 12 negotiates large frames. Version-2 fragments
 // stay 20 bytes (12-byte payload); version-3 fragments use the negotiated frame.
 #define WHALE_CAP_LARGE_FRAMES 4096u
+#define WHALE_CAP_CACHE_INVALIDATION 16384u
 #define WHALE_FRAME_LEGACY 20u
 #define WHALE_FRAME_MAX 244u // ATT MTU 247 minus the 3-byte ATT header
 typedef struct {
@@ -47,6 +48,10 @@ typedef struct {
     uint8_t state, tool, flags, hint;
     char title[73];
 } whale_row_t;
+static inline bool whale_row_needs_answer(const whale_row_t *row) {
+    return row->question || (row->flags & 32) || row->state == 8 ||
+           (row->state == 4 && row->hint >= 2);
+}
 typedef struct {
     uint8_t type;
     const uint8_t *bytes;

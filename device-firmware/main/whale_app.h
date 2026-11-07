@@ -4,7 +4,7 @@
 #include "whale_voice.h"
 
 typedef enum {
-    HOME,
+    TASK_DETAIL,
     LIST,
     PAIR,
     MANAGE,
@@ -30,6 +30,8 @@ typedef enum {
     VOICE,
     COMPANION,
     SOUND,
+    HOME,
+    WARDROBE,
     DESK /* desk display: large clock with the whale, entered when idle */
 } whale_page_t;
 typedef struct {
@@ -58,6 +60,8 @@ typedef struct {
     uint32_t voice_session, voice_at, voice_ms;
     char voice_title[73], voice_text[1801];
     bool global_cap, global_valid;
+    bool cache_invalidation;
+    uint64_t cache_sequence;
     uint16_t global_running, global_waiting, global_unread;
     uint32_t global_at, global_seq, global_focus;
     uint32_t companion_at, action_at;
@@ -65,10 +69,10 @@ typedef struct {
     int8_t sound_saved;
     uint32_t title_session, title_run;
     char full_title[513];
-    bool list_settings, confirm_holding;
-    uint32_t confirm_at;
-    uint16_t confirm_hold_ms;
-    whale_page_t settings_return;
+    bool list_back;
+    uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
+    bool back_focus, defer_question, locked_notice;
+    uint32_t activity_at, mood_at;
     whale_page_t view;
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;

@@ -6,7 +6,7 @@ negotiated frame size instead of 20-byte frames with a 12-byte payload.
 """
 
 import asyncio
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 import json
 import secrets
@@ -26,7 +26,9 @@ NOTIFY = "13b50202-663a-48c5-a224-37c1c2569080"
 HEADER = struct.Struct("<BBHBBH")
 IDENTITY = struct.Struct("<QIII")
 ROW = struct.Struct("<IIBBBIHHIB")
-CAPS = 4095  # bit 11: global work summary and live cue events (v1.3)
+QUESTION_READ = 8192  # optional per-question unread marker and acknowledgement
+CACHE_INVALIDATION = 1 << 14
+CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION
 LARGE_FRAMES = 4096  # bit 12: protocol 2.3 negotiated large frames
 LEGACY_FRAME = 20
 MAX_FRAME = 244  # ATT MTU 247 minus the 3-byte ATT header
@@ -155,6 +157,8 @@ class Workspace:
         self.delivered = None
         self.visibility = {}
         self.reply_cache = OrderedDict()
+        self.cache_sequence = 0
+        self.cache_invalidations = deque(maxlen=32)
         self.history_pages = {}
         self.questions = OrderedDict()
         self.by_request = {}
@@ -181,7 +185,20 @@ class Workspace:
         field = 'reply' if kind == 1 else 'error'
         current = row.get('_reply') if kind == 1 else row.get('_rid')
         value = row.get('replyId') if kind == 1 else row.get('runId')
-        if kind not in (1,2) or not value or current != revision: return
+        if kind == 3 and row:
+            question = self.questions.get(IDENTITY.pack(self.epoch, sid, row['_rid'], revision))
+            if not question or question.status != 4:
+                return
+            field, value, current = 'question', question.request, revision
+        if kind == 4 and row.get('state') == 'done' and not row.get('replyId'):
+            field = 'done'
+        elif kind == 4:
+            return
+        if kind == 5:
+            if row.get('state') != 'question' and row.get('hint', 0) < 2:
+                return
+            field = 'hostQuestion'
+        if kind not in (1, 2, 3, 4, 5) or not value or current != revision: return
         key = hashlib.sha256(row['sessionId'].encode()).hexdigest()
         self.read_marks.setdefault(key, {})[field] = value
         self.revision += 1
@@ -228,7 +245,8 @@ class Workspace:
         sid = self.keys.pop(key, None)
         if sid is None:
             return
-        self.sessions.pop(sid, None)
+        old = self.sessions.pop(sid)
+        self.invalidate_reply(sid, old.get("_reply", 0))
         self.history_pages.pop(sid, None)
         for ref, question in list(self.questions.items()):
             if IDENTITY.unpack(ref)[1] == sid:
@@ -239,10 +257,15 @@ class Workspace:
                     self.resolve(question.request, 2)
                 question.labels.clear()
                 question.prompt = b""
-        for ref in list(self.reply_cache):
-            if ref[0] == sid:
-                del self.reply_cache[ref]
         self.revision += 1
+
+    def invalidate_reply(self, sid, revision):
+        if revision:
+            self.cache_sequence += 1
+            self.cache_invalidations.append((self.cache_sequence, sid, revision))
+            for key in list(self.reply_cache):
+                if key[:2] == (sid, revision):
+                    del self.reply_cache[key]
 
     def restore_history(self, key, history, reply_id, pages):
         if self.is_hidden(key):
@@ -262,6 +285,7 @@ class Workspace:
             row["title"] = history.title
             self.revision += 1
         if pages and row.get("replyId") != reply_id and (not row.get("replyId") or sid in self.history_pages):
+            self.invalidate_reply(sid, row.get("_reply", 0))
             row["replyId"] = reply_id
             row["replyPreview"] = " ".join(history.reply.split())[:20]
             row["_reply"] = self.allocate()
@@ -318,6 +342,7 @@ class Workspace:
                     q.status = 2
         revision=previous.get("_reply",0)
         if event.get("replyId")!=previous.get("replyId"):
+            self.invalidate_reply(sid, revision)
             revision=self.allocate() if event.get("replyId") else 0
         state = {**event, "_rid": rid,"_reply":revision,"_addr":addr}
         self.sessions[sid] = state
@@ -373,7 +398,16 @@ class Workspace:
                     if len(self.questions) <= 256:
                         break
 
-    def row(self, sid, attention=False):
+    def needs_answer(self, sid, state, qid):
+        if qid:
+            return True
+        data = self.sessions[sid]
+        if state != 8 and not (state == 4 and data.get("hint", 0) >= 2):
+            return False
+        return not any(q.status != 4 and IDENTITY.unpack(q.identity)[1:3] == (sid, data["_rid"])
+                       for q in self.questions.values())
+
+    def row(self, sid, attention=False, question_read=False):
         data = self.sessions[sid]
         snap = snapshot_from_mapping(data, seq=0)
         title = str(data.get("title") or "").encode()
@@ -390,6 +424,15 @@ class Workspace:
         flags = bool(snap.todo_total) | (bool(qid) << 1) | ((short != title) << 2)
         if attention:
             seen = self.read_marks.get(hashlib.sha256(data['sessionId'].encode()).hexdigest(), {})
+            if question_read and not qid:
+                if int(snap.state) == 5 and not data.get('replyId') and data.get('runId') != seen.get('done'):
+                    flags |= 64
+                if data.get('runId') != seen.get('hostQuestion') and self.needs_answer(sid, int(snap.state), qid):
+                    flags |= 32
+            if qid and question_read:
+                question = self.questions[IDENTITY.pack(self.epoch, sid, rid, qid)]
+                if question.request != seen.get('question'):
+                    flags |= 32
             if data.get('replyId') and data['replyId'] != seen.get('reply'): flags |= 8
             if int(snap.state) == 6 and data.get('runId') != seen.get('error'): flags |= 16
         return (
@@ -421,6 +464,9 @@ class Link:
         self.results = {}
         self.balance = None
         self.detail = False
+        self.question_read = False
+        self.cache_invalidation = False
+        self.cache_sequence = 0
         self.attention = False
         self.details = {}
         self.readable=False
@@ -471,20 +517,18 @@ class Link:
         running = waiting = unread = 0
         focus = 0
         for sid, data in m.sessions.items():
-            row = m.row(sid, True)
+            row = m.row(sid, True, self.question_read)
             state, flags = row[8], row[10]
             busy = state in (2, 3, 4, 8)
             qid = int.from_bytes(row[19:23], 'little')
             old_value = (self.global_rows or {}).get(sid)
-            resolved = any(q.status != 4 and IDENTITY.unpack(q.identity)[1:3] == (sid, data['_rid'])
-                           for q in m.questions.values())
-            pending = bool(qid) or (state in (4, 8) and data.get('hint', 0) >= 2) or (state == 8 and not resolved)
+            pending = m.needs_answer(sid, state, qid)
             running += busy
             waiting += pending
-            unread += bool(flags & 24)
+            unread += bool(flags & 120)
             if busy and not focus:
                 focus = sid
-            cue = 1 if pending else 2 if flags & 16 else 3 if flags & 8 or (state == 5 and not data.get("replyId")) else 0
+            cue = 1 if pending else 2 if flags & 16 else 3 if flags & 72 or (not self.question_read and state == 5 and not data.get("replyId")) else 0
             if state == 7: cue = 0  # user-initiated stop is always silent
             if cue == 1:
                 token = (old_value[3] if old_value and old_value[0] == data['_rid'] and old_value[2] == 1 and old_value[5] in (0, qid) else qid or m.allocate())
@@ -533,10 +577,18 @@ class Link:
         keys = list(m.sessions)
         if refresh_order and self.attention:
             def priority(sid):
-                row = m.row(sid, True)
+                row = m.row(sid, True, self.question_read)
                 state, flags = row[8], row[10]
-                return (0 if state in (4, 8) else 1 if flags & 16 else
-                        2 if flags & 8 else 3 if state in (2, 3) else 4)
+                question = m.needs_answer(sid, state, int.from_bytes(row[19:23], 'little'))
+                if flags & 32 or (question and not self.question_read):
+                    return 0
+                if flags & 16:
+                    return 1
+                if flags & (8 | 64):
+                    return 2
+                if question:
+                    return 3
+                return 4 if state in (2, 3, 4) else 5
             keys.sort(key=priority)  # stable within a priority; no heartbeat jitter
         elif not refresh_order:
             keys = [sid for sid in self.order if sid in m.sessions] + [sid for sid in keys if sid not in self.order]
@@ -561,7 +613,7 @@ class Link:
             "total": len(keys), "window": len(ids),
             "digest": hashlib.sha256("\n".join(sorted(m.sessions[i]["sessionId"] for i in ids)).encode()).hexdigest()
         }
-        self.rows = {i: m.row(i, self.attention) for i in ids}
+        self.rows = {i: m.row(i, self.attention, self.question_read) for i in ids}
         self.known = set(keys)
         self.details.clear()
         self.previews.clear()
@@ -594,7 +646,7 @@ class Link:
                 out.extend(self.snapshot(self.cursor, self.limit, refresh_order=False))
             else:
                 for sid, old in list(self.rows.items()):
-                    row = m.row(sid, self.attention)
+                    row = m.row(sid, self.attention, self.question_read)
                     if row != old:
                         self.seq += 1
                         out.append((0x14, pack("QIB", m.epoch, self.seq, 0) + row))
@@ -621,10 +673,17 @@ class Link:
                     self.previews[sid]=rev
             if self.pending_page:
                 key=self.pending_page
-                if key in m.reply_cache:
+                if m.sessions.get(key[0], {}).get("_reply") != key[1]:
+                    self.pending_page=None
+                elif key in m.reply_cache:
                     count,txt=m.reply_cache[key]
                     out.append((0x1B,pack("QIIIIH",m.epoch,*key,count,len(txt))+txt))
                     self.pending_page=None
+        if self.cache_invalidation and self.snap and self.cache_sequence != m.cache_sequence:
+            for seq, sid, rev in m.cache_invalidations:
+                if seq > self.cache_sequence:
+                    out.append((0x1C, pack("QQII", m.epoch, seq, sid, rev)))
+            self.cache_sequence = m.cache_sequence
         return out + self.global_changes()
 
     def receive(self, kind, body):
@@ -633,6 +692,8 @@ class Link:
             major, minor, caps, rx, tx, status = struct.unpack("<BBIHHB", body)
             self.detail = bool(caps & 128)
             self.readable=bool(caps & 256)
+            self.question_read = bool(caps & QUESTION_READ)
+            self.cache_invalidation = bool(caps & CACHE_INVALIDATION)
             self.attention=bool(caps & 1024)
             self.global_cap=bool(caps & 2048)
             self.clock_at = None
@@ -658,11 +719,11 @@ class Link:
             return self.snapshot(cursor, self.limit) if cursor else first
         if kind == 0x4a and self.attention and len(body) == 17:
             epoch,sid,revision,which = struct.unpack('<QIIB',body)
-            if epoch == m.epoch: m.read_mark(sid,revision,which)
+            if epoch == m.epoch and (which <= 2 or self.question_read): m.read_mark(sid,revision,which)
             return []
         if kind == 0x10 and len(body) == 14:
-            _, cursor, limit, _ = struct.unpack("<QIBB", body)
-            return self.snapshot(cursor, limit)
+            _, cursor, limit, sort = struct.unpack("<QIBB", body)
+            return self.snapshot(cursor, limit, refresh_order=not self.cache_invalidation or sort == 2 or not self.order)
         if kind == 0x1A and self.readable and len(body)==20:
             epoch,sid,rev,page=struct.unpack("<QIII",body)
             row=m.sessions.get(sid,{})
@@ -821,7 +882,8 @@ async def serve(client, model, on_write=None):
                         if bulk_type in (0x11, 0x12, 0x13, 0x14, 0x15):
                             refresh_after_page = True
                             inflight[1] = None
-                            queues[1].clear()
+                            # Invalidations span windows and cannot be rebuilt by a page refresh.
+                            queues[1][:] = [item for item in queues[1] if item[0] == 0x1C]
                         queues[1][0:0] = replies
                     else:
                         queue(replies)

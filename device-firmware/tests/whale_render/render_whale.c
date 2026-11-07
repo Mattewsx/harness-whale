@@ -6,10 +6,28 @@
 #include <stdio.h>
 #include <string.h>
 
+uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t pose_bytes[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion_bytes[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
 static uint16_t pixels[240 * 320];
 static uint16_t buffer[240 * 20];
+static void check_sky_bar(void) {
+    for (int x = 0; x < 240; x++) {
+        assert(pixels[x] == pixels[24 * 240 + x]);
+        assert(pixels[23 * 240 + x] == pixels[24 * 240 + x]);
+    }
+}
+static void check_action_caption(void) {
+    const uint16_t paper = pixels[229 * 240];
+    for (int y = 229; y < 232; y++)
+        for (int x = 8; x < 232; x++)
+            assert(pixels[y * 240 + x] == paper);
+    for (int y = 234; y < 246; y++)
+        for (int x = 60; x < 180; x++)
+            if (pixels[y * 240 + x] != paper)
+                return;
+    assert(0 && "Missing interaction caption");
+}
 static void memory(const char *label) {
     lv_mem_monitor_t stats;
     lv_mem_monitor(&stats);
@@ -48,6 +66,10 @@ int main(void) {
     f = fopen(WHALE_COMPANION_PATH, "rb");
     assert(f && fread(companion_bytes, 1, sizeof companion_bytes, f) == sizeof companion_bytes);
     fclose(f);
+    FILE *landscape = fopen(WHALE_ROOM_PATH, "rb");
+    assert(landscape && fread(landscape_pixels, 1, sizeof landscape_pixels, landscape) ==
+                            sizeof landscape_pixels);
+    fclose(landscape);
     lv_init();
     lv_display_t *display = lv_display_create(240, 320);
     lv_display_set_buffers(display, buffer, NULL, sizeof buffer, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -60,7 +82,7 @@ int main(void) {
                      .count = 2,
                      .total = 2,
                      .now = 1000,
-                     .view = HOME};
+                     .view = TASK_DETAIL};
     a.rows[0] = (whale_row_t){.session = 1, .run = 2, .state = 2, .elapsed = 461, .at = 1000};
     strcpy(a.rows[0].title, "鲸鱼搭子界面改版");
     a.replies[0].session = 1;
@@ -79,7 +101,7 @@ int main(void) {
                      "留。\n\n按下键展开最近回复，\n确认键随时收回详情。");
     whale_ui_draw(&a);
     save("reply");
-    a.view = HOME;
+    a.view = TASK_DETAIL;
     a.rows[0].state = 5;
     whale_ui_draw(&a);
     save("done");
@@ -110,7 +132,7 @@ int main(void) {
     a.rows[1].state = 5;
     whale_ui_draw(&a);
     save("list");
-    a.view = HOME;
+    a.view = TASK_DETAIL;
     a.soc = 68;
     a.battery_level = 0;
     a.rows[0].elapsed = 461;
@@ -138,7 +160,7 @@ int main(void) {
         save(name);
     }
     for (int i = 0; i < 300; i++) {
-        a.view = (i % 2) ? HOME : REPLY_READ;
+        a.view = (i % 2) ? TASK_DETAIL : REPLY_READ;
         a.rows[0].state = i % 9;
         a.now += 100;
         whale_ui_draw(&a);
@@ -173,12 +195,56 @@ int main(void) {
     a.rows[2].state = 6;
     a.rows[2].flags = 16;
     strcpy(a.rows[2].title, "检查构建失败原因");
+    a.view = HOME;
+    a.activity = 5;
+    a.dock = 1;
+    a.bond = 49;
+    a.global_unread = 3;
+    whale_ui_draw(&a);
+    save("room-home");
+    check_sky_bar();
+    int saved_soc = a.soc;
+    a.soc = 93;
+    whale_ui_draw(&a);
+    save("room-battery-93");
+    a.soc = 100;
+    whale_ui_draw(&a);
+    save("room-battery-full");
+    a.soc_stale = true;
+    whale_ui_draw(&a);
+    save("room-battery-stale");
+    a.soc_stale = false;
+    a.soc = saved_soc;
+    a.night = true;
+    a.activity = 2;
+    whale_ui_draw(&a);
+    save("room-night");
+    check_sky_bar();
+    a.night = false;
+    a.view = WARDROBE;
+    whale_ui_draw(&a);
+    save("room-wardrobe");
+    a.locked_notice = true;
+    whale_ui_draw(&a);
+    save("room-wardrobe-locked");
+    check_action_caption();
+    a.locked_notice = false;
+    a.view = LIST;
+    a.total = 9;
     whale_row_t saved = a.rows[0];
     a.rows[0] = a.rows[1];
     a.rows[1] = a.rows[2];
     a.rows[2] = saved;
     whale_ui_draw(&a);
     save("r11-list");
+    /* Sample inside the completed circle, clear of its rim, tick and unread dot. */
+    uint16_t done_fill = pixels[289 * 240 + 21];
+    assert(done_fill != pixels[289 * 240 + 36]);
+    a.rows[2].flags &= ~8u;
+    whale_ui_draw(&a);
+    save("list-done-read");
+    assert(pixels[289 * 240 + 21] == done_fill);
+    a.rows[2].flags |= 8;
     a.view = COMPANION;
     a.soc = 76;
     a.companion_at = a.now;
@@ -190,10 +256,13 @@ int main(void) {
         snprintf(name, sizeof name, "companion-%u", action);
         whale_ui_draw(&a);
         save(name);
+        if (action)
+            check_action_caption();
     }
     a.now += 2400;
     whale_ui_draw(&a);
     save("coffee-finished");
+    check_action_caption();
     a.companion_action = 0;
     a.linked = a.ready = false;
     whale_ui_draw(&a);
@@ -208,7 +277,7 @@ int main(void) {
     a.view = MANAGE;
     whale_ui_draw(&a);
     save("manage");
-    a.view = HOME;
+    a.view = TASK_DETAIL;
     a.rows[0].state = 2;
     a.rows[0].run = 7;
     a.title_session = a.rows[0].session;
@@ -221,21 +290,15 @@ int main(void) {
     save("scroll-middle");
     a.title_session = 0;
     a.rows[0].state = 1;
-    a.confirm_holding = true;
-    a.confirm_at = a.now - 300;
-    a.confirm_hold_ms = 500;
-    whale_ui_draw(&a);
-    save("confirm-hold");
-    a.confirm_holding = false;
     a.view = LIST;
-    a.list_settings = true;
+    a.list_back = true;
     whale_ui_draw(&a);
-    save("list-settings");
+    save("list-parent");
     a.count = 0;
     whale_ui_draw(&a);
     save("list-empty");
     a.count = 1;
-    a.list_settings = false;
+    a.list_back = false;
     a.view = DESK;
     a.page_at = a.now;
     a.soc = 76;
@@ -243,8 +306,8 @@ int main(void) {
     whale_ui_draw(&a);
     save("desk-unsynced");
     a.clock_valid = true;
-    a.clock = (whale_local_time_t){.year = 2026, .month = 11, .day = 6, .wday = 5, .hour = 14,
-                                   .minute = 25};
+    a.clock = (whale_local_time_t){
+        .year = 2026, .month = 11, .day = 6, .wday = 5, .hour = 14, .minute = 25};
     whale_ui_draw(&a);
     save("desk-day");
     a.clock.hour = 23;
@@ -255,9 +318,21 @@ int main(void) {
     whale_ui_draw(&a);
     save("desk-night");
     a.night = false;
-    a.view = HOME;
+    a.view = TASK_DETAIL;
     whale_ui_draw(&a);
     save("desk-back-home");
+    a.view = QUESTION;
+    a.selected = a.focus = a.page = 0;
+    a.pages = 1;
+    a.options = a.all_options = 3;
+    a.defer_question = false;
+    strcpy(a.rows[0].title, "导出笔记");
+    strcpy(a.prompt, "你想导出哪种格式？");
+    strcpy(a.labels[0], "纯文本");
+    strcpy(a.labels[1], "网页");
+    strcpy(a.labels[2], "图片");
+    whale_ui_draw(&a);
+    save("question-list-entry");
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     printf("LVGL renderer PASS; peak pool used %lu / %lu bytes\n", (unsigned long)memory.max_used,

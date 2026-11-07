@@ -7,6 +7,7 @@
 #define WHALE_REPLY_CACHE_SLOTS 32
 void whale_reply_cache_clear(void);
 void whale_reply_cache_forget(uint32_t session, uint32_t keep_revision);
+void whale_reply_cache_discard(uint32_t session, uint32_t revision);
 bool whale_reply_cache_get(uint64_t epoch, uint32_t session, uint32_t revision, uint32_t part,
                            char *text, uint32_t *count);
 void whale_reply_cache_put(uint64_t epoch, uint32_t session, uint32_t revision, uint32_t part,
