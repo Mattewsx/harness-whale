@@ -51,7 +51,7 @@ int main(void){
             assert(whale_reply_cache_get(a.epoch,sid,rev,0,text,&count)==(bool)expected);
         }
         else if(sscanf(line,"cues %u",&val)==1){assert(queued_cues==val);}
-        else if(sscanf(line,"view %u",&val)==1){assert(a.view==val);}
+        else if(sscanf(line,"view %u",&val)==1){if(a.view!=val)fprintf(stderr,"view %u expected %u\n",a.view,val);assert(a.view==val);}
         else if(sscanf(line,"scroll %u",&val)==1){assert(a.scroll==(int)val);}
         else if(sscanf(line,"selected %u",&val)==1){assert(a.count && a.rows[a.selected].session==val);}
         else if(!strncmp(line,"clock ",6)){unsigned h,m;assert(sscanf(line+6,"%u%u",&h,&m)==2);

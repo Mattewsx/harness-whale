@@ -128,7 +128,7 @@ export function hardwareQuestions(value: any): HardwareQuestion[] | null {
   if (!Array.isArray(questions) || questions.length === 0) return null
   for (const question of questions) {
     if (!question || typeof question.id !== 'string' || !Array.isArray(question.options) ||
-        question.multi_select === true || question.options.length < 2 ||
+        question.options.length < 2 || (question.multi_select === true && question.options.length > 64) ||
         question.options.some((option: any) => !option || typeof option.label !== 'string')) {
       return null
     }
@@ -136,14 +136,16 @@ export function hardwareQuestions(value: any): HardwareQuestion[] | null {
   return questions as HardwareQuestion[]
 }
 
-function askOneOnHardware(question: HardwareQuestion, signal: AbortSignal, requestId: string, sessionId: string, runId: string): Promise<string> {
-  const offered = question.options!.map(option => option.label)
+type DeviceMode = 'single' | 'multi' | 'approval'
+
+// Offer one prompt to HARNESS-WHALE and resolve with the chosen option indices.
+function askDevice(prompt: string, offered: string[], mode: DeviceMode, signal: AbortSignal, requestId: string, sessionId: string, runId: string): Promise<number[]> {
   const options = offered
   const client = dgram.createSocket('udp4')
   return new Promise((resolve, reject) => {
     let settled = false
     let replay: ReturnType<typeof setInterval> | undefined
-    const finish = (error?: Error, selected?: string) => {
+    const finish = (error?: Error, selected?: number[]) => {
       if (settled) return
       settled = true
       signal.removeEventListener('abort', onAbort)
@@ -167,9 +169,10 @@ function askOneOnHardware(question: HardwareQuestion, signal: AbortSignal, reque
         }
         if (info.port !== PORT || answer?.v !== 1 || answer?.kind !== 'harness-answer' ||
             answer?.requestId !== requestId || !Number.isInteger(answer?.selected)) return
-        const index = Number(answer.selected)
-        if (index >= 0 && index < offered.length) {
-          finish(undefined, offered[index])
+        const picked: unknown[] = mode === 'multi' ? answer.selectedList : [answer.selected]
+        if (Array.isArray(picked) && picked.length > 0 && new Set(picked).size === picked.length &&
+            picked.every(index => Number.isInteger(index) && Number(index) >= 0 && Number(index) < offered.length)) {
+          finish(undefined, (picked as number[]).slice().sort((x, y) => x - y))
         }
       } catch {
         // Ignore malformed loopback replies.
@@ -179,8 +182,8 @@ function askOneOnHardware(question: HardwareQuestion, signal: AbortSignal, reque
       if (signal.aborted) return onAbort()
       const document = Buffer.from(JSON.stringify({
         v: 1, kind: 'harness-question', requestId,
-        question: question.question, sessionId, runId,
-        options,
+        question: prompt, sessionId, runId,
+        options, mode,
       }))
       client.send(document, PORT, HOST)
       replay = setInterval(() => client.send(document, PORT, HOST), 1500)
@@ -191,8 +194,10 @@ function askOneOnHardware(question: HardwareQuestion, signal: AbortSignal, reque
 async function askOnHardware(questions: HardwareQuestion[], signal: AbortSignal, requestId: string, sessionId: string, runId: string) {
   const answers = []
   for (const question of questions) {
-    const selected = await askOneOnHardware(question, signal, requestId, sessionId, runId)
-    answers.push({ id: question.id, selected: [selected] })
+    const labels = question.options!.map(option => option.label)
+    const picked = await askDevice(question.question, labels, question.multi_select === true ? 'multi' : 'single',
+      signal, requestId, sessionId, runId)
+    answers.push({ id: question.id, selected: picked.map(index => labels[index]) })
   }
   const value = { answers }
   return {
@@ -200,6 +205,64 @@ async function askOnHardware(questions: HardwareQuestion[], signal: AbortSignal,
     isError: false,
     value,
   }
+}
+
+export const APPROVAL_OPTIONS = ['允许', '拒绝']
+
+function clip(text: string, max: number): string {
+  let out = '', bytes = 0
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch)
+    if (bytes + n > max) return out.trimEnd() + '…'
+    out += ch
+    bytes += n
+  }
+  return out
+}
+
+function localized(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object') return ''
+  const v = value as Record<string, unknown>
+  const pick = v['zh-CN'] ?? v.zh ?? v['zh-Hans'] ?? v.en ?? Object.values(v)[0]
+  return typeof pick === 'string' ? pick : ''
+}
+
+function callArguments(session: any, callId: unknown): any {
+  if (!callId) return undefined
+  const events = session?.ownEvents?.() || []
+  for (let i = events.length - 1; i >= 0; i--) {
+    const body = eventBody(events[i])
+    if (eventType(events[i]) === 'tool/call' && [body?.id, body?.callId, body?.call?.id].includes(callId)) {
+      return body?.arguments ?? body?.args ?? body?.input ?? body?.call?.arguments
+    }
+  }
+  return undefined
+}
+
+// Approval requests omit arguments; recover a one-line summary from the tool call.
+export function approvalPrompt(toolName: string, args: any, reason: string): string {
+  const tool = String(toolName || '').trim() || 'tool'
+  const lower = tool.toLowerCase()
+  const verb = /bash|shell|exec|command|run|terminal|powershell/.test(lower) ? '运行命令'
+    : /write|edit|patch|create|delete|move|rename|file/.test(lower) ? '修改文件'
+      : `使用 ${tool}`
+  let detail = ''
+  if (typeof args === 'string') detail = args
+  else if (args && typeof args === 'object') {
+    for (const field of ['command', 'cmd', 'file_path', 'filePath', 'path', 'file', 'url', 'pattern']) {
+      if (typeof args[field] === 'string' && args[field].trim()) { detail = args[field]; break }
+      if (Array.isArray(args[field]) && args[field].every((part: unknown) => typeof part === 'string')) {
+        detail = args[field].join(' ')
+        break
+      }
+    }
+  }
+  if (!detail) detail = reason
+  const flat = (text: string) => text.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const head = `允许${verb}？`
+  const body = flat(detail)
+  return body ? clip(`${head} ${body}`, 500) : head
 }
 
 export function apply(ctx: any) {
@@ -389,6 +452,77 @@ export function apply(ctx: any) {
   const bridgeGuard = setInterval(guardedBridgeStart, 5000)
   const bridgeStartTimer = setTimeout(guardedBridgeStart, 2500)
 
+  // Race the computer UI (next) against HARNESS-WHALE. Whichever answers first
+  // wins; the loser is cancelled through the swapped downstream signal.
+  const raceDevice = async <T>(
+    requestId: string,
+    holder: { signal?: AbortSignal },
+    next: () => Promise<T>,
+    ask: (signal: AbortSignal) => Promise<T>,
+    accepted: (value: T) => number,
+    key: string,
+    waitForComputer: boolean,
+  ): Promise<T> => {
+    const result = (status: number, option = 65535) => {
+      const msg = { v: 1, kind: 'whale-result', requestId, status, option }
+      const data = Buffer.from(JSON.stringify(msg))
+      results.set(requestId, { data, expires: Date.now() + 30000 })
+      socket.send(data, PORT, HOST)
+    }
+    const downstream = new AbortController()
+    const device = new AbortController()
+    const originalSignal: AbortSignal | undefined = holder.signal
+    const abortBoth = () => {
+      result(2)
+      downstream.abort(originalSignal?.reason)
+      device.abort(originalSignal?.reason)
+    }
+    originalSignal?.addEventListener('abort', abortBoth, { once: true })
+    try { holder.signal = downstream.signal } catch { /* frozen request: the computer keeps its own signal */ }
+
+    const webResult = next().then(
+      value => ({ source: 'web' as const, value }),
+      error => ({ source: 'web-error' as const, error }),
+    )
+    const deviceResult = ask(device.signal).then(
+      value => ({ source: 'hardware' as const, value }),
+      error => ({ source: 'hardware-error' as const, error }),
+    )
+
+    try {
+      const first = await Promise.race([webResult, deviceResult])
+      if (first.source === 'hardware') {
+        if (!visible(key)) {
+          result(2)
+          const web = await webResult
+          if (web.source === 'web') return web.value
+          throw web.error
+        }
+        downstream.abort('answered on HARNESS-WHALE')
+        if (waitForComputer) await webResult
+        else await Promise.race([webResult, new Promise(resolve => setTimeout(resolve, 1500))])
+        result(0, accepted(first.value))
+        return first.value
+      }
+      if (first.source === 'web') {
+        result(1)
+        device.abort('answered on computer')
+        return first.value
+      }
+      if (first.source === 'hardware-error') {
+        const web = await webResult
+        if (web.source === 'web') return web.value
+        throw web.error
+      }
+      result(2)
+      device.abort('computer question failed')
+      throw first.error
+    } finally {
+      originalSignal?.removeEventListener('abort', abortBoth)
+      device.abort('question settled')
+    }
+  }
+
   ctx.on('tools/execute', async (exec: any, next: () => Promise<any>) => {
     if (!isQuestionTool(String(exec?.name || ''))) return next()
     const questions = hardwareQuestions(exec?.arguments)
@@ -410,65 +544,29 @@ export function apply(ctx: any) {
       emit(key,{state:'waiting',hint:5})
       return next()
     }
-    const requestId = randomUUID()
-    const result = (status: number, option = 65535) => {
-      const msg = { v: 1, kind: 'whale-result', requestId, status, option }
-      const data = Buffer.from(JSON.stringify(msg))
-      results.set(requestId, { data, expires: Date.now() + 30000 })
-      socket.send(data, PORT, HOST)
-    }
+    const id = randomUUID()
+    return raceDevice(id, exec, next,
+      signal => askOnHardware(questions, signal, id, key, row.runId),
+      value => labels.indexOf(value.value.answers[0].selected[0]), key, true)
+  }, { global: true })
 
-    const downstream = new AbortController()
-    const hardware = new AbortController()
-    const originalSignal: AbortSignal = exec.signal
-    const abortBoth = () => {
-      result(2)
-      downstream.abort(originalSignal.reason)
-      hardware.abort(originalSignal.reason)
-    }
-    originalSignal.addEventListener('abort', abortBoth, { once: true })
-    exec.signal = downstream.signal
-
-    const webResult = next().then(
-      value => ({ source: 'web' as const, value }),
-      error => ({ source: 'web-error' as const, error }),
-    )
-    const hardwareResult = askOnHardware(questions, hardware.signal, requestId, key, row.runId).then(
-      value => ({ source: 'hardware' as const, value }),
-      error => ({ source: 'hardware-error' as const, error }),
-    )
-
-    try {
-      const first = await Promise.race([webResult, hardwareResult])
-      if (first.source === 'hardware') {
-        if (!visible(key)) {
-          result(2)
-          const web = await webResult
-          if (web.source === 'web') return web.value
-          throw web.error
-        }
-        downstream.abort('answered on HARNESS-WHALE')
-        await webResult
-        result(0, questions[0].options!.findIndex(o => o.label === first.value.value.answers[0].selected[0]))
-        return first.value
-      }
-      if (first.source === 'web') {
-        result(1)
-        hardware.abort('answered on computer')
-        return first.value
-      }
-      if (first.source === 'hardware-error') {
-        const web = await webResult
-        if (web.source === 'web') return web.value
-        throw web.error
-      }
-      result(2)
-      hardware.abort('computer question failed')
-      throw first.error
-    } finally {
-      originalSignal.removeEventListener('abort', abortBoth)
-      hardware.abort('question settled')
-    }
+  // Permission prompts ("allow this command / file change?") answered on the device.
+  // Allow maps to the only grant, allowed-once; deny maps to rejected.
+  ctx.on('approval/request', async (req: any, next: () => Promise<string>) => {
+    const session = req?.agent?.session
+    if (!observeSession(session) || req?.signal?.aborted) return next()
+    const key = sessionKey(session)
+    const row = states.get(key)
+    if (key === 'default' || !row?.runId) return next()
+    const prompt = approvalPrompt(String(req?.toolName || ''), callArguments(session, req?.callId),
+      localized(req?.displayReason) || String(req?.reason || ''))
+    const id = randomUUID()
+    return raceDevice(id, req, next,
+      async signal => {
+        const [choice] = await askDevice(prompt, APPROVAL_OPTIONS, 'approval', signal, id, key, row.runId)
+        return choice === 0 ? 'allowed-once' : 'rejected'
+      },
+      outcome => outcome === 'allowed-once' ? 0 : 1, key, false)
   }, { global: true })
 
   ctx.commands.register({

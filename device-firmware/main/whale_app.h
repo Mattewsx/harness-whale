@@ -55,6 +55,8 @@ typedef struct {
     uint8_t identity[20], received, parts;
     uint16_t option_ids[3];
     char prompt[513], labels[3][257];
+    uint8_t question_mode; /* WHALE_MODE_*: single choice, multi-select or approval */
+    uint64_t picked;       /* multi-select: chosen option ids as bits */
     bool voice_cap, voice_submitted, attention_cap;
     uint8_t voice_phase, voice_choice, voice_identity[24];
     uint32_t voice_session, voice_at, voice_ms;

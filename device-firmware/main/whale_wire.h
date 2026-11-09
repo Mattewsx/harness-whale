@@ -29,6 +29,12 @@ static inline void put64(uint8_t *p, uint64_t n) {
 // stay 20 bytes (12-byte payload); version-3 fragments use the negotiated frame.
 #define WHALE_CAP_LARGE_FRAMES 4096u
 #define WHALE_CAP_CACHE_INVALIDATION 16384u
+// Bit 15: permission approvals and multi-select questions. 0x20 then ends with a
+// mode byte (0 single, 1 multi-select, 2 approval); 0x26 submits a 64-bit mask.
+#define WHALE_CAP_RICH_QUESTIONS 32768u
+#define WHALE_MODE_SINGLE 0u
+#define WHALE_MODE_MULTI 1u
+#define WHALE_MODE_APPROVAL 2u
 #define WHALE_FRAME_LEGACY 20u
 #define WHALE_FRAME_MAX 244u // ATT MTU 247 minus the 3-byte ATT header
 typedef struct {

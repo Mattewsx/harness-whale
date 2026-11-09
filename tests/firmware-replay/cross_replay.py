@@ -281,3 +281,33 @@ send(0x1c, v.pack('QQII', m.epoch, 35, sid, rev + 1))
 lines.append(f'cached {sid} {rev} 0')
 subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8,check=True)
 print('PASS: cache invalidations validate epoch, exact revision, duplicates and sequence gaps')
+
+# Bit 15: the bridge's approval and multi-select questions drive production C.
+for mode,labels,keys,expect in [
+    ('multi',['摘要','日志','图片','附录'],['key 2','key 1','key 1','key 2','key 1'],None),
+    ('approval',['允许','拒绝'],['key 0','key 2','view 12','key 2','view 13'],'tx 22 '),
+]:
+    m=v.Workspace()
+    m.update(dict(sessionId='r0',runId='run',state='waiting',hint=2,title='审批'))
+    m.question(dict(sessionId='r0',runId='run',question='允许运行命令？ npm test',options=labels,requestId='rq',mode=mode),('127.0.0.1',1))
+    q=next(iter(m.questions.values()))
+    link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,v.CAPS,20,20,0));lines=[];serial=[0,0]
+    send(1,v.pack('BBIHH',2,2,v.CAPS,20,20))
+    for kind,body in link.snapshot():send(kind,body)
+    lines+=['key 2','view 18']
+    for kind,body in link.snapshot():send(kind,body)
+    lines+=['view 1','key 2','view 8']
+    for kind,body in link.receive(0x24,q.identity+b'\xff')+link.receive(0x24,q.identity+b'\0'):send(kind,body)
+    lines+=['view 10']+keys
+    if mode=='multi':
+        lines+=['view 8']
+        for kind,body in link.receive(0x24,q.identity+b'\1'):send(kind,body)
+        lines+=['view 10','key 2','key 1','key 2','view 13']
+    r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+    if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+    sent=[x for x in r.stdout.splitlines() if x.startswith(('tx 22 ','tx 26 '))]
+    want='tx 26 '+(q.identity+v.pack('Q',0b1101)).hex() if mode=='multi' else 'tx 22 '+(q.identity+b'\0\0').hex()
+    assert sent==[want],(mode,sent)
+    for kind,body in [(0x26 if mode=='multi' else 0x22,bytes.fromhex(want[6:]))]:
+        assert link.receive(kind,body)[0][1][20]==4
+print('PASS: bit 15 approval (deny by default, allow after full text) and paged multi-select mask from C to Python')

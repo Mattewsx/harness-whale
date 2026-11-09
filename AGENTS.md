@@ -19,12 +19,12 @@
 - 主页显示鲸鱼娘、标题、状态、用时和设备电量；进度仅在有真实 Todo 时显示。
 - 每会话只读最近一次最终回复，默认收起；↓ 展开，↑↓ 连续滚动，无页码，确认收起。
 - 内存缓存 32 个分段，约 13 KB，首段优先保留。断电、新修订、删除会话、桥接器 epoch 变化和解绑按范围清理缓存；正文不写 NVS。
-- 仅普通单选支持硬件作答，多选、自由文本与复杂补充回电脑。
+- 单选、多选（≤64 项）和权限审批（允许一次/拒绝）支持硬件作答，需协商能力位 15；旧固件只收到单选。自由文本、多题组合与复杂补充回电脑。
 - BLE 名称 `HARNESS-WHALE`，诊断 `/whale`；插件 ID `harness-whale-companion` 保留安装兼容。
 
 ## 源码地图
 
-- `harness/plugin/index.ts`：事件、会话生命周期、单选及桥接器管理。
+- `harness/plugin/index.ts`：事件、会话生命周期、单选/多选、权限审批及桥接器管理。
 - `harness/bridge/harness_ble_bridge.py`：UDP、DSH 名单与本地记录、BLE 连接。
 - `harness/bridge/whale_v2.py`：当前 2.3 协议（2.2 兼容）；`harness_ble_protocol.py` 保留旧版兼容和文本清洗。
 - `device-firmware/main/whale_app.c`：应用入口、状态机与按键。

@@ -28,11 +28,15 @@ IDENTITY = struct.Struct("<QIII")
 ROW = struct.Struct("<IIBBBIHHIB")
 QUESTION_READ = 8192  # optional per-question unread marker and acknowledgement
 CACHE_INVALIDATION = 1 << 14
-CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION
+# Bit 15: the device answers permission approvals and multi-select questions.
+# 0x20 then carries a trailing mode byte and 0x26 submits a 64-bit choice mask.
+RICH_QUESTIONS = 1 << 15
+CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION | RICH_QUESTIONS
+MODES = {"single": 0, "multi": 1, "approval": 2}
 LARGE_FRAMES = 4096  # bit 12: protocol 2.3 negotiated large frames
 LEGACY_FRAME = 20
 MAX_FRAME = 244  # ATT MTU 247 minus the 3-byte ATT header
-CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
+CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x26, 0x30, 0x31, 0x32}
 CONTROL |= {0x50, 0x51, 0x52}
 END = 0xFFFFFFFF
 CLOCK_RESYNC_SECONDS = 1800
@@ -146,6 +150,8 @@ class Question:
     choice: int = 65535
     submitted: bool = False
     submitted_option: int = 65535
+    mode: int = 0  # 0 single choice, 1 multi-select, 2 permission approval
+    submitted_mask: int = 0
 
 
 class Workspace:
@@ -369,15 +375,18 @@ class Workspace:
         ):
             return
         prompt = event.get("question")
+        mode = MODES.get(event.get("mode", "single"))
         if (
             not isinstance(prompt, str)
             or not 0 < len(prompt.encode()) <= 512
             or len(set(labels)) != len(labels)
+            or mode is None
+            or mode == 2 and len(labels) != 2
         ):
             return
         qid = self.allocate()
         p = IDENTITY.pack(self.epoch, sid, row["_rid"], qid)
-        self.questions[p] = Question(p, req, labels, prompt.encode(), addr)
+        self.questions[p] = Question(p, req, labels, prompt.encode(), addr, mode=mode)
         self.by_request[req] = p
         self.revision += 1
 
@@ -407,7 +416,7 @@ class Workspace:
         return not any(q.status != 4 and IDENTITY.unpack(q.identity)[1:3] == (sid, data["_rid"])
                        for q in self.questions.values())
 
-    def row(self, sid, attention=False, question_read=False):
+    def row(self, sid, attention=False, question_read=False, rich=False):
         data = self.sessions[sid]
         snap = snapshot_from_mapping(data, seq=0)
         title = str(data.get("title") or "").encode()
@@ -418,6 +427,7 @@ class Workspace:
                 IDENTITY.unpack(q.identity)[3]
                 for q in self.questions.values()
                 if q.status == 4 and IDENTITY.unpack(q.identity)[1:3] == (sid, rid)
+                and (rich or not q.mode)
             ),
             0,
         )
@@ -465,6 +475,7 @@ class Link:
         self.balance = None
         self.detail = False
         self.question_read = False
+        self.rich = False
         self.cache_invalidation = False
         self.cache_sequence = 0
         self.attention = False
@@ -517,7 +528,7 @@ class Link:
         running = waiting = unread = 0
         focus = 0
         for sid, data in m.sessions.items():
-            row = m.row(sid, True, self.question_read)
+            row = m.row(sid, True, self.question_read, self.rich)
             state, flags = row[8], row[10]
             busy = state in (2, 3, 4, 8)
             qid = int.from_bytes(row[19:23], 'little')
@@ -577,7 +588,7 @@ class Link:
         keys = list(m.sessions)
         if refresh_order and self.attention:
             def priority(sid):
-                row = m.row(sid, True, self.question_read)
+                row = m.row(sid, True, self.question_read, self.rich)
                 state, flags = row[8], row[10]
                 question = m.needs_answer(sid, state, int.from_bytes(row[19:23], 'little'))
                 if flags & 32 or (question and not self.question_read):
@@ -613,7 +624,7 @@ class Link:
             "total": len(keys), "window": len(ids),
             "digest": hashlib.sha256("\n".join(sorted(m.sessions[i]["sessionId"] for i in ids)).encode()).hexdigest()
         }
-        self.rows = {i: m.row(i, self.attention, self.question_read) for i in ids}
+        self.rows = {i: m.row(i, self.attention, self.question_read, self.rich) for i in ids}
         self.known = set(keys)
         self.details.clear()
         self.previews.clear()
@@ -646,7 +657,7 @@ class Link:
                 out.extend(self.snapshot(self.cursor, self.limit, refresh_order=False))
             else:
                 for sid, old in list(self.rows.items()):
-                    row = m.row(sid, self.attention, self.question_read)
+                    row = m.row(sid, self.attention, self.question_read, self.rich)
                     if row != old:
                         self.seq += 1
                         out.append((0x14, pack("QIB", m.epoch, self.seq, 0) + row))
@@ -693,6 +704,7 @@ class Link:
             self.detail = bool(caps & 128)
             self.readable=bool(caps & 256)
             self.question_read = bool(caps & QUESTION_READ)
+            self.rich = bool(caps & RICH_QUESTIONS)
             self.cache_invalidation = bool(caps & CACHE_INVALIDATION)
             self.attention=bool(caps & 1024)
             self.global_cap=bool(caps & 2048)
@@ -766,20 +778,22 @@ class Link:
                     m.resolve(q.request, 2)
             return [(0x31, body)]
         if (
-            kind not in (0x22, 0x24, 0x25)
-            or len(body) != {0x22: 22, 0x24: 21, 0x25: 20}[kind]
+            kind not in (0x22, 0x24, 0x25, 0x26)
+            or len(body) != {0x22: 22, 0x24: 21, 0x25: 20, 0x26: 28}[kind]
         ):
             return []
         p = body[:20]
         q = m.questions.get(p)
-        if not q:
+        # A device without bit 15 never sees approval or multi-select questions.
+        if not q or q.mode and not self.rich:
             return [(0x23, p + pack("BH", 3, 65535))]
         if q.status == 4 and kind == 0x24:
             page = body[20]
             count = len(q.labels)
             pages = (count + 2) // 3
             if page == 255:
-                return [(0x20, p + pack("BBH", count, pages, len(q.prompt)) + q.prompt)]
+                meta = p + pack("BBH", count, pages, len(q.prompt)) + q.prompt
+                return [(0x20, meta + bytes((q.mode,)) if self.rich else meta)]
             if page >= pages:
                 return []
             labels = q.labels[page * 3 : page * 3 + 3]
@@ -788,7 +802,24 @@ class Link:
                 for i, t in enumerate(labels)
             )
             return [(0x21, p + bytes((page, len(labels))) + payload)]
-        if q.status == 4 and (
+        if q.mode == 1 and q.status == 4 and (
+            kind == 0x26 and not q.submitted or kind == 0x25 and q.submitted
+        ):
+            mask = int.from_bytes(body[20:], "little") if kind == 0x26 else q.submitted_mask
+            picked = [i for i in range(len(q.labels)) if mask >> i & 1]
+            if picked and mask >> len(q.labels) == 0 and m.transport:
+                msg = {
+                    "v": 1,
+                    "kind": "harness-answer",
+                    "requestId": q.request,
+                    "selected": picked[0],
+                    "selectedList": picked,
+                }
+                m.transport.sendto(json.dumps(msg).encode(), q.addr)
+                q.submitted = True
+                q.submitted_mask = mask
+            return [(0x23, p + pack("BH", q.status, q.choice))]
+        if q.mode != 1 and q.status == 4 and (
             kind == 0x22 and not q.submitted or kind == 0x25 and q.submitted
         ):
             idx = (

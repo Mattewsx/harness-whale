@@ -29,6 +29,7 @@ static QueueHandle_t cues;
 static whale_cues_t reminders;
 static uint32_t disconnected_at, seek_session, title_requested_at;
 static bool disconnect_pending;
+static bool rich_questions; /* bridge negotiated WHALE_CAP_RICH_QUESTIONS */
 static bool seek_to_list, priority_list;
 static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
@@ -573,6 +574,8 @@ static void open_task(void) {
     a.page = 0;
     a.focus = 0;
     a.unsupported = false;
+    a.question_mode = WHALE_MODE_SINGLE;
+    a.picked = 0;
     ask_page(255);
 }
 static void query(void) {
@@ -583,7 +586,32 @@ static void query(void) {
         queries = 1;
     }
 }
+/* The extra list row after the last multi-select option submits the picks. */
+static bool submit_row(void) {
+    return a.question_mode == WHALE_MODE_MULTI && a.page + 1 >= a.pages && a.focus == a.options;
+}
+static void submit_multi(void) {
+    if (!a.linked || !a.ready || !a.meta) {
+        query();
+        return;
+    }
+    uint8_t b[28];
+    memcpy(b, a.identity, 20);
+    put64(b + 20, a.picked);
+    if (whale_send(0x26, b, sizeof b))
+        page(SENDING);
+    else
+        query();
+}
+static void toggle_pick(void) {
+    if (a.focus < a.options && a.option_ids[a.focus] < 64)
+        a.picked ^= 1ull << a.option_ids[a.focus];
+}
 static void submit(void) {
+    if (a.question_mode == WHALE_MODE_MULTI) {
+        submit_multi();
+        return;
+    }
     if (!a.linked || !a.ready || !a.meta || a.focus >= a.options) {
         query();
         return;
@@ -935,8 +963,17 @@ static void key(uint32_t code) {
         case QUESTION:
             if (a.defer_question)
                 page(TASK_DETAIL);
+            else if (submit_row()) {
+                if (a.picked)
+                    submit_multi();
+            } else if (a.focus >= a.options)
+                break;
+            else if (a.question_mode == WHALE_MODE_APPROVAL && a.option_ids[a.focus] == 0)
+                page(OPTION); /* allowing shows the full request before it is sent */
             else if (whale_text_wide(a.labels[a.focus]))
                 page(OPTION);
+            else if (a.question_mode == WHALE_MODE_MULTI)
+                toggle_pick();
             else
                 submit();
             break;
@@ -944,7 +981,11 @@ static void key(uint32_t code) {
             page(QUESTION);
             break;
         case OPTION:
-            submit();
+            if (a.question_mode == WHALE_MODE_MULTI) {
+                toggle_pick();
+                page(QUESTION);
+            } else
+                submit();
             break;
         case LOAD_FAILED:
             ask_page(a.meta ? a.page : 255);
@@ -1016,7 +1057,8 @@ static void key(uint32_t code) {
     }
     if (a.view == PROMPT || a.view == OPTION) {
         a.scroll += d;
-        int max = whale_scroll_max(a.view == PROMPT ? a.prompt : a.labels[a.focus]);
+        bool whole = a.view == PROMPT || a.question_mode == WHALE_MODE_APPROVAL;
+        int max = whale_scroll_max(whole ? a.prompt : a.labels[a.focus]);
         if (a.scroll < 0)
             a.scroll = 0;
         if (a.scroll > max)
@@ -1057,7 +1099,8 @@ static void key(uint32_t code) {
             return;
         }
         int next = (int)a.focus + d;
-        if (next >= 0 && next < a.options)
+        int rows = a.options + (a.question_mode == WHALE_MODE_MULTI && a.page + 1 >= a.pages);
+        if (next >= 0 && next < rows)
             a.focus = next;
         else if (d == 1 && a.page + 1 < a.pages) {
             a.page++;
@@ -1081,8 +1124,10 @@ static void apply_message(whale_msg_t msg) {
         uint16_t frame =
             whale_frame_grant(offered, w16(p + 6), w16(p + 8), whale_ble_frame_limit());
         uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
-        put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION)) |
+        put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION |
+                                 WHALE_CAP_RICH_QUESTIONS)) |
                          (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
+        rich_questions = (offered & WHALE_CAP_RICH_QUESTIONS) != 0;
         a.global_cap = (w32(p + 2) & 2048) != 0;
         a.global_valid = false;
         a.global_at = 0;
@@ -1100,6 +1145,7 @@ static void apply_message(whale_msg_t msg) {
             w16(p + 8) < 20) {
             b[10] = 1;
             frame = WHALE_FRAME_LEGACY;
+            rich_questions = false;
             put32(b + 2, offered & 4095);
         }
         put16(b + 6, frame);
@@ -1452,16 +1498,25 @@ static void apply_message(whale_msg_t msg) {
             page(RESULT);
         }
     } else if (msg.type == 0x20 && a.view == LOADING && current(p, n) && n >= 24 && !a.meta) {
-        if (p[20] < 2 || p[20] > 64 || p[21] != (p[20] + 2) / 3 || w16(p + 22) != n - 24 ||
-            n - 24 > 512 || !whale_text(p + 24, n - 24)) {
+        /* With WHALE_CAP_RICH_QUESTIONS the prompt is followed by a mode byte. */
+        size_t length = w16(p + 22);
+        uint8_t mode = rich_questions && n == length + 25 ? p[n - 1] : WHALE_MODE_SINGLE;
+        if (p[20] < 2 || p[20] > 64 || p[21] != (p[20] + 2) / 3 ||
+            n != length + (rich_questions ? 25 : 24) || length > 512 ||
+            !whale_text(p + 24, length) || mode > WHALE_MODE_APPROVAL ||
+            (mode == WHALE_MODE_APPROVAL && p[20] != 2)) {
             page(LOAD_FAILED);
             return;
         }
-        memcpy(a.prompt, p + 24, n - 24);
-        a.prompt[n - 24] = 0;
+        memcpy(a.prompt, p + 24, length);
+        a.prompt[length] = 0;
         a.meta = true;
         a.pages = p[21];
         a.all_options = p[20];
+        a.question_mode = mode;
+        a.picked = 0;
+        if (mode == WHALE_MODE_APPROVAL)
+            a.focus = 1; /* rest on deny: a stray press never grants */
         if (!whale_displayable(a.prompt)) {
             a.unsupported = true;
             page(RESULT);
