@@ -136,7 +136,9 @@ static void pose_at(int index, int x, int y, unsigned scale) {
     }
 }
 static void pose(int index, int y) { pose_at(index, 64, y, 146); }
-static lv_obj_t *icon_slots[14];
+/* Each slot is an LVGL image object in the 32 KB pool; 14 slots left under
+ * 4 KB free in the render regression, so keep 10 (the wardrobe uses all). */
+static lv_obj_t *icon_slots[10];
 static lv_image_dsc_t masks[sizeof icon_pixels / sizeof icon_pixels[0]];
 static unsigned icon_count;
 static bool room_visible, room_night;

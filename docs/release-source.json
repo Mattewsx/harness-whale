@@ -114,7 +114,7 @@
     "main/whale_settings.h": "2d8845cf1e67433de903d53827a00005a29cf949f3a515c55dc528a9a19022c8",
     "main/whale_sleep.c": "69e97d3007b828c822d54a18d899e61f62997dbd965c50fd9e3765c9e3934815",
     "main/whale_sleep.h": "d8d1f6f45e210895c9c96eb693e01e627015941a8deef928d03ad8001d4021c2",
-    "main/whale_ui.c": "6017b003b4de5dbcbaa0ad076605870cc170cbf38967edf56b0a77bd6b301b77",
+    "main/whale_ui.c": "6f32c073f0853af21366f6eb1bcf33ee028563e1a5a6bd36629d4b08048d4c22",
     "main/whale_voice.c": "740c5b24abb75c5b570c31a05a43636c8524de95662dd95a42870282a4c91dd7",
     "main/whale_voice.h": "4d3fcd29a2b706ef20a7a03109a8b543cd26747751ed61fa28bb06519c453247",
     "main/whale_voice_window.c": "af51efa521b1d9f3d989899519e304790dbe61a451276e10345f75b11d546ad0",
