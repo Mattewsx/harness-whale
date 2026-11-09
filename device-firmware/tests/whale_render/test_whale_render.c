@@ -140,7 +140,6 @@ int main(void) {
     for (unsigned fresh = 0; fresh < 2; fresh++) {
         /* Spoken new task reuses the same widgets with its own copy. */
         a.voice_new = fresh;
-        a.voice_held = fresh;
         a.voice_task_cap = !fresh;
         a.voice_cap = true;
         if (fresh)
@@ -151,7 +150,7 @@ int main(void) {
             assert(draw(&a) == 0);
         }
     }
-    a.voice_new = a.voice_held = false;
+    a.voice_new = false;
     a.view = COMPANION;
     a.companion_at = a.now;
     for (unsigned action = 0; action <= 4; action++) {

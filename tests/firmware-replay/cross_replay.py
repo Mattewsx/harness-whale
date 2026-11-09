@@ -303,7 +303,7 @@ send(*v.hello())
 for kind, body in link.snapshot(0) + link.changes(): send(kind, body)
 sid = m.keys['ctx']
 start = v.pack('QI', m.epoch, sid) + bytes([7]) * 16  # host stub fills nonces with 7
-lines += ['view 26', 'key 258', 'view 23']
+lines += ['view 26', 'key 1', 'key 2', 'view 23']  # 会话 -> 说任务, OK
 async def bridge():
     voice.receive(0x48, start); await voice.task
     out = voice.poll()
@@ -324,4 +324,4 @@ if r.returncode: raise RuntimeError(r.stderr+r.stdout)
 assert 'tx 48 '+start.hex() in r.stdout and 'tx 40 ' not in r.stdout
 assert 'tx 45 '+voice.identity().hex() in r.stdout
 assert 'tx 02 '+v.pack('BBIHHB', 2, 2, v.CAPS, 20, 20, 0).hex() in r.stdout
-print('PASS: spoken new task negotiated, started on home, labelled, confirmed once, back home')
+print('PASS: spoken new task negotiated, started from the home dock, labelled, confirmed once, back home')

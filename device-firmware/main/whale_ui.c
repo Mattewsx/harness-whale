@@ -504,13 +504,14 @@ void whale_ui_draw(const whale_app_t *a) {
         dressed(a, life[a->activity % 8], 22, y, 256);
         if (a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
-        static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
-        static const char *const names[] = {"互动", "会话", "设置"};
-        strip(icons, names, 3, a->dock, -1, 0, true);
+        static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_mic, ICON_settings};
+        static const char *const names[] = {"互动", "会话", "说任务", "设置"};
+        strip(icons, names, WHALE_DOCK_ITEMS, a->dock, -1, 0, true);
         if (a->global_unread) {
+            /* Badge beside the 会话 icon (second of four, 66 px apart). */
             snprintf(value, sizeof value, "%u", a->global_unread);
-            panel(menu_box, 130, 250, 29, 16, 0xeac58c, 8);
-            text_at(130, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
+            panel(menu_box, 97, 250, 29, 16, 0xeac58c, 8);
+            text_at(97, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
         }
     } else if (a->view == TASK_DETAIL || inline_reply) {
         int n = r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
@@ -774,7 +775,7 @@ void whale_ui_draw(const whale_app_t *a) {
                          (unsigned long)a->voice_ms / 60000,
                          (unsigned long)a->voice_ms / 1000 % 60);
                 detail = value;
-                foot = a->voice_held ? "离开按键结束  ↑ 取消" : "确认结束  ↑ 取消";
+                foot = "确认结束  ↑ 取消";
                 n = 2;
                 break;
             case VOICE_FINISH:

@@ -184,7 +184,7 @@ int main(void) {
         save(name);
     }
     /* Spoken new task from the home page: folder label, push-to-talk, result. */
-    a.voice_new = a.voice_held = a.voice_cap = a.voice_task_cap = true;
+    a.voice_new = a.voice_cap = a.voice_task_cap = true;
     strcpy(a.voice_title, "新任务 · harness-whale");
     strcpy(a.voice_text, "把登录页的 bug 修一下");
     static const int task_phases[] = {VOICE_PREPARE, VOICE_RECORD, VOICE_ACTIONS, VOICE_SENT,
@@ -196,7 +196,7 @@ int main(void) {
         whale_ui_draw(&a);
         save(name);
     }
-    a.voice_new = a.voice_held = false;
+    a.voice_new = false;
     a.view = LIST;
     a.count = a.total = 3;
     for (int i = 0; i < 3; i++) {

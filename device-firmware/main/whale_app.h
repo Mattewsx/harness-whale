@@ -34,6 +34,8 @@ typedef enum {
     WARDROBE,
     DESK /* desk display: large clock with the whale, entered when idle */
 } whale_page_t;
+/* Home dock: 互动, 会话, 说任务 (spoken new task), 设置. */
+#define WHALE_DOCK_ITEMS 4
 typedef struct {
     whale_row_t rows[8];
     struct {
@@ -56,9 +58,8 @@ typedef struct {
     uint16_t option_ids[3];
     char prompt[513], labels[3][257];
     bool voice_cap, voice_submitted, attention_cap;
-    /* Spoken new task: voice_new targets a fresh session instead of the selected
-     * one; voice_held while the OK key that started it is still down. */
-    bool voice_task_cap, voice_new, voice_held;
+    /* Spoken new task: voice_new targets a fresh session instead of the selected one. */
+    bool voice_task_cap, voice_new;
     uint8_t voice_phase, voice_choice, voice_identity[24];
     uint32_t voice_session, voice_at, voice_ms;
     char voice_title[73], voice_text[1801];
