@@ -44,11 +44,26 @@ static void test_blobs(void) {
         assert(!whale_blob_save("log", in, sizeof in));
     failure = 0;
 }
+static void test_standby(void) {
+    failure = 0;
+    stored = 255; /* absent or invalid: today's summary */
+    assert(whale_standby_load() == 0);
+    assert(whale_standby_save(1) && whale_standby_load() == 1);
+    assert(whale_standby_save(0) && whale_standby_load() == 0);
+    assert(!whale_standby_save(2));
+    stored = 1;
+    for (failure = 1; failure <= 2; failure++)
+        assert(whale_standby_load() == 0);
+    for (failure = 3; failure <= 4; failure++)
+        assert(!whale_standby_save(1));
+    failure = 0;
+}
 int main(void){
  assert(whale_sound_load()==1);assert(whale_sound_save(0));assert(whale_sound_load()==0);
  assert(whale_sound_save(1));assert(whale_sound_load()==1);
  stored=255;assert(whale_sound_load()==1);assert(!whale_sound_save(2));
  for(failure=1;failure<=2;failure++)assert(whale_sound_load()==1);
  for(failure=3;failure<=4;failure++)assert(!whale_sound_save(0));
- test_blobs();assert(closed>=6);puts("Sound settings and NVS blobs: default, invalid value, persistence and failures PASS");return 0;
+ test_standby();
+ test_blobs();assert(closed>=6);puts("Sound and desk display settings and NVS blobs: default, invalid value, persistence and failures PASS");return 0;
 }

@@ -156,6 +156,58 @@ static void parent_icon(enum room_icon id, bool focused) {
     text_at(11, 35, 10, 18, &lv_font_cn_14, "‹", TEAL, -1, LV_TEXT_ALIGN_CENTER);
     icon_at(id, 22, 34, TEAL);
 }
+#define CARD 0xf4ede0
+static int text_width(const lv_font_t *font, const char *s) {
+    int w = 0;
+    while (*s) {
+        uint32_t cp = decode(&s);
+        w += lv_font_get_glyph_width(font, cp, 0);
+    }
+    return w;
+}
+/* One line of mixed 21 px numbers and 14 px words on a shared baseline. */
+typedef struct {
+    const char *text;
+    bool big;
+    bool strong;
+} run_part_t;
+static int run_width(const run_part_t *parts, int count) {
+    int w = 0;
+    for (int i = 0; i < count; i++)
+        w += text_width(parts[i].big ? &lv_font_cn_21 : &lv_font_cn_14, parts[i].text) +
+             (i ? 2 : 0);
+    return w;
+}
+static void run_at(const run_part_t *parts, int count, int x, int base, int strong, int weak) {
+    for (int i = 0; i < count; i++) {
+        const lv_font_t *font = parts[i].big ? &lv_font_cn_21 : &lv_font_cn_14;
+        int w = text_width(font, parts[i].text);
+        int ascent = font->line_height - font->base_line;
+        text_at(x, base - ascent, w + 1, font->line_height, font, parts[i].text,
+                parts[i].strong ? strong : weak, -1, LV_TEXT_ALIGN_LEFT);
+        x += w + 2;
+    }
+}
+/* "已完成 5 个工作 | 已工作 2h 10m" on a rounded card. */
+static void summary_card(const whale_app_t *a, int y, int card, int rule, int strong, int weak) {
+    char done[6], hours[6], minutes[4];
+    unsigned total = a->summary_seconds / 60;
+    snprintf(done, sizeof done, "%u", (unsigned)a->summary_done);
+    snprintf(hours, sizeof hours, "%u", total / 60 > 999 ? 999 : total / 60);
+    snprintf(minutes, sizeof minutes, "%u", total % 60);
+    run_part_t left[] = {{"已完成", false, false}, {done, true, true}, {"个工作", false, false}};
+    run_part_t long_time[] = {{"已工作", false, false}, {hours, true, true}, {"h", false, true},
+                              {minutes, true, true},   {"m", false, true}};
+    run_part_t short_time[] = {{"已工作", false, false}, {minutes, true, true}, {"m", false, true}};
+    run_part_t *time = total >= 60 ? long_time : short_time; /* under an hour: "已工作 45m" */
+    int time_count = total >= 60 ? 5 : 3;
+    int lw = run_width(left, 3), rw = run_width(time, time_count);
+    int gap = 15, x = 120 - (lw + gap + rw) / 2, base = y + 34;
+    panel(sheet, 6, y, 228, 50, card, 14);
+    run_at(left, 3, x, base, strong, weak);
+    panel(hold_box, x + lw + gap / 2, y + 14, 1, 22, rule, 0);
+    run_at(time, time_count, x + lw + gap, base, strong, weak);
+}
 static void strip(const enum room_icon *icons, const char *const *names, int count, int selected,
                   int active, unsigned locked, bool home) {
     int step = home ? 66 : count == 5 ? 43 : 55;
@@ -685,12 +737,34 @@ void whale_ui_draw(const whale_app_t *a) {
         else
             snprintf(line, sizeof line, "等待电脑校准时间  ·  %s", value);
         int low = a->battery_level == 0 ? -1 : a->battery_level == 1 ? GOLD : RED;
+        /* Today's summary replaces the plain clock unless chosen otherwise in
+         * settings; without totals from the bridge the plain clock remains. */
+        bool summary = !a->standby_mode && a->summary_valid;
+        bool idle_day = summary && (a->summary_stale || (!a->summary_done && !a->summary_seconds));
         if (a->night) {
             /* Night: she is asleep; only a dark clock remains. */
             panel(sea, 0, 0, 240, 320, 0x0b1120, 0);
-            text_at(0, 102, 240, 67, &lv_font_cn_64, clock, 0x5b6a82, -1, LV_TEXT_ALIGN_CENTER);
-            text_at(8, 184, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : 0x3f4d63, -1,
+            int y = summary && !idle_day ? 84 : 102;
+            text_at(0, y, 240, 67, &lv_font_cn_64, clock, 0x5b6a82, -1, LV_TEXT_ALIGN_CENTER);
+            text_at(8, y + 82, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : 0x3f4d63, -1,
                     LV_TEXT_ALIGN_CENTER);
+            if (summary && !idle_day)
+                summary_card(a, 196, 0x121a2b, 0x22304a, 0x5b6a82, 0x3f4d63);
+        } else if (summary) {
+            text_at(0, 0, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
+            text_at(8, 66, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
+                    LV_TEXT_ALIGN_CENTER);
+            unsigned phase = (a->now - a->page_at) % 24000;
+            int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
+            if (idle_day) {
+                pose_at(n, 45, 92, 196);
+                panel(sheet, 64, 254, 112, 30, CARD, 15);
+                text_at(64, 260, 112, 18, &lv_font_cn_14, "今天还没开工", MUT, -1,
+                        LV_TEXT_ALIGN_CENTER);
+            } else {
+                pose_at(n, 50, 92, 183);
+                summary_card(a, 250, CARD, 0xddd3c2, NAV, MUT);
+            }
         } else {
             text_at(0, 8, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
@@ -699,20 +773,24 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 290, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
         }
-    } else if (a->view == MANAGE || a->view == SOUND) {
-        bool sound = a->view == SOUND;
-        parent_icon(sound ? ICON_settings : ICON_home, a->back_focus);
-        center(35, sound ? "声音提醒" : "设备设置", NAV, -1);
+    } else if (a->view == MANAGE || a->view == SOUND || a->view == STANDBY) {
+        bool sound = a->view == SOUND, standby = a->view == STANDBY;
+        parent_icon(sound || standby ? ICON_settings : ICON_home, a->back_focus);
+        center(35, sound ? "声音提醒" : standby ? "待机画面" : "设备设置", NAV, -1);
         pose_at(sound ? 18 : 9, 22, 60, 245);
-        static const enum room_icon settings[] = {ICON_speaker, ICON_bt, ICON_info};
+        static const enum room_icon settings[] = {ICON_speaker, ICON_bt, ICON_clock, ICON_info};
         static const enum room_icon modes[] = {ICON_music, ICON_voice};
-        static const char *const names[] = {"声音提醒", "蓝牙连接", "版本信息"};
+        static const enum room_icon screens[] = {ICON_completed, ICON_clock};
+        static const char *const names[] = {"声音提醒", "蓝牙连接", "待机画面", "版本信息"};
         static const char *const sounds[] = {"音效", "语音"};
-        strip(sound ? modes : settings, sound ? sounds : names, sound ? 2 : 3,
+        static const char *const desks[] = {"今日小结", "时钟"};
+        strip(sound ? modes : standby ? screens : settings, sound ? sounds : standby ? desks : names,
+              sound || standby ? 2 : 4,
               a->back_focus ? -1
               : sound       ? a->sound_choice
+              : standby     ? a->standby_choice
                             : a->menu_choice,
-              sound ? a->sound_mode : -1, 0, false);
+              sound ? a->sound_mode : standby ? a->standby_mode : -1, 0, false);
         if (a->sound_saved < 0)
             center(228, "保存失败，请重试", RED, -1);
     } else if (a->view == VOICE) {
@@ -1014,7 +1092,7 @@ void whale_ui_draw(const whale_app_t *a) {
     if (!painted_pose)
         lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
     if (a->view != HOME && a->view != WARDROBE && a->view != LIST && a->view != MANAGE &&
-        a->view != SOUND && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
+        a->view != SOUND && a->view != STANDBY && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
         !desk && foot) {
         panel(action_bar, 0, 292, 240, 28, BAR, 0);
         text_at(8, 297, 224, 19, &lv_font_cn_12, foot, NAV, -1, LV_TEXT_ALIGN_CENTER);

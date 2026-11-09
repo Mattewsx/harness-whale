@@ -38,6 +38,92 @@ END = 0xFFFFFFFF
 CLOCK_RESYNC_SECONDS = 1800
 
 
+# --- Desk display daily summary (0x54) -------------------------------------
+# Today's totals: finished tasks and AI working time. A "day" starts at
+# DAY_START_HOUR local time, so late-night work still counts for the day it
+# began. Each run is counted once, when it first reaches a terminal state:
+# ``done`` adds a finished task, and every terminal state adds the run's
+# elapsed seconds. Only hashed run identities are persisted.
+
+DAY_START_HOUR = 5
+TERMINAL = ("done", "error", "stopped")
+MAX_RUNS = 2000
+
+
+def work_day(now=None):
+    """Days since 1970-01-01 of the local work day containing ``now``."""
+    now = time.time() if now is None else now
+    local = int(now) + (time.localtime(now).tm_gmtoff or 0)
+    return (local - DAY_START_HOUR * 3600) // 86400
+
+
+class DailyTally:
+    def __init__(self):
+        self.day = None
+        self.runs = {}  # hashed (session, run) -> [finished 0/1, seconds]
+        self.path = None
+
+    def _roll(self, now):
+        day = work_day(now)
+        if day != self.day:
+            self.day = day
+            self.runs = {}
+        return day
+
+    def record(self, key, run, state, elapsed, now=None):
+        """Count a run once when it first reaches a terminal state. True if counted."""
+        if state not in TERMINAL or not isinstance(key, str) or not isinstance(run, str):
+            return False
+        if not run or run == "history":
+            return False  # restored journals describe earlier runs
+        self._roll(now)
+        ident = hashlib.sha256(f"{key}\n{run}".encode()).hexdigest()[:24]
+        if ident in self.runs:
+            return False
+        try:
+            seconds = max(0, min(86400, int(elapsed or 0)))
+        except (TypeError, ValueError):
+            seconds = 0
+        self.runs[ident] = [int(state == "done"), seconds]
+        if len(self.runs) > MAX_RUNS:
+            del self.runs[next(iter(self.runs))]
+        self.save()
+        return True
+
+    def totals(self, now=None):
+        """(work day, finished tasks, seconds); zero totals after the day rolls over."""
+        day = self._roll(now)
+        done = sum(v[0] for v in self.runs.values())
+        seconds = sum(v[1] for v in self.runs.values())
+        return day, min(done, 0xFFFF), min(seconds, 0xFFFFFFFF)
+
+    def attach(self, path, now=None):
+        """Merge totals saved by an earlier bridge for the same day, then persist here."""
+        self.path = path
+        day = self._roll(now)
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(saved, dict) or saved.get("day") != day or not isinstance(saved.get("runs"), dict):
+            return
+        for ident, value in saved["runs"].items():
+            if (isinstance(ident, str) and isinstance(value, list) and len(value) == 2
+                    and value[0] in (0, 1) and isinstance(value[1], int) and 0 <= value[1] <= 86400):
+                self.runs.setdefault(ident, value)
+
+    def save(self):
+        if self.path is None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.path.with_suffix(".tmp")
+            temp.write_text(json.dumps({"day": self.day, "runs": self.runs}), encoding="utf-8")
+            temp.replace(self.path)
+        except OSError:
+            pass
+
+
 def pack(fmt, *values):
     return struct.pack("<" + fmt, *values)
 
@@ -171,6 +257,7 @@ class Workspace:
         self.marks_path = None
         self.voice = None
         self.frame = None  # negotiated BLE frame size of the current link, for diagnostics
+        self.daily = DailyTally()
 
     def load_marks(self, path):
         self.marks_path = path
@@ -325,6 +412,10 @@ class Workspace:
         stamp = event.get("sentAt", 0)
         if stamp < previous.get("sentAt", 0):
             return
+        # Count a run only when this bridge saw it working and then finish, so a
+        # restart that replays an earlier finished run does not count it again.
+        if previous.get("runId") == run and previous.get("state") not in TERMINAL:
+            self.daily.record(key, run, event.get("state"), event.get("elapsed"))
         if sid in self.history_pages:
             if event.get("replyId"):
                 self.history_pages.pop(sid)
@@ -483,6 +574,8 @@ class Link:
         self.announced = set()
         self.global_initialized = False
         self.clock_at = None
+        self.daily_sent = None
+        self.daily_at = None
         self.offered = LEGACY_FRAME
         self.frame = LEGACY_FRAME
 
@@ -503,6 +596,25 @@ class Link:
         if tz_minutes is None:
             tz_minutes = (time.localtime(now).tm_gmtoff or 0) // 60
         return [(0x53, pack('QqH', self.model.epoch, int(now), tz_minutes & 0xFFFF))]
+
+    def daily(self, now=None):
+        """0x54 desk-display summary: epoch, work day, finished tasks, seconds.
+
+        Sent after the first snapshot and whenever the totals or the work day
+        change, checked at most once a second. Firmware without the summary
+        ignores the unknown message type and keeps showing the plain clock.
+        """
+        if not self.ready or not self.snap:
+            return []
+        tick = time.monotonic()
+        if now is None and self.daily_at is not None and tick - self.daily_at < 1:
+            return []
+        self.daily_at = tick
+        value = self.model.daily.totals(now)
+        if value == self.daily_sent:
+            return []
+        self.daily_sent = value
+        return [(0x54, pack('QIHI', self.model.epoch, *value))]
 
     def global_changes(self):
         """Independent of the eight-row window; reconnect establishes a silent baseline.
@@ -697,6 +809,7 @@ class Link:
             self.attention=bool(caps & 1024)
             self.global_cap=bool(caps & 2048)
             self.clock_at = None
+            self.daily_sent = None
             self.ready = (
                 (major, status) == (2, 0)
                 and minor in (2, 3)
@@ -822,6 +935,7 @@ async def serve(client, model, on_write=None):
     from pathlib import Path
     if model.marks_path is None:
         model.load_marks(Path(os.environ.get('LOCALAPPDATA') or Path.home()/'.local/share') / 'HarnessWhale' / 'read-marks.json')
+        model.daily.attach(model.marks_path.with_name('daily-summary.json'))
     if model.voice is None: model.voice = VoiceBridge(model)
     voice = model.voice
     wire = Link(model)
@@ -896,6 +1010,8 @@ async def serve(client, model, on_write=None):
                 queue(wire.changes())
             if not queues[1] and inflight[1] is None:
                 queue(wire.clock())
+            if not queues[1] and inflight[1] is None:
+                queue(wire.daily())
             for lane in (0, 1):
                 if inflight[lane] is None and queues[lane]:
                     kind, body = queues[lane].pop(0)

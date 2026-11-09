@@ -34,6 +34,7 @@ static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
 #define WHALE_CMD_SLEEP 7
 #define WHALE_CMD_ROOM_SAVE 8
+#define WHALE_CMD_STANDBY_SAVE 9
 /* Bond earned from interactions per local day. Without a synced clock the
  * day never rolls over, so the count keeps limiting until the next sync. */
 #define WHALE_BOND_DAILY_MAX 5
@@ -797,7 +798,8 @@ static void key(uint32_t code) {
         }
         return;
     }
-    if (a.view == COMPANION || a.view == WARDROBE || a.view == MANAGE || a.view == SOUND) {
+    if (a.view == COMPANION || a.view == WARDROBE || a.view == MANAGE || a.view == SOUND ||
+        a.view == STANDBY) {
         if (hold) {
             if (k == BSP_BTN_OK && a.view == COMPANION)
                 page(HOME);
@@ -805,10 +807,14 @@ static void key(uint32_t code) {
         }
         if (a.companion_action)
             return;
-        unsigned count = a.view == COMPANION ? 5 : a.view == SOUND ? 2 : 3;
+        unsigned count = a.view == COMPANION                       ? 5
+                         : a.view == SOUND || a.view == STANDBY ? 2
+                         : a.view == MANAGE                     ? 4
+                                                                : 3;
         uint8_t *choice = a.view == COMPANION  ? &a.companion_choice
                           : a.view == WARDROBE ? &a.outfit_choice
                           : a.view == SOUND    ? &a.sound_choice
+                          : a.view == STANDBY  ? &a.standby_choice
                                                : &a.menu_choice;
         if (direction) {
             int next = ((a.back_focus ? 0 : *choice + 1) + direction + count + 1) % (count + 1);
@@ -817,7 +823,9 @@ static void key(uint32_t code) {
                 *choice = next - 1;
             a.locked_notice = false;
         } else if (a.back_focus) {
-            page(a.view == WARDROBE ? COMPANION : a.view == SOUND ? MANAGE : HOME);
+            page(a.view == WARDROBE                       ? COMPANION
+                 : a.view == SOUND || a.view == STANDBY ? MANAGE
+                                                        : HOME);
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
                 a.outfit_choice = 0;
@@ -842,7 +850,18 @@ static void key(uint32_t code) {
             room_unsaved = true;
         } else if (a.view == MANAGE) {
             a.sound_choice = a.sound_mode;
-            page(*choice == 0 ? SOUND : *choice == 1 ? KEEP : VERSION);
+            a.standby_choice = a.standby_mode;
+            static const whale_page_t pages[] = {SOUND, KEEP, STANDBY, VERSION};
+            page(pages[*choice]);
+        } else if (a.view == STANDBY) {
+            /* NVS writes run on the peripheral task; the result arrives as 98. */
+            whale_audio_cmd_t cmd = {WHALE_CMD_STANDBY_SAVE, *choice, 0};
+            if (cues && xQueueSend(cues, &cmd, 0) == pdTRUE) {
+                a.standby_mode = *choice;
+                a.sound_saved = 0;
+                page(MANAGE);
+            } else
+                a.sound_saved = -1;
         } else {
             whale_audio_interrupt();
             whale_audio_cmd_t cmd = {6, *choice, 0};
@@ -861,8 +880,8 @@ static void key(uint32_t code) {
             return;
         if (a.view == TASK_DETAIL || a.view == LIST)
             return;
-        if (a.view == SOUND || a.view == KEEP || a.view == REVOKE || a.view == VERSION ||
-            a.view == UNBIND_FAILED) {
+        if (a.view == SOUND || a.view == STANDBY || a.view == KEEP || a.view == REVOKE ||
+            a.view == VERSION || a.view == UNBIND_FAILED) {
             page(MANAGE);
             return;
         }
@@ -1339,6 +1358,15 @@ static void apply_message(whale_msg_t msg) {
         }
         return;
     }
+    if (msg.type == 0x54 && n == 18) {
+        /* Daily summary: epoch, work day, finished tasks, AI working seconds. */
+        a.summary_day = w32(p + 8);
+        a.summary_done = w16(p + 12);
+        a.summary_seconds = w32(p + 14);
+        a.summary_valid = true;
+        clock_step();
+        return;
+    }
     if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
         w32(p + 8) == a.title_session && w32(p + 12) == a.title_run && whale_text(p + 18, n - 18)) {
         memcpy(a.full_title, p + 18, n - 18);
@@ -1565,6 +1593,11 @@ static void clock_step(void) {
     if (a.clock_valid)
         a.clock = t;
     a.night = a.clock_valid && whale_clock_night(&a.clock);
+    /* Totals from an earlier work day (e.g. kept offline past 05:00) read as zero. */
+    uint32_t work_day;
+    a.summary_stale = a.summary_valid &&
+                      whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day) &&
+                      work_day != a.summary_day;
 }
 static void batt_dump(const char *name) {
     if (!whale_blob_load(name, &batt_log, sizeof batt_log) || !whale_batt_log_valid(&batt_log))
@@ -1620,8 +1653,9 @@ static void peripheral_task(void *unused) {
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
                     if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
                         whale_post(&(whale_event_t){.kind = 97});
-                } else if (cue.kind == 6) {
-                    bool saved = whale_sound_save(cue.mode);
+                } else if (cue.kind == 6 || cue.kind == WHALE_CMD_STANDBY_SAVE) {
+                    bool saved = cue.kind == 6 ? whale_sound_save(cue.mode)
+                                               : whale_standby_save(cue.mode);
                     whale_post(&(whale_event_t){.kind = 98, .value = saved ? 1 : 0});
                 } else if (!whale_voice_busy()) {
                     bool played = whale_audio_play(cue);
@@ -1775,6 +1809,7 @@ void app_main(void) {
         a.bond_day = profile[4] | (uint32_t)profile[5] << 8 | (uint32_t)(profile[6] & 0x1F) << 16;
     }
     a.sound_mode = whale_sound_load();
+    a.standby_mode = whale_standby_load();
     a.sound_saved = 1;
     events = xQueueCreate(40, sizeof(whale_event_t));
     assert(events);
@@ -1865,7 +1900,7 @@ void app_main(void) {
                 whale_reply_cache_clear();
                 memset(sounded, 0, sizeof sounded);
                 sounded_next = 0;
-                uint8_t mode = a.sound_mode;
+                uint8_t mode = a.sound_mode, standby = a.standby_mode;
                 uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated};
                 uint32_t bond_day = a.bond_day;
                 memset(&a, 0, sizeof a);
@@ -1877,6 +1912,7 @@ void app_main(void) {
                 a.bond_day = bond_day;
                 a.dock = 1;
                 a.sound_mode = mode;
+                a.standby_mode = standby;
                 memset(&reminders, 0, sizeof reminders);
                 a.global_valid = false;
                 a.soc = -1;

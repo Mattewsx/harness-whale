@@ -35,3 +35,7 @@ void whale_clock_civil(int64_t local_s, whale_local_time_t *out);
 bool whale_clock_night(const whale_local_time_t *t);
 /* Local calendar day number (days since 1970-01-01 local); false if unsynced. */
 bool whale_clock_day(const whale_clock_t *c, uint32_t rtc_s, uint32_t *day);
+/* The bridge's daily-summary day: a local day that starts at this hour, so
+ * late-night work still belongs to the day it began. */
+#define WHALE_WORK_DAY_START_HOUR 5
+bool whale_clock_work_day(const whale_clock_t *c, uint32_t rtc_s, uint32_t *day);

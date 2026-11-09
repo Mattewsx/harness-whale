@@ -32,7 +32,8 @@ typedef enum {
     SOUND,
     HOME,
     WARDROBE,
-    DESK /* desk display: large clock with the whale, entered when idle */
+    DESK, /* desk display: clock, whale and today's summary, entered when idle */
+    STANDBY /* settings: choose the desk display (summary or plain clock) */
 } whale_page_t;
 typedef struct {
     whale_row_t rows[8];
@@ -80,6 +81,12 @@ typedef struct {
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;
     whale_local_time_t clock;
+    /* Desk display mode (0 = today's summary, 1 = plain clock) and the
+     * bridge's daily totals; stale once the local work day moves on. */
+    uint8_t standby_mode, standby_choice;
+    bool summary_valid, summary_stale;
+    uint16_t summary_done;
+    uint32_t summary_day, summary_seconds;
 } whale_app_t;
 void whale_ui_init(void);
 void whale_ui_draw(const whale_app_t *app);

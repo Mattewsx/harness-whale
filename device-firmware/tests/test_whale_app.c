@@ -27,7 +27,8 @@ int xQueueSend(void *q, const void *in, int wait) {
                 *last_cue_capture = *(const whale_audio_cmd_t *)in;
             return 1;
         }
-        assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7));
+        assert(wait == 0 && ((*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7) ||
+                             *(const uint8_t *)in == WHALE_CMD_STANDBY_SAVE));
         if (*(const uint8_t *)in == WHALE_CMD_SLEEP)
             sleep_commands++;
         if (!cue_ok)
@@ -856,7 +857,31 @@ static void test_desk_display(void) {
     key(BSP_BTN_OK);
     companion_tick();
     assert(a.view == COMPANION);
-    puts("Desk display entry, wall clock sync, exits, night and offline power PASS");
+    /* Daily summary (0x54): stored for the bridge epoch; stale after the
+     * local work day (starting 05:00) moves on. */
+    setup();
+    wall_clock(a.epoch, afternoon, 480); /* 22:30 local */
+    uint32_t today;
+    assert(whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &today));
+    uint8_t s[18];
+    put64(s, a.epoch + 1);
+    put32(s + 8, today);
+    put16(s + 12, 5);
+    put32(s + 14, 7800);
+    apply_message((whale_msg_t){0x54, s, sizeof s}); /* another bridge epoch */
+    assert(!a.summary_valid);
+    put64(s, a.epoch);
+    apply_message((whale_msg_t){0x54, s, 17}); /* wrong size */
+    assert(!a.summary_valid);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert(a.summary_valid && !a.summary_stale && a.summary_done == 5 &&
+           a.summary_seconds == 7800 && a.summary_day == today);
+    wall_clock(a.epoch, afternoon + 6 * 3600 + 1799, 480); /* 04:59:59 next day */
+    assert(!a.summary_stale);
+    wall_clock(a.epoch, afternoon + 6 * 3600 + 1800, 480); /* 05:00 */
+    assert(a.summary_stale);
+    puts("Desk display entry, wall clock sync, exits, night, offline power and daily summary "
+         "PASS");
 }
 static void test_settings_navigation(void) {
     setup();
@@ -867,9 +892,24 @@ static void test_settings_navigation(void) {
     key(BSP_BTN_DOWN);
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
+    assert(a.view == STANDBY && a.standby_choice == 0 && !a.back_focus);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK); /* plain clock */
+    assert(a.view == MANAGE && a.standby_mode == 1 && a.sound_saved == 0);
+    service((whale_event_t){.kind = 98, .value = 1});
+    assert(a.sound_saved == 1);
+    key(BSP_BTN_OK);
+    assert(a.view == STANDBY && a.standby_choice == 1);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.back_focus);
+    key(BSP_BTN_OK); /* back without saving */
+    assert(a.view == MANAGE && a.standby_mode == 1 && a.menu_choice == 2);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
     assert(a.view == VERSION);
     key(BSP_BTN_OK);
-    assert(a.view == MANAGE && a.menu_choice == 2);
+    assert(a.view == MANAGE && a.menu_choice == 3);
     key(BSP_BTN_DOWN);
     assert(a.back_focus);
     key(BSP_BTN_OK);
@@ -1274,6 +1314,8 @@ bool whale_audio_play(whale_audio_cmd_t c) {
 }
 uint8_t whale_sound_load(void) { return 1; }
 bool whale_sound_save(uint8_t mode) { return mode < 2; }
+uint8_t whale_standby_load(void) { return 0; }
+bool whale_standby_save(uint8_t mode) { return mode < 2; }
 bool whale_blob_load(const char *key, void *data, size_t size) {
     (void)key;
     (void)data;
