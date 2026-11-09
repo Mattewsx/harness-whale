@@ -525,9 +525,8 @@ class Link:
             pending = m.needs_answer(sid, state, qid)
             running += busy
             waiting += pending
-            # Home badge: sessions with unread items or a question still waiting,
-            # even after the question itself has been viewed.
-            unread += bool(flags & 120) or pending
+            # Reading a question clears its badge even when the answer is deferred.
+            unread += bool(flags & 120)
             if busy and not focus:
                 focus = sid
             cue = 1 if pending else 2 if flags & 16 else 3 if flags & 72 or (not self.question_read and state == 5 and not data.get("replyId")) else 0

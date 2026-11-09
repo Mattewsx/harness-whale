@@ -36,7 +36,7 @@ static char title_prefix[73];
 #define WHALE_CMD_ROOM_SAVE 8
 /* Bond earned per local day from all sources. Without a synced clock the
  * day never rolls over, so the count keeps limiting until the next sync.
- * Companion taps add at most WHALE_BOND_TAP_MAX of it (kept in RAM only);
+ * Companion taps add at most WHALE_BOND_TAP_MAX of it;
  * the rest comes from real work: device answers, completions, voice sends. */
 #define WHALE_BOND_DAILY_MAX 10
 #define WHALE_BOND_TAP_MAX 5
@@ -44,11 +44,10 @@ static char title_prefix[73];
 #define WHALE_BOND_DONE 2
 #define WHALE_BOND_VOICE 2
 #define WHALE_BOND_MAX 99
-/* Accessories unlock at these bond levels: daisy clip (bit 1), glasses (bit 2). */
-#define WHALE_UNLOCK_FLOWER 20
-#define WHALE_UNLOCK_GLASSES 50
-static uint8_t bond_taps;
-static uint32_t bond_taps_day;
+/* Whole skins unlock independently at 20, 40 and 60 affection. */
+#define WHALE_UNLOCK_WITCH 20
+#define WHALE_UNLOCK_PAJAMAS 40
+#define WHALE_UNLOCK_LOUNGE 60
 static bool room_unsaved, previous_window;
 static uint32_t save_retry_at;
 /* Serial-only health line for the hardware stress script. No session data. */
@@ -222,7 +221,7 @@ static void attention_read(uint8_t kind) {
     pending_reads[pending_read_next].used = true;
     pending_read_next = (pending_read_next + 1) % 16;
     r->flags &= ~mask;
-    if (!(r->flags & 120) && !whale_row_needs_answer(r) && a.global_unread)
+    if (!(r->flags & 120) && a.global_unread)
         a.global_unread--;
     whale_cues_read(&reminders, r->session, kind == 1 || kind == 4 ? 3 : kind == 2 ? 2 : 1);
     flush_reads();
@@ -462,7 +461,9 @@ static void bond_cool(uint32_t day) {
         idle++; /* nothing credited on the previous day itself */
     if (a.bond_undated && idle)
         idle--; /* undated activity happened on some day of the gap */
-    uint8_t floor = a.unlocked & 4 ? WHALE_UNLOCK_GLASSES : a.unlocked & 2 ? WHALE_UNLOCK_FLOWER : 0;
+    uint8_t floor = a.unlocked & 8 ? WHALE_UNLOCK_LOUNGE
+                    : a.unlocked & 4 ? WHALE_UNLOCK_PAJAMAS
+                    : a.unlocked & 2 ? WHALE_UNLOCK_WITCH : 0;
     uint8_t drop = a.bond > floor ? a.bond - floor : 0;
     if (idle < drop)
         drop = (uint8_t)idle;
@@ -482,18 +483,22 @@ static bool sync_bond_day(void) {
         if (a.bond_day) {
             bond_cool(day);
             a.bond_today = a.bond_undated;
+            a.bond_taps = a.bond_taps_undated;
         }
         a.bond_day = day;
         room_unsaved = true;
     }
     if (a.bond_undated) {
         a.bond_undated = 0;
+        a.bond_taps_undated = 0;
         room_unsaved = true;
     }
     return true;
 }
 uint8_t whale_unlocks_for(uint8_t bond) {
-    return (bond >= WHALE_UNLOCK_FLOWER ? 2u : 0u) | (bond >= WHALE_UNLOCK_GLASSES ? 4u : 0u);
+    return (bond >= WHALE_UNLOCK_WITCH ? 2u : 0u) |
+           (bond >= WHALE_UNLOCK_PAJAMAS ? 4u : 0u) |
+           (bond >= WHALE_UNLOCK_LOUNGE ? 8u : 0u);
 }
 static void bond_unlock(void) {
     uint8_t add = whale_unlocks_for(a.bond) & ~a.unlocked;
@@ -521,20 +526,67 @@ static void bond_gain(uint8_t points) {
     bond_unlock();
 }
 static void bond_tap(void) {
-    /* The tap sub-limit follows the same day key. Gains carried into a new
-     * day (earned while the clock was lost) count as taps, conservatively;
-     * the first sync only dates the current count. */
-    sync_bond_day();
-    if (a.bond_day != bond_taps_day) {
-        if (bond_taps_day)
-            bond_taps = a.bond_today < WHALE_BOND_TAP_MAX ? a.bond_today : WHALE_BOND_TAP_MAX;
-        bond_taps_day = a.bond_day;
-    }
-    if (bond_taps >= WHALE_BOND_TAP_MAX)
+    bool dated = sync_bond_day();
+    if (a.bond_taps >= WHALE_BOND_TAP_MAX)
         return;
     uint8_t before = a.bond_today;
     bond_gain(1);
-    bond_taps += a.bond_today != before;
+    if (a.bond_today != before) {
+        a.bond_taps++;
+        if (!dated)
+            a.bond_taps_undated++;
+    }
+}
+/* v3 stores work and interaction quotas independently. */
+static void room_restore(const uint8_t p[11]) {
+    if (p[0] > WHALE_BOND_MAX)
+        return;
+    a.bond = p[0];
+    a.unlocked = (p[1] & 14) | whale_unlocks_for(a.bond);
+    uint8_t worn = p[2] & a.unlocked;
+    a.worn = worn & 8 ? 8 : worn & 4 ? 4 : worn & 2 ? 2 : 0;
+    a.bond_today = p[3] <= WHALE_BOND_DAILY_MAX ? p[3] : WHALE_BOND_DAILY_MAX;
+    a.bond_undated = p[4] <= a.bond_today ? p[4] : a.bond_today;
+    a.bond_taps = p[5] <= WHALE_BOND_TAP_MAX ? p[5] : WHALE_BOND_TAP_MAX;
+    if (a.bond_taps > a.bond_today)
+        a.bond_taps = a.bond_today;
+    a.bond_taps_undated = p[6] <= a.bond_taps ? p[6] : a.bond_taps;
+    if (a.bond_taps_undated > a.bond_undated)
+        a.bond_taps_undated = a.bond_undated;
+    a.bond_day = w32(p + 7);
+    if (a.bond_day > (uint32_t)(WHALE_CLOCK_MAX_UNIX / 86400 + 1))
+        a.bond_day = 0;
+}
+static void room_profile(whale_audio_cmd_t cmd, uint8_t p[11]) {
+    uint64_t g = cmd.generation;
+    p[0] = cmd.mode;
+    p[1] = g & 14;
+    p[2] = (g >> 4) & 14;
+    p[3] = (g >> 8) & 15;
+    p[4] = (g >> 12) & 15;
+    p[5] = (g >> 16) & 7;
+    p[6] = (g >> 19) & 7;
+    put32(p + 7, (uint32_t)(g >> 22));
+}
+static void room_load(void) {
+    uint8_t profile[11] = {0};
+    if (!whale_blob_load("room_v3", profile, sizeof profile)) {
+        uint8_t old[7] = {0};
+        if (!whale_blob_load("room_v2", old, sizeof old) &&
+            !whale_blob_load("room_v1", old, 3))
+            return;
+        profile[0] = old[0];
+        profile[1] = old[1] & 6;
+        profile[2] = old[2] & 6;
+        profile[3] = old[3] & 15;
+        profile[4] = old[3] >> 4;
+        /* Old versions did not separate taps, so migrate conservatively once. */
+        profile[5] = profile[3] < WHALE_BOND_TAP_MAX ? profile[3] : WHALE_BOND_TAP_MAX;
+        profile[6] = profile[4] < profile[5] ? profile[4] : profile[5];
+        put32(profile + 7, old[4] | (uint32_t)old[5] << 8 | (uint32_t)(old[6] & 31) << 16);
+        room_unsaved = true;
+    }
+    room_restore(profile);
 }
 static void companion_tick(void) {
     if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
@@ -542,11 +594,14 @@ static void companion_tick(void) {
         dirty = true;
     }
     if (room_unsaved && cues && (int32_t)(a.now - save_retry_at) >= 0) {
-        /* Two counter nibbles and an 18-bit day cover the supported clock range. */
-        uint8_t counters = a.bond_today | (a.bond_undated << 4);
+        /* Snapshot both quotas with the outfit selection for the worker. */
         whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
-                                 (a.unlocked & 7u) | (a.worn & 7u) << 3 |
-                                     (uint32_t)counters << 6 | a.bond_day << 14};
+                                 (a.unlocked & 14u) | (uint64_t)(a.worn & 14u) << 4 |
+                                     (uint64_t)a.bond_today << 8 |
+                                     (uint64_t)a.bond_undated << 12 |
+                                     (uint64_t)a.bond_taps << 16 |
+                                     (uint64_t)a.bond_taps_undated << 19 |
+                                     (uint64_t)a.bond_day << 22};
         if (xQueueSend(cues, &cmd, 0) == pdTRUE)
             room_unsaved = false;
     }
@@ -881,7 +936,7 @@ static void key(uint32_t code) {
         }
         if (a.companion_action)
             return;
-        unsigned count = a.view == COMPANION ? 5 : a.view == SOUND ? 2 : 3;
+        unsigned count = a.view == COMPANION ? 5 : a.view == WARDROBE ? 4 : a.view == SOUND ? 2 : 3;
         uint8_t *choice = a.view == COMPANION  ? &a.companion_choice
                           : a.view == WARDROBE ? &a.outfit_choice
                           : a.view == SOUND    ? &a.sound_choice
@@ -896,7 +951,8 @@ static void key(uint32_t code) {
             page(a.view == WARDROBE ? COMPANION : a.view == SOUND ? MANAGE : HOME);
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
-                a.outfit_choice = a.worn & 4 ? 2 : a.worn & 2 ? 1 : 0;
+                a.outfit_choice = a.worn & 8 ? 3 : a.worn & 4 ? 2 : a.worn & 2 ? 1 : 0;
+                a.outfit_choice = whale_wardrobe_order[a.outfit_choice];
                 a.unlock_new = 0;
                 page(WARDROBE);
             } else {
@@ -907,16 +963,17 @@ static void key(uint32_t code) {
                 bond_tap();
             }
         } else if (a.view == WARDROBE) {
-            /* Outfits are exclusive: 0 maid (default), bit 1 and bit 2 sets. */
-            uint8_t bit = 1u << *choice;
+            /* Display order does not change saved skin identities. */
+            uint8_t bit = 1u << whale_wardrobe_order[*choice];
             if (!*choice)
                 a.worn = 0;
             else if (a.unlocked & bit)
-                a.worn = bit;
+                a.worn = a.worn == bit ? 0 : bit;
             else {
                 a.locked_notice = true;
                 return;
             }
+            a.locked_notice = false;
             room_unsaved = true;
         } else if (a.view == MANAGE) {
             a.sound_choice = a.sound_mode;
@@ -1694,12 +1751,9 @@ static void peripheral_task(void *unused) {
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
                 if (cue.kind == WHALE_CMD_ROOM_SAVE) {
-                    uint32_t g = cue.generation, day = g >> 14;
-                    uint8_t profile[] = {cue.mode,          g & 6,
-                                         (g >> 3) & 6,      (uint8_t)(g >> 6),
-                                         (uint8_t)day,      (uint8_t)(day >> 8),
-                                         (uint8_t)(day >> 16)};
-                    if (!whale_blob_save("room_v2", profile, sizeof profile))
+                    uint8_t profile[11];
+                    room_profile(cue, profile);
+                    if (!whale_blob_save("room_v3", profile, sizeof profile))
                         whale_post(&(whale_event_t){.kind = 96});
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
                     if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
@@ -1845,25 +1899,7 @@ static void service(whale_event_t e) {
 }
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
-    uint8_t profile[7] = {0};
-    if ((whale_blob_load("room_v2", profile, sizeof profile) ||
-         whale_blob_load("room_v1", profile, 3)) &&
-        profile[0] <= WHALE_BOND_MAX) {
-        a.bond = profile[0];
-        a.unlocked = profile[1] & 6;
-        a.unlocked |= whale_unlocks_for(a.bond);
-        a.worn = profile[2] & a.unlocked;
-        if (a.worn == 6) /* stacked accessories from v0.15 become one outfit */
-            a.worn = 4;
-        /* Earlier room_v2 profiles stored only the daily total in this byte. */
-        uint8_t used = profile[3] & 15, undated = profile[3] >> 4;
-        a.bond_today = used <= WHALE_BOND_DAILY_MAX ? used : WHALE_BOND_DAILY_MAX;
-        a.bond_undated = undated <= a.bond_today ? undated : a.bond_today;
-        a.bond_day = profile[4] | (uint32_t)profile[5] << 8 | (uint32_t)(profile[6] & 0x1F) << 16;
-        /* Tap counts are not stored: treat today's gains as taps after a restart. */
-        bond_taps = a.bond_today < WHALE_BOND_TAP_MAX ? a.bond_today : WHALE_BOND_TAP_MAX;
-        bond_taps_day = a.bond_day;
-    }
+    room_load();
     a.sound_mode = whale_sound_load();
     a.sound_saved = 1;
     events = xQueueCreate(40, sizeof(whale_event_t));
@@ -1877,7 +1913,7 @@ void app_main(void) {
     whale_ble_start();
     ESP_LOGI(
         "whale",
-        "v0.15.0-demo / protocol 2.3 large frames + companion cues + power saving + desk clock; "
+        "v0.16.0-demo / protocol 2.3 large frames + companion cues + power saving + desk clock; "
         "minimum free heap: %lu",
         (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST
@@ -1956,7 +1992,8 @@ void app_main(void) {
                 memset(sounded, 0, sizeof sounded);
                 sounded_next = 0;
                 uint8_t mode = a.sound_mode;
-                uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated};
+                uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated,
+                                     a.bond_taps, a.bond_taps_undated};
                 uint32_t bond_day = a.bond_day;
                 memset(&a, 0, sizeof a);
                 a.bond = profile[0];
@@ -1964,6 +2001,8 @@ void app_main(void) {
                 a.worn = profile[2];
                 a.bond_today = profile[3];
                 a.bond_undated = profile[4];
+                a.bond_taps = profile[5];
+                a.bond_taps_undated = profile[6];
                 a.bond_day = bond_day;
                 a.dock = 1;
                 a.sound_mode = mode;

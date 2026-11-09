@@ -3,7 +3,7 @@
 #include <stdint.h>
 typedef struct {
     uint8_t kind, mode;
-    uint32_t generation;
+    uint64_t generation;
 } whale_audio_cmd_t;
 /* Interrupt is non-blocking. Only the existing peripheral worker plays PCM. */
 void whale_audio_interrupt(void);

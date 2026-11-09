@@ -1,6 +1,7 @@
 #include "lvgl.h"
 #include "whale_app.h"
 #include "whale_assets.h"
+#include "whale_outfits.h"
 #include "room_icons.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -20,10 +21,11 @@ LV_FONT_DECLARE(lv_font_cn_64);
 unsigned whale_glyph_advance(unsigned cp);
 extern const uint8_t whale_poses[] asm("_binary_poses_rgb_start");
 extern const uint8_t companion_poses[] asm("_binary_companion_rgb_start");
-/* Outfit sets 1 and 2 redraw these sprite indices (tools/make_whale_outfits.py). */
+/* All skins include every pose used by the room and interactions. */
 extern const uint8_t outfit_poses[] asm("_binary_outfits_rgb_start");
 static const uint8_t outfit_pose_ids[] = {1, 3, 10, 15, 16, 17, 18, 19, 20, 21};
-enum { OUTFIT_SETS = 2, OUTFIT_POSES = sizeof outfit_pose_ids, OUTFIT_BASE = 22 };
+enum { OUTFIT_SETS = WHALE_OUTFIT_SETS, OUTFIT_POSES = sizeof outfit_pose_ids, OUTFIT_BASE = 22 };
+_Static_assert(OUTFIT_POSES == WHALE_OUTFIT_POSES, "Skin sheet pose order must match the UI");
 static lv_image_dsc_t sprites[OUTFIT_BASE + OUTFIT_SETS * OUTFIT_POSES], props[2];
 static lv_obj_t *coffee_cup, *coffee_steam, *title_clip, *title_text;
 static uint32_t title_started, title_session;
@@ -133,6 +135,11 @@ static void pose_at(int index, int x, int y, unsigned scale) {
     lv_obj_remove_flag(image, LV_OBJ_FLAG_HIDDEN);
     lv_image_set_pivot(image, 0, 0);
     lv_image_set_scale(image, scale);
+    if (index >= OUTFIT_BASE) {
+        const whale_outfit_frame_t *frame = &whale_outfit_frames[index - OUTFIT_BASE];
+        x += frame->x * scale / 256;
+        y += frame->y * scale / 256;
+    }
     lv_obj_set_pos(image, x, y);
     if (previous_pose != index) {
         lv_image_set_src(image, sprites + index);
@@ -180,8 +187,8 @@ static void strip(const enum room_icon *icons, const char *const *names, int cou
                     LV_TEXT_ALIGN_CENTER);
     }
 }
-static void dressed(const whale_app_t *a, int pose_id, int x, int y, unsigned scale) {
-    int set = a->worn & 4 ? 2 : a->worn & 2 ? 1 : 0;
+static void dressed(uint8_t worn, int pose_id, int x, int y, unsigned scale) {
+    int set = worn & 8 ? 3 : worn & 4 ? 2 : worn & 2 ? 1 : 0;
     if (set)
         for (unsigned i = 0; i < OUTFIT_POSES; i++)
             if (outfit_pose_ids[i] == pose_id) {
@@ -241,8 +248,13 @@ void whale_ui_init(void) {
                                       .data_size = 115248,
                                       .data = whale_poses + i * 115248};
     for (unsigned i = 0; i < OUTFIT_SETS * OUTFIT_POSES; i++) {
+        const whale_outfit_frame_t *frame = &whale_outfit_frames[i];
         sprites[OUTFIT_BASE + i] = sprites[0];
-        sprites[OUTFIT_BASE + i].data = outfit_poses + i * 115248;
+        sprites[OUTFIT_BASE + i].header.w = frame->width;
+        sprites[OUTFIT_BASE + i].header.h = frame->height;
+        sprites[OUTFIT_BASE + i].header.stride = frame->width * 2;
+        sprites[OUTFIT_BASE + i].data_size = frame->width * frame->height * 3;
+        sprites[OUTFIT_BASE + i].data = outfit_poses + frame->offset;
     }
     for (unsigned i = 0; i < 8; i++) {
         const whale_image_asset_t *v = &whale_image_assets[i];
@@ -501,7 +513,7 @@ void whale_ui_draw(const whale_app_t *a) {
         room_night = a->night;
         static const int life[] = {20, 19, 15, 3, 18, 19, 10, 1};
         int y = 45 + (animate && (a->now / 900) % 2);
-        dressed(a, life[a->activity % 8], 22, y, 256);
+        dressed(a->worn, life[a->activity % 8], 22, y, 256);
         if (a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
         static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
@@ -660,7 +672,7 @@ void whale_ui_draw(const whale_app_t *a) {
                 }
             }
         }
-        dressed(a, n, x, y, 256);
+        dressed(a->worn, n, x, y, 256);
         parent_icon(ICON_home, a->back_focus);
         text_at(54, 35, 132, 18, &lv_font_cn_14, "互动", NAV, -1, LV_TEXT_ALIGN_CENTER);
         if (action)
@@ -673,16 +685,25 @@ void whale_ui_draw(const whale_app_t *a) {
                                                ICON_hanger};
         strip(icons, choices, 5, a->back_focus ? -1 : a->companion_choice, -1, 0, false);
     } else if (a->view == WARDROBE) {
-        dressed(a, 16, 22, 44, 256);
+        uint8_t skin = whale_wardrobe_order[a->outfit_choice];
+        uint8_t preview = a->back_focus ? a->worn : (1u << skin) & 14;
+        dressed(preview, 16, 22, 44, 256);
         parent_icon(ICON_heart, a->back_focus);
         center(35, "服饰", NAV, -1);
-        static const enum room_icon icons[] = {ICON_hanger, ICON_hanger, ICON_hanger};
-        static const char *const names[] = {"女仆装", "酒红女仆装", "墨绿女仆装"};
-        int worn = a->worn & 4 ? 2 : a->worn & 2 ? 1 : 0;
-        strip(icons, names, 3, a->back_focus ? -1 : a->outfit_choice, worn, (~a->unlocked) & 6,
+        static const enum room_icon icons[] = {ICON_skin_maid, ICON_skin_pajamas,
+                                               ICON_skin_witch, ICON_skin_lounge};
+        static const char *const names[] = {"女仆装", "长袖睡衣", "见习魔女", "连帽家居服"};
+        int worn = a->worn & 8 ? 3 : a->worn & 4 ? 2 : a->worn & 2 ? 1 : 0;
+        worn = whale_wardrobe_order[worn];
+        unsigned locked = 0;
+        for (unsigned slot = 1; slot < 4; slot++)
+            if (!(a->unlocked & (1u << whale_wardrobe_order[slot])))
+                locked |= 1u << slot;
+        strip(icons, names, 4, a->back_focus ? -1 : a->outfit_choice, worn, locked,
               false);
         if (a->locked_notice)
-            center(232, "一起完成更多任务后解锁", MUT, -1);
+            center(232, skin == 1 ? "亲密度20解锁"
+                        : skin == 2 ? "亲密度40解锁" : "亲密度60解锁", MUT, -1);
     } else if (desk) {
         static const char *week[] = {"日", "一", "二", "三", "四", "五", "六"};
         const whale_local_time_t *t = &a->clock;
@@ -976,7 +997,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v0.15.0 Demo";
+            heading = "固件 v0.16.0 Demo";
             detail = "HARNESS-WHALE · BLE 2.3";
             break;
         case LOADING:
