@@ -20,7 +20,11 @@ LV_FONT_DECLARE(lv_font_cn_64);
 unsigned whale_glyph_advance(unsigned cp);
 extern const uint8_t whale_poses[] asm("_binary_poses_rgb_start");
 extern const uint8_t companion_poses[] asm("_binary_companion_rgb_start");
-static lv_image_dsc_t sprites[22], props[2];
+/* Outfit sets 1 and 2 redraw these sprite indices (tools/make_whale_outfits.py). */
+extern const uint8_t outfit_poses[] asm("_binary_outfits_rgb_start");
+static const uint8_t outfit_pose_ids[] = {1, 3, 10, 15, 16, 17, 18, 19, 20, 21};
+enum { OUTFIT_SETS = 2, OUTFIT_POSES = sizeof outfit_pose_ids, OUTFIT_BASE = 22 };
+static lv_image_dsc_t sprites[OUTFIT_BASE + OUTFIT_SETS * OUTFIT_POSES], props[2];
 static lv_obj_t *coffee_cup, *coffee_steam, *title_clip, *title_text;
 static uint32_t title_started, title_session;
 static uint64_t title_epoch;
@@ -177,13 +181,14 @@ static void strip(const enum room_icon *icons, const char *const *names, int cou
     }
 }
 static void dressed(const whale_app_t *a, int pose_id, int x, int y, unsigned scale) {
+    int set = a->worn & 4 ? 2 : a->worn & 2 ? 1 : 0;
+    if (set)
+        for (unsigned i = 0; i < OUTFIT_POSES; i++)
+            if (outfit_pose_ids[i] == pose_id) {
+                pose_id = OUTFIT_BASE + (set - 1) * OUTFIT_POSES + i;
+                break;
+            }
     pose_at(pose_id, x, y, scale);
-    int size = 196 * scale / 256;
-    int eye = pose_id == 15 || pose_id == 1 ? 52 : 44;
-    if (a->worn & 2)
-        icon_at(ICON_flower, x + size * 32 / 100 - 10, y + size * (eye - 14) / 100 - 10, GOLD);
-    if (a->worn & 4)
-        icon_at(ICON_glasses, x + size / 2 - 10, y + size * eye / 100 - 10, NAV);
 }
 /* Static RGB565 landscapes in flash. LVGL clips them to the invalidated
  * rectangle; the display never allocates a full scene buffer in RAM. */
@@ -235,6 +240,10 @@ void whale_ui_init(void) {
                                                  .stride = 392},
                                       .data_size = 115248,
                                       .data = whale_poses + i * 115248};
+    for (unsigned i = 0; i < OUTFIT_SETS * OUTFIT_POSES; i++) {
+        sprites[OUTFIT_BASE + i] = sprites[0];
+        sprites[OUTFIT_BASE + i].data = outfit_poses + i * 115248;
+    }
     for (unsigned i = 0; i < 8; i++) {
         const whale_image_asset_t *v = &whale_image_assets[i];
         lv_image_dsc_t d = {.header = {.magic = LV_IMAGE_HEADER_MAGIC,
@@ -658,7 +667,7 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 232, 224, 21, &lv_font_cn_14, line, NAV, -1, LV_TEXT_ALIGN_CENTER);
         else if (a->unlock_new)
             text_at(8, 232, 224, 21, &lv_font_cn_14,
-                    a->unlock_new & 4 ? "圆框眼镜已解锁，去服饰试试" : "雏菊发夹已解锁，去服饰试试",
+                    "新服饰已解锁，去服饰试试",
                     NAV, -1, LV_TEXT_ALIGN_CENTER);
         static const enum room_icon icons[] = {ICON_wave, ICON_pat, ICON_fish, ICON_coffee,
                                                ICON_hanger};
@@ -667,9 +676,10 @@ void whale_ui_draw(const whale_app_t *a) {
         dressed(a, 16, 22, 44, 256);
         parent_icon(ICON_heart, a->back_focus);
         center(35, "服饰", NAV, -1);
-        static const enum room_icon icons[] = {ICON_remove, ICON_flower, ICON_glasses};
-        static const char *const names[] = {"一键脱下", "雏菊发夹", "圆框眼镜"};
-        strip(icons, names, 3, a->back_focus ? -1 : a->outfit_choice, -1, (~a->unlocked) & 6,
+        static const enum room_icon icons[] = {ICON_hanger, ICON_hanger, ICON_hanger};
+        static const char *const names[] = {"女仆装", "酒红女仆装", "墨绿女仆装"};
+        int worn = a->worn & 4 ? 2 : a->worn & 2 ? 1 : 0;
+        strip(icons, names, 3, a->back_focus ? -1 : a->outfit_choice, worn, (~a->unlocked) & 6,
               false);
         if (a->locked_notice)
             center(232, "一起完成更多任务后解锁", MUT, -1);

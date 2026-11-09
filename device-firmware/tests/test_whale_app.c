@@ -888,11 +888,12 @@ static void test_settings_navigation(void) {
     a.unlocked = 6;
     key(BSP_BTN_OK);
     assert(a.worn == 2);
+    /* Outfits replace each other instead of stacking. */
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
-    assert(a.worn == 6);
+    assert(a.worn == 4);
     key(BSP_BTN_OK);
-    assert(a.worn == 2);
+    assert(a.worn == 4);
     a.outfit_choice = 0;
     key(BSP_BTN_OK);
     assert(!a.worn);

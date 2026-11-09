@@ -896,7 +896,7 @@ static void key(uint32_t code) {
             page(a.view == WARDROBE ? COMPANION : a.view == SOUND ? MANAGE : HOME);
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
-                a.outfit_choice = 0;
+                a.outfit_choice = a.worn & 4 ? 2 : a.worn & 2 ? 1 : 0;
                 a.unlock_new = 0;
                 page(WARDROBE);
             } else {
@@ -907,11 +907,12 @@ static void key(uint32_t code) {
                 bond_tap();
             }
         } else if (a.view == WARDROBE) {
+            /* Outfits are exclusive: 0 maid (default), bit 1 and bit 2 sets. */
             uint8_t bit = 1u << *choice;
             if (!*choice)
                 a.worn = 0;
             else if (a.unlocked & bit)
-                a.worn ^= bit;
+                a.worn = bit;
             else {
                 a.locked_notice = true;
                 return;
@@ -1852,6 +1853,8 @@ void app_main(void) {
         a.unlocked = profile[1] & 6;
         a.unlocked |= whale_unlocks_for(a.bond);
         a.worn = profile[2] & a.unlocked;
+        if (a.worn == 6) /* stacked accessories from v0.15 become one outfit */
+            a.worn = 4;
         /* Earlier room_v2 profiles stored only the daily total in this byte. */
         uint8_t used = profile[3] & 15, undated = profile[3] >> 4;
         a.bond_today = used <= WHALE_BOND_DAILY_MAX ? used : WHALE_BOND_DAILY_MAX;

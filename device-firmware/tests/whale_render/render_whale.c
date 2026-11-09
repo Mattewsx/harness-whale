@@ -9,6 +9,7 @@
 uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t pose_bytes[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion_bytes[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
+uint8_t outfit_bytes[2 * 10 * 196 * 196 * 3] __asm__("_binary_outfits_rgb_start");
 static uint16_t pixels[240 * 320];
 static uint16_t buffer[240 * 20];
 static void check_sky_bar(void) {
@@ -65,6 +66,9 @@ int main(void) {
     fclose(f);
     f = fopen(WHALE_COMPANION_PATH, "rb");
     assert(f && fread(companion_bytes, 1, sizeof companion_bytes, f) == sizeof companion_bytes);
+    fclose(f);
+    f = fopen(WHALE_OUTFITS_PATH, "rb");
+    assert(f && fread(outfit_bytes, 1, sizeof outfit_bytes, f) == sizeof outfit_bytes);
     fclose(f);
     FILE *landscape = fopen(WHALE_ROOM_PATH, "rb");
     assert(landscape && fread(landscape_pixels, 1, sizeof landscape_pixels, landscape) ==
@@ -229,6 +233,22 @@ int main(void) {
     save("room-wardrobe-locked");
     check_action_caption();
     a.locked_notice = false;
+    a.unlocked = 6;
+    a.worn = 2;
+    a.outfit_choice = 1;
+    whale_ui_draw(&a);
+    save("room-wardrobe-outfit-red");
+    a.worn = 4;
+    a.view = HOME;
+    whale_ui_draw(&a);
+    save("room-home-outfit-green");
+    a.view = COMPANION;
+    a.unlock_new = 4;
+    whale_ui_draw(&a);
+    save("room-companion-unlock");
+    a.unlock_new = 0;
+    a.worn = 0;
+    a.unlocked = 0;
     a.view = LIST;
     a.total = 9;
     whale_row_t saved = a.rows[0];

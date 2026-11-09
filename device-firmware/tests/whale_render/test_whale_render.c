@@ -9,6 +9,7 @@
 uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t poses[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
+uint8_t outfits[2 * 10 * 196 * 196 * 3] __asm__("_binary_outfits_rgb_start");
 static uint16_t buffer[240 * 40];
 static unsigned flushed_pixels;
 
@@ -29,6 +30,9 @@ int main(void) {
     fclose(file);
     file = fopen(WHALE_COMPANION_PATH, "rb");
     assert(file && fread(companion, 1, sizeof companion, file) == sizeof companion);
+    fclose(file);
+    file = fopen(WHALE_OUTFITS_PATH, "rb");
+    assert(file && fread(outfits, 1, sizeof outfits, file) == sizeof outfits);
     fclose(file);
     FILE *landscape = fopen(WHALE_ROOM_PATH, "rb");
     assert(landscape && fread(landscape_pixels, 1, sizeof landscape_pixels, landscape) ==
@@ -61,6 +65,18 @@ int main(void) {
         printf("same page %d: %u pixels redrawn (expected 0)\n", a.view, pixels);
         errors += pixels != 0;
     }
+    /* Each outfit swaps the home and wardrobe poses; a session page keeps
+     * the plain work pose. */
+    a.unlocked = 6;
+    for (unsigned worn = 2; worn <= 4; worn += 2) {
+        a.worn = worn;
+        a.view = HOME;
+        assert(draw(&a) > 0);
+        assert(draw(&a) == 0);
+        a.view = WARDROBE;
+        assert(draw(&a) > 0);
+    }
+    a.worn = 0;
     a.view = LIST;
     draw(&a);
     strcpy(a.replies[0].preview, "PRIVATE REPLY MUST NOT APPEAR IN LIST");
