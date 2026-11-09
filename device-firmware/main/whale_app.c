@@ -22,7 +22,7 @@
 #include <string.h>
 #include <sys/time.h>
 
-static whale_app_t a = {.view = HOME, .dock = 1, .bond = 12, .soc = -1, .next = UINT32_MAX};
+static whale_app_t a = {.view = HOME, .dock = 1, .bond = 0, .soc = -1, .next = UINT32_MAX};
 static whale_rx_t rx;
 static QueueHandle_t events;
 static QueueHandle_t cues;
@@ -34,10 +34,21 @@ static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
 #define WHALE_CMD_SLEEP 7
 #define WHALE_CMD_ROOM_SAVE 8
-/* Bond earned from interactions per local day. Without a synced clock the
- * day never rolls over, so the count keeps limiting until the next sync. */
-#define WHALE_BOND_DAILY_MAX 5
+/* Bond earned per local day from all sources. Without a synced clock the
+ * day never rolls over, so the count keeps limiting until the next sync.
+ * Companion taps add at most WHALE_BOND_TAP_MAX of it (kept in RAM only);
+ * the rest comes from real work: device answers, completions, voice sends. */
+#define WHALE_BOND_DAILY_MAX 10
+#define WHALE_BOND_TAP_MAX 5
+#define WHALE_BOND_ANSWER 3
+#define WHALE_BOND_DONE 2
+#define WHALE_BOND_VOICE 2
 #define WHALE_BOND_MAX 99
+/* Accessories unlock at these bond levels: daisy clip (bit 1), glasses (bit 2). */
+#define WHALE_UNLOCK_FLOWER 20
+#define WHALE_UNLOCK_GLASSES 50
+static uint8_t bond_taps;
+static uint32_t bond_taps_day;
 static bool room_unsaved, previous_window;
 static uint32_t save_retry_at;
 /* Serial-only health line for the hardware stress script. No session data. */
@@ -211,7 +222,7 @@ static void attention_read(uint8_t kind) {
     pending_reads[pending_read_next].used = true;
     pending_read_next = (pending_read_next + 1) % 16;
     r->flags &= ~mask;
-    if (!(r->flags & 120) && a.global_unread)
+    if (!(r->flags & 120) && !whale_row_needs_answer(r) && a.global_unread)
         a.global_unread--;
     whale_cues_read(&reminders, r->session, kind == 1 || kind == 4 ? 3 : kind == 2 ? 2 : 1);
     flush_reads();
@@ -251,6 +262,15 @@ static void voice_prepare(void) {
     if (!whale_send(0x40, b, sizeof b))
         voice_page(VOICE_DISCONNECTED);
 }
+static void voice_retake(void) {
+    /* Drop this recording on the computer, then start a fresh identity. */
+    whale_voice_stop(true);
+    if (a.ready)
+        whale_send(0x44, a.voice_identity, 24);
+    memset(a.voice_text, 0, sizeof a.voice_text);
+    a.voice_submitted = false;
+    voice_prepare();
+}
 static void voice_key(unsigned k, bool hold) {
     if (hold) {
         if (k == BSP_BTN_OK && a.voice_phase != VOICE_SENDING)
@@ -278,11 +298,13 @@ static void voice_key(unsigned k, bool hold) {
     } else if (p == VOICE_ACTIONS) {
         if (k == BSP_BTN_UP && a.voice_choice)
             a.voice_choice--;
-        if (k == BSP_BTN_DOWN && a.voice_choice < 1)
+        if (k == BSP_BTN_DOWN && a.voice_choice < 2)
             a.voice_choice++;
         if (k == BSP_BTN_OK) {
-            if (a.voice_choice == 1)
+            if (a.voice_choice == 2)
                 voice_cancel();
+            else if (a.voice_choice == 1)
+                voice_retake();
             else if (!a.ready)
                 voice_page(VOICE_DISCONNECTED);
             else {
@@ -450,15 +472,49 @@ static bool sync_bond_day(void) {
     }
     return true;
 }
-static void bond_gain(void) {
-    bool dated = sync_bond_day();
-    if (a.bond_today < WHALE_BOND_DAILY_MAX && a.bond < WHALE_BOND_MAX) {
-        a.bond++;
-        a.bond_today++;
-        if (!dated)
-            a.bond_undated++;
+uint8_t whale_unlocks_for(uint8_t bond) {
+    return (bond >= WHALE_UNLOCK_FLOWER ? 2u : 0u) | (bond >= WHALE_UNLOCK_GLASSES ? 4u : 0u);
+}
+static void bond_unlock(void) {
+    uint8_t add = whale_unlocks_for(a.bond) & ~a.unlocked;
+    if (add) {
+        a.unlocked |= add;
+        a.unlock_new = add;
         room_unsaved = true;
+        dirty = true;
     }
+}
+static void bond_gain(uint8_t points) {
+    bool dated = sync_bond_day();
+    unsigned room = WHALE_BOND_DAILY_MAX > a.bond_today ? WHALE_BOND_DAILY_MAX - a.bond_today : 0;
+    if (points > room)
+        points = room;
+    if (points > WHALE_BOND_MAX - a.bond)
+        points = WHALE_BOND_MAX - a.bond;
+    if (!points)
+        return;
+    a.bond += points;
+    a.bond_today += points;
+    if (!dated)
+        a.bond_undated += points;
+    room_unsaved = true;
+    bond_unlock();
+}
+static void bond_tap(void) {
+    /* The tap sub-limit follows the same day key. Gains carried into a new
+     * day (earned while the clock was lost) count as taps, conservatively;
+     * the first sync only dates the current count. */
+    sync_bond_day();
+    if (a.bond_day != bond_taps_day) {
+        if (bond_taps_day)
+            bond_taps = a.bond_today < WHALE_BOND_TAP_MAX ? a.bond_today : WHALE_BOND_TAP_MAX;
+        bond_taps_day = a.bond_day;
+    }
+    if (bond_taps >= WHALE_BOND_TAP_MAX)
+        return;
+    uint8_t before = a.bond;
+    bond_gain(1);
+    bond_taps += a.bond != before;
 }
 static void companion_tick(void) {
     if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
@@ -821,13 +877,14 @@ static void key(uint32_t code) {
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
                 a.outfit_choice = 0;
+                a.unlock_new = 0;
                 page(WARDROBE);
             } else {
                 a.mood = a.companion_action = *choice + 1;
                 static const uint8_t after[] = {4, 5, 0, 3};
                 a.activity = after[*choice];
                 a.activity_at = a.mood_at = a.action_at = a.now;
-                bond_gain();
+                bond_tap();
             }
         } else if (a.view == WARDROBE) {
             uint8_t bit = 1u << *choice;
@@ -1308,8 +1365,11 @@ static void apply_message(whale_msg_t msg) {
             memcpy(a.voice_text, p + 27, n - 27);
             a.voice_text[n - 27] = 0;
         }
-        if (code == 3 || code == 4)
+        if (code == 3 || code == 4) {
+            if (a.voice_submitted)
+                bond_gain(WHALE_BOND_VOICE);
             a.voice_submitted = false;
+        }
         if (code == 5)
             a.voice_submitted = false;
         if (code >= 7)
@@ -1378,6 +1438,7 @@ static void apply_message(whale_msg_t msg) {
         }
         whale_cues_update(&reminders, seq, w32(p + 12), w32(p + 20), p[24], p[25], a.now);
         if (p[25] == 3) {
+            bond_gain(WHALE_BOND_DONE);
             a.mood = 2;
             a.activity = 5;
             a.mood_at = a.activity_at = a.now;
@@ -1449,6 +1510,8 @@ static void apply_message(whale_msg_t msg) {
     } else if (msg.type == 0x23 && n == 23 && current(p, n) && question_view()) {
         if (p[20] < 4) {
             a.result = p[20];
+            if (p[20] == 0)
+                bond_gain(WHALE_BOND_ANSWER);
             page(RESULT);
         }
     } else if (msg.type == 0x20 && a.view == LOADING && current(p, n) && n >= 24 && !a.meta) {
@@ -1767,12 +1830,16 @@ void app_main(void) {
         profile[0] <= WHALE_BOND_MAX) {
         a.bond = profile[0];
         a.unlocked = profile[1] & 6;
+        a.unlocked |= whale_unlocks_for(a.bond);
         a.worn = profile[2] & a.unlocked;
         /* Earlier room_v2 profiles stored only the daily total in this byte. */
         uint8_t used = profile[3] & 15, undated = profile[3] >> 4;
         a.bond_today = used <= WHALE_BOND_DAILY_MAX ? used : WHALE_BOND_DAILY_MAX;
         a.bond_undated = undated <= a.bond_today ? undated : a.bond_today;
         a.bond_day = profile[4] | (uint32_t)profile[5] << 8 | (uint32_t)(profile[6] & 0x1F) << 16;
+        /* Tap counts are not stored: treat today's gains as taps after a restart. */
+        bond_taps = a.bond_today < WHALE_BOND_TAP_MAX ? a.bond_today : WHALE_BOND_TAP_MAX;
+        bond_taps_day = a.bond_day;
     }
     a.sound_mode = whale_sound_load();
     a.sound_saved = 1;

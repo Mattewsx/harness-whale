@@ -142,6 +142,8 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
 }
 static void setup(void) {
     room_unsaved = previous_window = false;
+    bond_taps = 0;
+    bond_taps_day = 0;
     memset(&reminders, 0, sizeof reminders);
     disconnect_pending = false;
     seek_session = 0;
@@ -959,7 +961,10 @@ static void test_settings_navigation(void) {
     assert(a.global_unread == 1);
     screen_applied = WHALE_SCREEN_ON;
     acknowledge_visible();
-    assert(!a.global_unread && sent_type == 0x4a && sent_bytes[16] == 3);
+    /* Viewing the question clears its unread mark, but the session still
+     * waits for an answer, so the home badge keeps counting it. */
+    assert(a.global_unread == 1 && !(a.rows[0].flags & 32) && sent_type == 0x4a &&
+           sent_bytes[16] == 3);
     key(BSP_BTN_UP);
     key(BSP_BTN_OK);
     assert(a.view == TASK_DETAIL && a.rows[0].question == 42 && answers == 0);
@@ -1156,12 +1161,12 @@ static void interact(void) {
     assert(a.companion_action == 1);
 }
 static void test_bond_daily_cap(void) {
-    /* Unsynced clock: the cap still holds and the day never rolls over. */
+    /* Unsynced clock: the tap cap still holds and the day never rolls over. */
     setup();
     a.bond = 12;
     for (int i = 0; i < 8; i++)
         interact();
-    assert(a.bond == 12 + WHALE_BOND_DAILY_MAX && a.bond_today == WHALE_BOND_DAILY_MAX);
+    assert(a.bond == 12 + WHALE_BOND_TAP_MAX && a.bond_today == WHALE_BOND_TAP_MAX);
     assert(room_unsaved && a.bond_day == 0);
     /* First sync dates the offline gains even without a further interaction. */
     int64_t day_start = 1793750400LL; /* 2026-11-04 00:00 UTC */
@@ -1221,9 +1226,117 @@ static void test_wardrobe_screen_off(void) {
     }
     puts("Wardrobe screen dim/off with idle and active sessions PASS");
 }
+static void answer_accepted(void) {
+    a.view = SENDING;
+    uint8_t p[23] = {0};
+    put64(a.identity, a.epoch);
+    memcpy(p, a.identity, 20);
+    p[20] = 0;
+    apply_message((whale_msg_t){0x23, p, sizeof p});
+    assert(a.view == RESULT && a.result == 0);
+}
+static void test_bond_work_and_unlocks(void) {
+    setup();
+    a.bond = 0;
+    a.global_cap = true;
+    int64_t day_start = 1793750400LL;
+    wall_clock(a.epoch, day_start + 3600, 0);
+    /* Work earns bond: an accepted device answer, a completion, a voice send. */
+    answer_accepted();
+    assert(a.bond == WHALE_BOND_ANSWER && a.bond_today == WHALE_BOND_ANSWER);
+    cue_event(1, 10, 30, 3, 3);
+    assert(a.bond == WHALE_BOND_ANSWER + WHALE_BOND_DONE);
+    /* A cue with no live trigger, or an error, earns nothing. */
+    cue_event(2, 10, 31, 3, 0);
+    cue_event(3, 10, 32, 2, 2);
+    assert(a.bond == WHALE_BOND_ANSWER + WHALE_BOND_DONE);
+    uint8_t v[27] = {0};
+    a.view = VOICE;
+    a.voice_submitted = true;
+    memcpy(v, a.voice_identity, 24);
+    v[24] = 3;
+    apply_message((whale_msg_t){0x41, v, sizeof v});
+    assert(a.voice_phase == VOICE_SENT && a.bond == 7 && !a.voice_submitted);
+    /* A repeated "sent" for the same recording earns nothing more. */
+    apply_message((whale_msg_t){0x41, v, sizeof v});
+    assert(a.bond == 7);
+    /* Taps still add at most five; the whole day stops at ten. */
+    for (int i = 0; i < 8; i++)
+        interact();
+    assert(a.bond == WHALE_BOND_DAILY_MAX && a.bond_today == WHALE_BOND_DAILY_MAX);
+    answer_accepted();
+    assert(a.bond == WHALE_BOND_DAILY_MAX);
+    /* The next day: taps alone stop at five, work can add the rest. */
+    wall_clock(a.epoch, day_start + 86400 + 3600, 0);
+    for (int i = 0; i < 8; i++)
+        interact();
+    assert(a.bond == 15 && a.bond_today == 5 && !a.unlocked);
+    answer_accepted();
+    cue_event(4, 10, 33, 3, 3);
+    assert(a.bond == 20 && a.unlocked == 2 && a.unlock_new == 2 && room_unsaved);
+    /* Entering the wardrobe clears the notice and the clip can be worn. */
+    a.view = COMPANION;
+    a.back_focus = false;
+    a.companion_choice = 4;
+    key(BSP_BTN_OK);
+    assert(a.view == WARDROBE && !a.unlock_new);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.worn == 2 && !a.locked_notice);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.locked_notice && a.worn == 2);
+    assert(whale_unlocks_for(19) == 0 && whale_unlocks_for(20) == 2 &&
+           whale_unlocks_for(49) == 2 && whale_unlocks_for(50) == 6);
+    /* Reaching fifty unlocks the glasses as well. */
+    a.bond = 48;
+    a.bond_today = 0;
+    answer_accepted();
+    assert(a.unlocked == 6 && (a.unlock_new & 4));
+    puts("Bond from work, daily caps and accessory unlocks PASS");
+}
+static void test_voice_retake(void) {
+    setup();
+    a.voice_cap = true;
+    key(BSP_BTN_OK);
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE);
+    uint8_t first[24];
+    memcpy(first, a.voice_identity, 24);
+    uint8_t b[32];
+    memcpy(b, a.voice_identity, 24);
+    b[24] = 2;
+    put16(b + 25, 5);
+    memcpy(b + 27, "hello", 5);
+    a.voice_phase = VOICE_FINISH;
+    apply_message((whale_msg_t){0x41, b, 32});
+    assert(a.voice_phase == VOICE_ACTIONS && a.voice_choice == 0);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    assert(a.voice_choice == 2);
+    key(BSP_BTN_UP);
+    assert(a.voice_choice == 1);
+    unsigned before = sends;
+    key(BSP_BTN_OK);
+    /* Retake cancels the old recording, then prepares a new identity. */
+    assert(sends == before + 2 && sent_type == 0x40);
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && !a.voice_text[0]);
+    assert(!memcmp(sent_bytes, first, 8)); /* same epoch, fresh session request */
+    /* Cancel moved to the third choice. */
+    memcpy(b, a.voice_identity, 24);
+    a.voice_phase = VOICE_FINISH;
+    apply_message((whale_msg_t){0x41, b, 32});
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL && sent_type == 0x44);
+    puts("Voice retake PASS");
+}
 int main(void) {
     test_power();
     test_bond_daily_cap();
+    test_bond_work_and_unlocks();
+    test_voice_retake();
     test_wardrobe_screen_off();
     test_large_frame_negotiation();
     test_settings_navigation();

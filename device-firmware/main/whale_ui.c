@@ -136,7 +136,7 @@ static void pose_at(int index, int x, int y, unsigned scale) {
     }
 }
 static void pose(int index, int y) { pose_at(index, 64, y, 146); }
-static lv_obj_t *icon_slots[10];
+static lv_obj_t *icon_slots[14];
 static lv_image_dsc_t masks[sizeof icon_pixels / sizeof icon_pixels[0]];
 static unsigned icon_count;
 static bool room_visible, room_night;
@@ -654,6 +654,10 @@ void whale_ui_draw(const whale_app_t *a) {
         text_at(54, 35, 132, 18, &lv_font_cn_14, "互动", NAV, -1, LV_TEXT_ALIGN_CENTER);
         if (action)
             text_at(8, 232, 224, 21, &lv_font_cn_14, line, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        else if (a->unlock_new)
+            text_at(8, 232, 224, 21, &lv_font_cn_14,
+                    a->unlock_new & 4 ? "圆框眼镜已解锁，去服饰试试" : "雏菊发夹已解锁，去服饰试试",
+                    NAV, -1, LV_TEXT_ALIGN_CENTER);
         static const enum room_icon icons[] = {ICON_wave, ICON_pat, ICON_fish, ICON_coffee,
                                                ICON_hanger};
         strip(icons, choices, 5, a->back_focus ? -1 : a->companion_choice, -1, 0, false);
@@ -666,7 +670,7 @@ void whale_ui_draw(const whale_app_t *a) {
         strip(icons, names, 3, a->back_focus ? -1 : a->outfit_choice, -1, (~a->unlocked) & 6,
               false);
         if (a->locked_notice)
-            center(232, "尚未解锁", MUT, -1);
+            center(232, "一起完成更多任务后解锁", MUT, -1);
     } else if (desk) {
         static const char *week[] = {"日", "一", "二", "三", "四", "五", "六"};
         const whale_local_time_t *t = &a->clock;
@@ -732,9 +736,9 @@ void whale_ui_draw(const whale_app_t *a) {
                 text_at(15, 107 + j * 22, 210, 21, &lv_font_cn_16, line, NAV, PAPER,
                         LV_TEXT_ALIGN_LEFT);
             }
-            static const enum room_icon choices[] = {ICON_send, ICON_cancel};
-            static const char *const names[] = {"发送", "取消"};
-            strip(choices, names, 2, a->voice_choice, -1, 0, false);
+            static const enum room_icon choices[] = {ICON_send, ICON_mic, ICON_cancel};
+            static const char *const names[] = {"发送", "重新录音", "取消"};
+            strip(choices, names, 3, a->voice_choice, -1, 0, false);
             foot = NULL;
         } else {
             static const char *headings[] = {

@@ -72,6 +72,7 @@ typedef struct {
     bool list_back;
     uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
     bool back_focus, defer_question, locked_notice;
+    uint8_t unlock_new; /* accessories just unlocked, shown once on the companion pages */
     uint32_t activity_at, mood_at;
     uint8_t bond_today; /* bond gained on bond_day, capped by WHALE_BOND_DAILY_MAX */
     uint8_t bond_undated; /* part of bond_today earned without a valid clock */
@@ -81,6 +82,8 @@ typedef struct {
     bool clock_valid, night;
     whale_local_time_t clock;
 } whale_app_t;
+/* Accessory bits unlocked at a bond level (bit 1 daisy clip, bit 2 glasses). */
+uint8_t whale_unlocks_for(uint8_t bond);
 void whale_ui_init(void);
 void whale_ui_draw(const whale_app_t *app);
 #define HOME_REPLY_LINES 6

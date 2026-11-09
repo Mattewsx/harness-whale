@@ -87,7 +87,9 @@ class RoomBadges(unittest.TestCase):
         self.assertEqual(model.questions[question].status, 4)
         mark(run, 2)
         mark(model.sessions[sid]['_reply'], 1)
-        self.assertEqual(count(), 1)
+        # The deferred question still waits for an answer, so it stays counted.
+        self.assertEqual(count(), 2)
+        self.assertEqual(flags() & 120, 0)
         model.resolve('one', 0, 0)
         model.question(dict(sessionId='10', runId='turn', requestId='two',
                             question='Again?', options=['A', 'B']), None)

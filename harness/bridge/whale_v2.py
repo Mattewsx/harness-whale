@@ -245,7 +245,7 @@ class Workspace:
         sid = self.keys.pop(key, None)
         if sid is None:
             return
-        old = self.sessions.pop(sid)
+        old = self.sessions.pop(sid, {})
         self.invalidate_reply(sid, old.get("_reply", 0))
         self.history_pages.pop(sid, None)
         for ref, question in list(self.questions.items()):
@@ -525,7 +525,9 @@ class Link:
             pending = m.needs_answer(sid, state, qid)
             running += busy
             waiting += pending
-            unread += bool(flags & 120)
+            # Home badge: sessions with unread items or a question still waiting,
+            # even after the question itself has been viewed.
+            unread += bool(flags & 120) or pending
             if busy and not focus:
                 focus = sid
             cue = 1 if pending else 2 if flags & 16 else 3 if flags & 72 or (not self.question_read and state == 5 and not data.get("replyId")) else 0

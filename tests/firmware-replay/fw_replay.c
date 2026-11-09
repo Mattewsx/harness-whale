@@ -2,7 +2,8 @@
 static unsigned queued_cues;
 // This executable runs the embedded message dispatcher and key controller on a host.
 void *xQueueCreate(int x,int y){return (void*)1;}int xQueueReceive(void*a,void*b,int t){return 0;}
-int xQueueSend(void*q,const void*b,int t){if(q==cues)queued_cues++;return 1;}int bsp_battery_init(void){return 0;}int bsp_battery_soc(void){return 64;}
+// Count only audible cues; room saves (bond, outfits) share the queue.
+int xQueueSend(void*q,const void*b,int t){if(q==cues&&((const whale_audio_cmd_t*)b)->kind<WHALE_CMD_SLEEP)queued_cues++;return 1;}int bsp_battery_init(void){return 0;}int bsp_battery_soc(void){return 64;}
 int bsp_display_init(void){return 0;}void *bsp_lvgl_init(void){return (void*)1;}bool bsp_lvgl_lock(int t){return true;}
 void bsp_lvgl_unlock(void){}void bsp_display_backlight(int p){}
 int bsp_button_init(void(*f)(int,int,void*),void*p){return 0;}
