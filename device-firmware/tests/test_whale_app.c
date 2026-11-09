@@ -8,6 +8,9 @@ static bool slow_adv_set;
 static int backlight_level = -1;
 static bool cue_ok, bad_snapshot_crc;
 static bool send_ok = true;
+static const char *stored_room_key;
+static uint8_t stored_room[11];
+static size_t stored_room_size;
 void *xQueueCreate(int x, int y) {
     (void)x;
     (void)y;
@@ -142,8 +145,7 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
 }
 static void setup(void) {
     room_unsaved = previous_window = false;
-    bond_taps = 0;
-    bond_taps_day = 0;
+    stored_room_key = NULL;
     memset(&reminders, 0, sizeof reminders);
     disconnect_pending = false;
     seek_session = 0;
@@ -887,13 +889,21 @@ static void test_settings_navigation(void) {
     assert(a.locked_notice && !a.worn);
     a.unlocked = 6;
     key(BSP_BTN_OK);
-    assert(a.worn == 2);
+    assert(a.outfit_choice == 1 && a.worn == 4);
     /* Outfits replace each other instead of stacking. */
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
-    assert(a.worn == 4);
+    assert(a.outfit_choice == 2 && a.worn == 2);
     key(BSP_BTN_OK);
-    assert(a.worn == 4);
+    assert(!a.worn); /* Confirming the worn outfit returns to the default maid. */
+    key(BSP_BTN_OK);
+    assert(a.worn == 2);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.outfit_choice == 3 && a.locked_notice && a.worn == 2);
+    a.unlocked = 14;
+    key(BSP_BTN_OK);
+    assert(a.worn == 8 && !a.back_focus && !a.locked_notice);
     a.outfit_choice = 0;
     key(BSP_BTN_OK);
     assert(!a.worn);
@@ -962,9 +972,8 @@ static void test_settings_navigation(void) {
     assert(a.global_unread == 1);
     screen_applied = WHALE_SCREEN_ON;
     acknowledge_visible();
-    /* Viewing the question clears its unread mark, but the session still
-     * waits for an answer, so the home badge keeps counting it. */
-    assert(a.global_unread == 1 && !(a.rows[0].flags & 32) && sent_type == 0x4a &&
+    /* Reading clears the badge, independently of submitting the answer. */
+    assert(!a.global_unread && !(a.rows[0].flags & 32) && sent_type == 0x4a &&
            sent_bytes[16] == 3);
     key(BSP_BTN_UP);
     key(BSP_BTN_OK);
@@ -1192,7 +1201,9 @@ static void test_bond_daily_cap(void) {
     last_cue_capture = &sent;
     save_retry_at = a.now;
     companion_tick();
-    assert(sent.kind == WHALE_CMD_ROOM_SAVE && (uint8_t)(sent.generation >> 6) == 0x23);
+    uint8_t stored[11];
+    room_profile(sent, stored);
+    assert(sent.kind == WHALE_CMD_ROOM_SAVE && stored[3] == 3 && stored[4] == 2);
     wall_clock(a.epoch, day_start + 2 * 86400, 0);
     assert(a.bond_day == today + 2 && a.bond_today == 2 && !a.bond_undated);
     for (int i = 0; i < 6; i++)
@@ -1210,7 +1221,8 @@ static void test_bond_daily_cap(void) {
     companion_tick();
     last_cue_capture = NULL;
     assert(!room_unsaved && sent.kind == WHALE_CMD_ROOM_SAVE && sent.mode == WHALE_BOND_MAX);
-    assert((uint8_t)(sent.generation >> 6) == 4 && (sent.generation >> 14) == today + 3);
+    room_profile(sent, stored);
+    assert(stored[3] == 4 && w32(stored + 7) == today + 3);
 }
 static void test_wardrobe_screen_off(void) {
     const uint8_t states[] = {5, 2, 8}; /* finished, thinking, pending question */
@@ -1284,17 +1296,28 @@ static void test_bond_work_and_unlocks(void) {
     assert(a.view == WARDROBE && !a.unlock_new);
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
-    assert(a.worn == 2 && !a.locked_notice);
+    assert(a.outfit_choice == 1 && a.locked_notice && !a.worn);
     key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.outfit_choice == 2 && a.worn == 2 && !a.locked_notice);
+    page(COMPANION);
+    key(BSP_BTN_OK);
+    assert(a.view == WARDROBE && a.outfit_choice == 2 && a.worn == 2);
+    key(BSP_BTN_UP);
     key(BSP_BTN_OK);
     assert(a.locked_notice && a.worn == 2);
     assert(whale_unlocks_for(19) == 0 && whale_unlocks_for(20) == 2 &&
-           whale_unlocks_for(49) == 2 && whale_unlocks_for(50) == 6);
-    /* Reaching fifty unlocks the glasses as well. */
-    a.bond = 48;
+           whale_unlocks_for(39) == 2 && whale_unlocks_for(40) == 6 &&
+           whale_unlocks_for(59) == 6 && whale_unlocks_for(60) == 14);
+    /* Forty unlocks only the pajamas; sixty separately unlocks loungewear. */
+    a.bond = 38;
     a.bond_today = 0;
     answer_accepted();
-    assert(a.unlocked == 6 && (a.unlock_new & 4));
+    assert(a.unlocked == 6 && a.unlock_new == 4);
+    a.bond = 58;
+    a.bond_today = 0;
+    answer_accepted();
+    assert(a.unlocked == 14 && a.unlock_new == 8);
     puts("Bond from work, daily caps and accessory unlocks PASS");
 }
 static void test_bond_cooling(void) {
@@ -1325,7 +1348,15 @@ static void test_bond_cooling(void) {
     a.unlocked = 2;
     a.bond = 22;
     wall_clock(a.epoch, day0 + 16 * 86400 + 3600, 0);
-    assert(a.bond == WHALE_UNLOCK_FLOWER && a.unlocked == 2);
+    assert(a.bond == WHALE_UNLOCK_WITCH && a.unlocked == 2);
+    a.unlocked = 6;
+    a.bond = 43;
+    wall_clock(a.epoch, day0 + 20 * 86400 + 3600, 0);
+    assert(a.bond == WHALE_UNLOCK_PAJAMAS && a.unlocked == 6);
+    a.unlocked = 14;
+    a.bond = 63;
+    wall_clock(a.epoch, day0 + 24 * 86400 + 3600, 0);
+    assert(a.bond == WHALE_UNLOCK_LOUNGE && a.unlocked == 14);
     a.unlocked = 0;
     a.bond = 3;
     wall_clock(a.epoch, day0 + 30 * 86400 + 3600, 0);
@@ -1339,6 +1370,68 @@ static void test_bond_cooling(void) {
     wall_clock(a.epoch, day0 + 33 * 86400 + 3600, 0);
     assert(a.bond == 41); /* 42 minus two unseen days, one of them covered */
     puts("Bond cooling on idle days PASS");
+}
+static void test_separate_work_and_tap_quota(void) {
+    const int64_t day = 1793750400LL;
+    setup();
+    a.bond = 0;
+    wall_clock(a.epoch, day + 3600, 0);
+    interact();
+    wall_clock(a.epoch, day + 86400 + 3600, 0);
+    answer_accepted(); /* Work arrives before the first interaction of a new day. */
+    unsigned before = a.bond;
+    for (int i = 0; i < 8; i++)
+        interact();
+    assert(a.bond == before + 5 && a.bond_today == 8 && a.bond_taps == 5);
+    whale_audio_cmd_t saved = {0};
+    last_cue_capture = &saved;
+    save_retry_at = a.now;
+    companion_tick();
+    last_cue_capture = NULL;
+    uint8_t blob[11];
+    room_profile(saved, blob);
+    unsigned bond = a.bond;
+    setup();
+    stored_room_key = "room_v3";
+    memcpy(stored_room, blob, sizeof blob);
+    stored_room_size = sizeof blob;
+    room_load(); /* Exercise real restore, including a cold boot without a clock. */
+    assert(a.bond == bond && a.bond_today == 8 && a.bond_taps == 5);
+    interact();
+    wall_clock(a.epoch, day + 86400 + 3600, 0);
+    interact();
+    assert(a.bond == bond);
+    wall_clock(a.epoch, day + 2 * 86400 + 3600, 0);
+    answer_accepted();
+    for (int i = 0; i < 5; i++)
+        interact();
+    assert(a.bond_today == 8 && a.bond_taps == 5);
+    /* Legacy v2 data keeps affection, ownership and a conservative old tap quota. */
+    setup();
+    stored_room_key = "room_v2";
+    stored_room_size = 7;
+    uint8_t old[] = {55, 6, 6, 0x23, 20, 81, 0};
+    memcpy(stored_room, old, sizeof old);
+    room_load();
+    assert(a.bond == 55 && a.unlocked == 6 && a.worn == 4);
+    assert(a.bond_today == 3 && a.bond_undated == 2 && a.bond_taps == 3 &&
+           a.bond_taps_undated == 2 && room_unsaved);
+    /* The old hoodie's stable ID now owns and equips the apprentice witch. */
+    stored_room[0] = 25;
+    stored_room[1] = stored_room[2] = 2;
+    room_load();
+    assert(a.bond == 25 && a.unlocked == 2 && a.worn == 2);
+    page(COMPANION);
+    a.companion_choice = 4;
+    key(BSP_BTN_OK);
+    assert(a.view == WARDROBE && a.outfit_choice == 2);
+    /* Bad persisted counters are bounded before they can affect the daily cap. */
+    memset(blob, 255, sizeof blob);
+    blob[0] = 80;
+    room_restore(blob);
+    assert(a.bond_today == 10 && a.bond_undated == 10 && a.bond_taps == 5 &&
+           a.bond_taps_undated == 5 && !a.bond_day);
+    puts("Independent work/tap quotas, cold restart and legacy profile migration PASS");
 }
 static void test_voice_retake(void) {
     setup();
@@ -1535,6 +1628,7 @@ int main(void) {
     test_voice_new_task();
     test_power();
     test_bond_daily_cap();
+    test_separate_work_and_tap_quota();
     test_bond_work_and_unlocks();
     test_bond_cooling();
     test_voice_retake();
@@ -1589,9 +1683,10 @@ bool whale_audio_play(whale_audio_cmd_t c) {
 uint8_t whale_sound_load(void) { return 1; }
 bool whale_sound_save(uint8_t mode) { return mode < 2; }
 bool whale_blob_load(const char *key, void *data, size_t size) {
-    (void)key;
-    (void)data;
-    (void)size;
+    if (stored_room_key && !strcmp(key, stored_room_key) && size == stored_room_size) {
+        memcpy(data, stored_room, size);
+        return true;
+    }
     return false;
 }
 bool whale_blob_save(const char *key, const void *data, size_t size) {

@@ -1,6 +1,7 @@
 #include "lvgl.h"
 #include "whale_app.h"
 #include "whale_assets.h"
+#include "whale_outfits.h"
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
@@ -9,12 +10,16 @@
 uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t poses[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
-uint8_t outfits[2 * 10 * 196 * 196 * 3] __asm__("_binary_outfits_rgb_start");
+uint8_t outfits[WHALE_OUTFIT_BYTES] __asm__("_binary_outfits_rgb_start");
 static uint16_t buffer[240 * 40];
 static unsigned flushed_pixels;
+static uint16_t screen[240 * 320];
 
 static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *data) {
-    (void)data;
+    const uint16_t *pixel = (const uint16_t *)data;
+    for (int y = area->y1; y <= area->y2; y++)
+        for (int x = area->x1; x <= area->x2; x++)
+            screen[y * 240 + x] = *pixel++;
     flushed_pixels += lv_area_get_width(area) * lv_area_get_height(area);
     lv_display_flush_ready(display);
 }
@@ -23,6 +28,13 @@ static unsigned draw(whale_app_t *a) {
     whale_ui_draw(a);
     lv_refr_now(NULL);
     return flushed_pixels;
+}
+static uint32_t pose_checksum(void) {
+    uint32_t value = 2166136261u;
+    for (int y = 64; y < 224; y++)
+        for (int x = 22; x < 218; x++)
+            value = (value ^ screen[y * 240 + x]) * 16777619u;
+    return value;
 }
 int main(void) {
     FILE *file = fopen(WHALE_POSES_PATH, "rb");
@@ -67,8 +79,8 @@ int main(void) {
     }
     /* Each outfit swaps the home and wardrobe poses; a session page keeps
      * the plain work pose. */
-    a.unlocked = 6;
-    for (unsigned worn = 2; worn <= 4; worn += 2) {
+    a.unlocked = 14;
+    for (unsigned worn = 2; worn <= 8; worn <<= 1) {
         a.worn = worn;
         a.view = HOME;
         assert(draw(&a) > 0);
@@ -76,6 +88,37 @@ int main(void) {
         a.view = WARDROBE;
         assert(draw(&a) > 0);
     }
+    a.worn = 0;
+    a.unlocked = 0;
+    a.view = WARDROBE;
+    uint32_t preview[4];
+    for (unsigned i = 0; i < 4; i++) {
+        a.outfit_choice = i;
+        draw(&a);
+        preview[i] = pose_checksum();
+        for (unsigned j = 0; j < i; j++)
+            assert(preview[i] != preview[j]); /* Locked selection previews its actual skin. */
+        assert(a.worn == 0); /* Preview never equips it. */
+    }
+    a.back_focus = true; /* Give every clothing icon the same background. */
+    a.unlocked = 14;
+    draw(&a);
+    uint32_t clothing[4] = {0};
+    for (int i = 0; i < 4; i++) {
+        int left = 110 + (2 * i - 3) * 55 / 2;
+        for (int y = 263; y < 283; y++)
+            for (int x = left; x < left + 20; x++)
+                clothing[i] = (clothing[i] ^ screen[y * 240 + x]) * 16777619u;
+        for (int j = 0; j < i; j++)
+            assert(clothing[i] != clothing[j]); /* Four actual wardrobe symbols must differ. */
+    }
+    a.back_focus = false;
+    a.view = TASK_DETAIL;
+    draw(&a);
+    uint32_t task_pose = pose_checksum();
+    a.worn = 8;
+    draw(&a);
+    assert(pose_checksum() == task_pose); /* Work states always use the default art. */
     a.worn = 0;
     a.view = LIST;
     draw(&a);

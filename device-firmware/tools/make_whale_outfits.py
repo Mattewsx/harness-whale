@@ -1,80 +1,68 @@
-"""Build placeholder outfit sets by recolouring the maid dress (RGB565A8).
-
-Each set redraws the ten poses used on the home and companion pages
-(OUTFIT_POSES, same indices as the UI sprite table). The dress mask is a
-hue/value band that skips the brighter hair, the outline and the frills.
-Replace a set with real art by swapping recolour() for source PNGs.
-"""
-
-import colorsys
+"""Pack native 196px skin sprites, omitting only fully transparent borders."""
 import struct
 from pathlib import Path
-
-from PIL import Image
+from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTFIT_POSES = (1, 3, 10, 15, 16, 17, 18, 19, 20, 21)
-COMPANION = ("idle", "blink", "hello", "happy", "feed", "sleepy")  # sprites 16..21
-# (hue, saturation, value scale) per set: wine red, deep green.
-OUTFITS = ((0.975, 0.72, 1.05), (0.42, 0.62, 0.95))
+SKINS = ("witch", "pajamas", "lounge")
+SIZE = 196
+POSES = 10
 
 
-def source(index):
-    if index >= 16:
-        path = ROOT / "assets/images/companion-v130" / f"{COMPANION[index - 16]}.png"
-        return Image.open(path).convert("RGBA")
-    atlas = Image.open(ROOT / "assets/images/whale-atlas.png").convert("RGBA")
-    x, y = index % 4, index // 4
-    box = (round(x * atlas.width / 4), round(y * atlas.height / 4),
-           round((x + 1) * atlas.width / 4), round((y + 1) * atlas.height / 4))
-    return atlas.crop(box).resize((196, 196), Image.Resampling.LANCZOS)
-
-
-def dress(r, g, b, a):
-    if a < 20:
-        return None
-    h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
-    return (h, s, v) if 0.55 < h < 0.75 and 0.12 < v < 0.5 and s < 0.65 else None
-
-
-def recolour(image, outfit):
-    hue, sat, scale = outfit
-    pixels = []
-    raw = image.tobytes()
-    for r, g, b, a in zip(raw[0::4], raw[1::4], raw[2::4], raw[3::4]):
-        hsv = dress(r, g, b, a)
-        if hsv:
-            _, s, v = hsv
-            r, g, b = (round(c * 255) for c in colorsys.hsv_to_rgb(hue, max(s, sat), min(1, v * scale)))
-        pixels.append((r, g, b, a))
-    out = Image.new("RGBA", image.size)
-    out.putdata(pixels)
-    return out
-
-
-def rgb565a8(image):
-    rgba = image.tobytes()
-    data = b"".join(struct.pack("<H", ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
-                    for r, g, b in zip(rgba[0::4], rgba[1::4], rgba[2::4]))
-    return data + rgba[3::4]
-
-
-def build(preview=None):
+def build():
     blob = bytearray()
-    sheet = Image.new("RGBA", (196 * len(OUTFIT_POSES), 196 * (len(OUTFITS) + 1)), (255, 255, 255, 255))
-    for i, index in enumerate(OUTFIT_POSES):
-        sheet.alpha_composite(source(index), (196 * i, 0))
-    for o, outfit in enumerate(OUTFITS):
-        for i, index in enumerate(OUTFIT_POSES):
-            image = recolour(source(index), outfit)
-            blob.extend(rgb565a8(image))
-            sheet.alpha_composite(image, (196 * i, 196 * (o + 1)))
-    assert len(blob) == len(OUTFITS) * len(OUTFIT_POSES) * 196 * 196 * 3
+    frames = []
+    for skin in SKINS:
+        sheet = Image.open(ROOT / "assets/images/skins" / f"{skin}.png").convert("RGBA")
+        assert sheet.width * 3 == sheet.height * 4, "Skin sheet must use a 4x3 grid"
+        assert sheet.getextrema()[3][0] == 0, "Skin background must have alpha"
+        for cell in range(POSES):
+            x, y = cell % 4, cell // 4
+            box = (x * sheet.width // 4, y * sheet.height // 3,
+                   (x + 1) * sheet.width // 4, (y + 1) * sheet.height // 3)
+            tile = sheet.crop(box)
+            if skin == "witch":
+                # Fit the tall hat directly from source, keeping the caption gutter.
+                bounds = tile.getchannel("A").point(lambda a: 255 if a > 8 else 0).getbbox()
+                assert bounds, "Empty witch pose"
+                figure = ImageOps.contain(tile.crop(bounds), (186, 181), Image.Resampling.LANCZOS)
+                frame = Image.new("RGBA", (SIZE, SIZE))
+                frame.paste(figure, ((SIZE - figure.width) // 2, 2))
+            else:
+                frame = tile.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+            bounds = frame.getchannel("A").getbbox()
+            assert bounds, "Empty skin pose"
+            cropped = frame.crop(bounds)
+            # A cropped sprite must reconstruct exactly on its original 196px canvas.
+            restored = Image.new("RGBA", (SIZE, SIZE))
+            restored.paste(cropped, bounds[:2])
+            assert restored.getchannel("A").tobytes() == frame.getchannel("A").tobytes()
+            blob.extend(bytes((-len(blob)) % 4))
+            frames.append((len(blob), *cropped.size, *bounds[:2]))
+            rgba = cropped.tobytes()
+            blob.extend(b"".join(
+                struct.pack("<H", (r >> 3) << 11 | (g >> 2) << 5 | b >> 3)
+                for r, g, b in zip(rgba[::4], rgba[1::4], rgba[2::4])))
+            blob.extend(rgba[3::4])
+    assert len(frames) == len(SKINS) * POSES
+    for offset, w, h, x, y in frames:
+        assert offset % 4 == 0 and offset + w * h * 3 <= len(blob)
+        assert x + w <= SIZE and y + h <= SIZE
     (ROOT / "main/outfits.rgb").write_bytes(blob)
-    if preview:
-        sheet.save(preview)
+    header = (
+        "/* Generated by tools/make_whale_outfits.py. */\n#pragma once\n#include <stdint.h>\n"
+        f"#define WHALE_OUTFIT_SETS {len(SKINS)}\n"
+        f"#define WHALE_OUTFIT_SIZE {SIZE}\n"
+        f"#define WHALE_OUTFIT_POSES {POSES}\n"
+        f"#define WHALE_OUTFIT_BYTES {len(blob)}\n"
+        "typedef struct { uint32_t offset; uint16_t width, height, x, y; } whale_outfit_frame_t;\n"
+        "static const whale_outfit_frame_t whale_outfit_frames[] = {\n"
+        + "".join("    {%d,%d,%d,%d,%d},\n" % f for f in frames)
+        + "};\n"
+    )
+    (ROOT / "main/whale_outfits.h").write_text(header, encoding="ascii", newline="\n")
+    print(f"Native {SIZE}px skin sprites: {len(blob)} bytes in {len(frames)} cropped frames")
 
 
 if __name__ == "__main__":
-    import sys
-    build(sys.argv[1] if len(sys.argv) > 1 else None)
+    build()

@@ -1,6 +1,7 @@
 #include "lvgl.h"
 #include "whale_app.h"
 #include "whale_assets.h"
+#include "whale_outfits.h"
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
@@ -9,7 +10,7 @@
 uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t pose_bytes[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion_bytes[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
-uint8_t outfit_bytes[2 * 10 * 196 * 196 * 3] __asm__("_binary_outfits_rgb_start");
+uint8_t outfit_bytes[WHALE_OUTFIT_BYTES] __asm__("_binary_outfits_rgb_start");
 static uint16_t pixels[240 * 320];
 static uint16_t buffer[240 * 20];
 static void check_sky_bar(void) {
@@ -247,15 +248,28 @@ int main(void) {
     save("room-wardrobe-locked");
     check_action_caption();
     a.locked_notice = false;
-    a.unlocked = 6;
+    a.unlocked = 14;
     a.worn = 2;
-    a.outfit_choice = 1;
+    a.outfit_choice = 2;
     whale_ui_draw(&a);
-    save("room-wardrobe-outfit-red");
+    save("room-wardrobe-witch");
     a.worn = 4;
     a.view = HOME;
     whale_ui_draw(&a);
-    save("room-home-outfit-green");
+    save("room-home-pajamas");
+    a.worn = 8;
+    whale_ui_draw(&a);
+    save("room-home-lounge");
+    a.view = WARDROBE;
+    a.outfit_choice = 3;
+    whale_ui_draw(&a);
+    save("room-wardrobe-lounge");
+    a.unlocked = 0;
+    a.outfit_choice = 1;
+    whale_ui_draw(&a);
+    save("room-wardrobe-preview-locked");
+    a.unlocked = 14;
+
     a.view = COMPANION;
     a.unlock_new = 4;
     whale_ui_draw(&a);
@@ -383,6 +397,22 @@ int main(void) {
     strcpy(a.labels[2], "图片");
     whale_ui_draw(&a);
     save("question-list-entry");
+    a.view = COMPANION;
+    a.worn = 2;
+    a.action_at = a.now;
+    a.now += 1000;
+    for (unsigned action = 1; action <= 4; action++) {
+        a.companion_action = action;
+        whale_ui_draw(&a);
+        char name[40];
+        snprintf(name, sizeof name, "witch-interaction-%u", action);
+        save(name);
+        check_action_caption();
+    }
+    a.now = a.action_at + 2400;
+    whale_ui_draw(&a);
+    save("witch-coffee-finished");
+    check_action_caption();
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     printf("LVGL renderer PASS; peak pool used %lu / %lu bytes\n", (unsigned long)memory.max_used,

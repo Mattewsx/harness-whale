@@ -3,6 +3,9 @@
 #include "whale_clock.h"
 #include "whale_voice.h"
 
+/* Display slots map to persistent skin IDs. This permutation is its own inverse. */
+static const uint8_t whale_wardrobe_order[] = {0, 2, 1, 3};
+
 typedef enum {
     TASK_DETAIL,
     LIST,
@@ -76,17 +79,18 @@ typedef struct {
     bool list_new;
     uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
     bool back_focus, defer_question, locked_notice;
-    uint8_t unlock_new; /* accessories just unlocked, shown once on the companion pages */
+    uint8_t unlock_new; /* skins just unlocked, shown once on the companion pages */
     uint32_t activity_at, mood_at;
     uint8_t bond_today; /* bond gained on bond_day, capped by WHALE_BOND_DAILY_MAX */
     uint8_t bond_undated; /* part of bond_today earned without a valid clock */
+    uint8_t bond_taps, bond_taps_undated; /* independent, persisted interaction quota */
     uint32_t bond_day;  /* latest credited local day, zero until first sync */
     whale_page_t view;
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;
     whale_local_time_t clock;
 } whale_app_t;
-/* Accessory bits unlocked at a bond level (bit 1 daisy clip, bit 2 glasses). */
+/* Skin bits: apprentice witch at 20, long-sleeved pajamas at 40, loungewear at 60. */
 uint8_t whale_unlocks_for(uint8_t bond);
 /* The voice new-task row sits above the first session of the first window. */
 static inline bool whale_list_has_new(const whale_app_t *app) {
