@@ -1377,7 +1377,124 @@ static void test_voice_retake(void) {
     assert(a.view == TASK_DETAIL && sent_type == 0x44);
     puts("Voice retake PASS");
 }
+static void voice_status(uint8_t code) {
+    uint8_t b[27] = {0};
+    memcpy(b, a.voice_identity, 24);
+    b[24] = code;
+    apply_message((whale_msg_t){0x41, b, sizeof b});
+}
+static void test_voice_new_task(void) {
+    /* Old bridge (no bit 16): holding OK on home explains instead of recording. */
+    setup();
+    hello(63 | 512, 20, 20);
+    assert(a.voice_cap && !a.voice_task_cap && !(w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
+    a.ready = a.linked = true;
+    page(HOME);
+    sends = 0;
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    assert(a.view == VOICE && a.voice_phase == VOICE_UNSUPPORTED && a.voice_new && !sends);
+    key(BSP_BTN_UP);
+    assert(a.view == HOME && !a.voice_new);
+    /* New bridge: the firmware echoes bit 16 only together with voice. */
+    hello(63 | 512 | WHALE_CAP_VOICE_TASK, 20, 20);
+    assert(a.voice_task_cap && (w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
+    hello(63 | WHALE_CAP_VOICE_TASK, 20, 20);
+    assert(!a.voice_task_cap && !(w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
+    setup();
+    a.voice_cap = a.voice_task_cap = true;
+    a.rows[0].question = 7; /* a waiting question does not block a new task */
+    a.selected = 1;
+    page(HOME);
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sent_type == 0x48);
+    assert(sent_length == 28 && w32(sent_bytes + 8) == 11); /* context, not target */
+    assert(!strcmp(a.voice_title, "新任务") && a.voice_held);
+    /* The folder label arrives before recording; foreign identities are ignored. */
+    uint8_t label[24 + 4];
+    memcpy(label, a.voice_identity, 24);
+    memcpy(label + 24, "shop", 4);
+    label[0] ^= 1;
+    apply_message((whale_msg_t){0x49, label, sizeof label});
+    assert(!strcmp(a.voice_title, "新任务"));
+    label[0] ^= 1;
+    apply_message((whale_msg_t){0x49, label, sizeof label});
+    assert(!strcmp(a.voice_title, "新任务 · shop"));
+    voice_status(1);
+    assert(voice_starts == 1);
+    whale_event_t e = {.kind = WE_VOICE, .len = 16, .value = 1};
+    memcpy(e.bytes, a.voice_identity + 8, 16);
+    service(e);
+    assert(a.voice_phase == VOICE_RECORD);
+    /* Push to talk: releasing the held key ends the take. */
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.voice_phase == VOICE_FINISH && !a.voice_held);
+    uint8_t b[27 + 12];
+    memcpy(b, a.voice_identity, 24);
+    b[24] = 2;
+    put16(b + 25, 12);
+    memcpy(b + 27, "fix login", 9);
+    memcpy(b + 36, "!!!", 3);
+    apply_message((whale_msg_t){0x41, b, sizeof b});
+    assert(a.voice_phase == VOICE_ACTIONS && !strcmp(a.voice_text, "fix login!!!"));
+    /* Retake keeps the new-task target and asks again with 0x48. */
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(sent_type == 0x48 && a.voice_new && a.voice_phase == VOICE_PREPARE && !a.voice_held);
+    voice_status(1);
+    service((whale_event_t){.kind = WE_VOICE, .len = 16, .value = 1});
+    memcpy(e.bytes, a.voice_identity + 8, 16);
+    service(e);
+    assert(a.voice_phase == VOICE_RECORD);
+    key(BSP_BTN_OK); /* tap mode finishes with OK */
+    assert(a.voice_phase == VOICE_FINISH);
+    memcpy(b, a.voice_identity, 24);
+    apply_message((whale_msg_t){0x41, b, sizeof b});
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_SENDING && sent_type == 0x45);
+    voice_status(3);
+    assert(a.voice_phase == VOICE_SENT);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && !a.voice_new && a.rows[0].question == 7);
+    /* No folder on the computer; the status is ignored outside a new task. */
+    page(HOME);
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    voice_status(14);
+    assert(a.voice_phase == VOICE_NO_TARGET);
+    key(BSP_BTN_OK);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE); /* late release after leaving */
+    assert(a.view == HOME);
+    a.voice_new = false;
+    a.voice_phase = VOICE_PREPARE;
+    page(VOICE);
+    voice_status(14);
+    assert(a.voice_phase == VOICE_PREPARE);
+    /* Released before recording starts: continue as a tapped recording. */
+    setup();
+    a.voice_cap = a.voice_task_cap = true;
+    page(HOME);
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.voice_phase == VOICE_PREPARE && !a.voice_held);
+    voice_status(1);
+    memcpy(e.bytes, a.voice_identity + 8, 16);
+    service(e);
+    assert(a.voice_phase == VOICE_RECORD);
+    /* A short OK press on home still opens the list, not voice. */
+    setup();
+    page(HOME);
+    a.dock = 1;
+    a.voice_cap = a.voice_task_cap = true;
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.view != VOICE);
+    puts("Voice new task: hold-to-talk, folder label, retake, compatibility PASS");
+}
 int main(void) {
+    test_voice_new_task();
     test_power();
     test_bond_daily_cap();
     test_bond_work_and_unlocks();

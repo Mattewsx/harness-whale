@@ -28,11 +28,13 @@ IDENTITY = struct.Struct("<QIII")
 ROW = struct.Struct("<IIBBBIHHIB")
 QUESTION_READ = 8192  # optional per-question unread marker and acknowledgement
 CACHE_INVALIDATION = 1 << 14
-CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION
+# Bit 15 is reserved for rich questions (approval / multi-select work).
+VOICE_TASK = 1 << 16  # hold-to-talk on the home page opens a new session (0x48/0x49)
+CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION | VOICE_TASK
 LARGE_FRAMES = 4096  # bit 12: protocol 2.3 negotiated large frames
 LEGACY_FRAME = 20
 MAX_FRAME = 244  # ATT MTU 247 minus the 3-byte ATT header
-CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
+CONTROL = {0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x1A, 1, 2, 0x10, 0x16, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32}
 CONTROL |= {0x50, 0x51, 0x52}
 END = 0xFFFFFFFF
 CLOCK_RESYNC_SECONDS = 1800
@@ -476,6 +478,7 @@ class Link:
         self.revision = -1
         self.order = []
         self.global_cap = False
+        self.voice_task = False
         self.global_rows = None
         self.global_seq = 0
         self.global_summary = None
@@ -698,6 +701,7 @@ class Link:
             self.cache_invalidation = bool(caps & CACHE_INVALIDATION)
             self.attention=bool(caps & 1024)
             self.global_cap=bool(caps & 2048)
+            self.voice_task = bool(caps & VOICE_TASK) and bool(caps & 512)
             self.clock_at = None
             self.ready = (
                 (major, status) == (2, 0)
@@ -876,6 +880,7 @@ async def serve(client, model, on_write=None):
                         # Later fragments in both directions use the negotiated frame.
                         rx.frame = wire.frame if wire.frame > LEGACY_FRAME else 0
                         model.frame = wire.frame if wire.ready else None
+                        voice.task_supported = wire.ready and getattr(wire, 'voice_task', False)
                     if (
                         msg[0] in (0x24, 0x16)
                         and replies

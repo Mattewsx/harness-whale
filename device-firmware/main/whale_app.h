@@ -56,6 +56,9 @@ typedef struct {
     uint16_t option_ids[3];
     char prompt[513], labels[3][257];
     bool voice_cap, voice_submitted, attention_cap;
+    /* Spoken new task: voice_new targets a fresh session instead of the selected
+     * one; voice_held while the OK key that started it is still down. */
+    bool voice_task_cap, voice_new, voice_held;
     uint8_t voice_phase, voice_choice, voice_identity[24];
     uint32_t voice_session, voice_at, voice_ms;
     char voice_title[73], voice_text[1801];

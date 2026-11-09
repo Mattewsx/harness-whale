@@ -13,14 +13,24 @@ import time
 import urllib.request
 import wave
 
+try:
+    from .harness_ble_protocol import _truncate_utf8, sanitize_display_text
+except ImportError:
+    from harness_ble_protocol import _truncate_utf8, sanitize_display_text
+
 AUDIO = '13b50203-663a-48c5-a224-37c1c2569080'
 HEADER = struct.Struct('<IIHBB')
 READY, DRAFT, SENT, QUEUED, FAILED, UNKNOWN, UNSUPPORTED, ASR_ERROR, ARCHIVED, QUESTION, EXPIRED, EMPTY, BROKEN = range(1, 14)
+# Spoken new task (capability bit 16 only): no folder on the computer to open it in.
+NO_TARGET = 14
+# 0x48 starts a new-task capture; 0x49 tells the device which folder it will open in.
+TASK_START, TASK_TARGET = 0x48, 0x49
+MAX_LABEL = 48
 MAX_TEXT = 1800
 STATUS_NAMES = {READY: 'ready', DRAFT: 'draft', SENT: 'sent', QUEUED: 'queued', FAILED: 'failed',
                 UNKNOWN: 'unknown', UNSUPPORTED: 'unsupported', ASR_ERROR: 'asr_error',
                 ARCHIVED: 'archived', QUESTION: 'question', EXPIRED: 'expired', EMPTY: 'empty',
-                BROKEN: 'broken'}
+                BROKEN: 'broken', NO_TARGET: 'no_target'}
 
 
 def ogg_page(data, sequence, granule, flags=0):
@@ -77,6 +87,11 @@ class VoiceBridge:
         self.out = []
         self.task = None
         self.audio_supported = False
+        # Set per link from the hello reply: firmware that offers spoken new tasks.
+        self.task_supported = False
+        self.mode = 'reply'  # 'reply' to the selected session, or 'task' for a new session
+        self.cwd = ''
+        self.label = ''
         self.submitting = False
         self.generation = 0
         # Counts and timing only; never text or audio. Read by the stress report.
@@ -124,6 +139,8 @@ class VoiceBridge:
         return len(body) >= 24 and body[:24] == self.identity()
 
     def allowed(self):
+        if self.mode == 'task':
+            return True
         row = self.model.sessions.get(self.sid)
         return row is not None and row.get('sessionId') == self.session and not self.model.is_hidden(self.session)
 
@@ -138,19 +155,46 @@ class VoiceBridge:
         except Exception:
             if gen == self.generation: self.notice(UNSUPPORTED)
 
+    async def prepare_task(self, gen):
+        try:
+            result = await asyncio.to_thread(self.http, '/ready')
+            if gen != self.generation: return
+            if not result.get('ready'): self.notice(UNSUPPORTED); return
+            context = self.session if self.session and not self.model.is_hidden(self.session) else ''
+            found = await asyncio.to_thread(self.http, '/target', {'sessionId': context})
+            if gen != self.generation: return
+            cwd = found.get('cwd')
+            if found.get('status') != 'ok' or not isinstance(cwd, str) or not cwd:
+                self.notice(NO_TARGET); return
+            label = found.get('label') if isinstance(found.get('label'), str) else ''
+            self.cwd = cwd
+            self.label = _truncate_utf8(sanitize_display_text(label.strip()), MAX_LABEL).decode()
+            self.out.append((TASK_TARGET, self.identity()+self.label.encode()))
+            self.notice(READY)
+        except asyncio.CancelledError: raise
+        except Exception:
+            if gen == self.generation: self.notice(UNSUPPORTED)
+
     def receive(self, kind, body):
-        if kind == 0x40 and len(body) == 28 and int.from_bytes(body[:8], 'little') == self.model.epoch:
+        if kind in (0x40, TASK_START) and len(body) == 28 and int.from_bytes(body[:8], 'little') == self.model.epoch:
             sid = int.from_bytes(body[8:12], 'little'); nonce = body[12:28]
             if nonce == self.nonce:
+                if self.mode == 'task' and self.label and self.status not in (0, UNSUPPORTED, NO_TARGET):
+                    self.out.append((TASK_TARGET, self.identity()+self.label.encode()))
                 self.notice(self.status); return True
             self.cancel_task()
             self.nonce, self.sid = nonce, sid
+            self.mode = 'task' if kind == TASK_START else 'reply'
+            self.cwd = self.label = ''
             self.session = self.model.sessions.get(sid, {}).get('sessionId', '')
             self.status = 0; self.out.clear()
             self.text = ''; self.head = b''; self.packets.clear(); self.next_seq = 0
             self.finish_count = None; self.samples = 0; self.submitting = False
             self.started = self.touched = time.monotonic()
-            if not self.audio_supported: self.notice(UNSUPPORTED)
+            if self.mode == 'task':
+                if not (self.audio_supported and self.task_supported): self.notice(UNSUPPORTED)
+                else: self.launch(self.prepare_task)
+            elif not self.audio_supported: self.notice(UNSUPPORTED)
             elif not self.allowed(): self.notice(ARCHIVED)
             elif self.model.sessions[sid].get('state') in ('question','waiting') or any(q.status == 4 and int.from_bytes(q.identity[8:12], 'little') == sid for q in self.model.questions.values()): self.notice(QUESTION)
             else: self.launch(self.prepare)
@@ -223,11 +267,15 @@ class VoiceBridge:
 
     async def deliver(self, gen, query):
         try:
-            result = await asyncio.to_thread(self.http, '/query' if query else '/submit',
-                {'id':self.nonce.hex(), 'sessionId':self.session, 'text':self.text})
+            if self.mode == 'task':
+                result = await asyncio.to_thread(self.http, '/create-query' if query else '/create',
+                    {'id':self.nonce.hex(), 'cwd':self.cwd, 'text':self.text})
+            else:
+                result = await asyncio.to_thread(self.http, '/query' if query else '/submit',
+                    {'id':self.nonce.hex(), 'sessionId':self.session, 'text':self.text})
             if gen != self.generation: return
             code = {'accepted':SENT,'queued':QUEUED,'not_sent':FAILED,'archived':ARCHIVED,'question':QUESTION,
-                    'invalid':FAILED,'unavailable':FAILED}.get(result.get('status'), UNKNOWN)
+                    'invalid':FAILED,'unavailable':FAILED,'no_target':NO_TARGET}.get(result.get('status'), UNKNOWN)
             self.notice(code)
             self.submitting = code == UNKNOWN
             if code in (SENT,QUEUED): self.text = ''
@@ -259,5 +307,6 @@ class VoiceBridge:
 
     def disconnected(self):
         self.audio_supported = False
+        self.task_supported = False
         if self.status in (0,READY):
             self.cancel_task(); self.packets.clear(); self.notice(BROKEN)

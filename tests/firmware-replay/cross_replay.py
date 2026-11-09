@@ -281,3 +281,47 @@ send(0x1c, v.pack('QQII', m.epoch, 35, sid, rev + 1))
 lines.append(f'cached {sid} {rev} 0')
 subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8,check=True)
 print('PASS: cache invalidations validate epoch, exact revision, duplicates and sequence gaps')
+
+# Spoken new task: the Python bridge negotiates bit 16, the C home page starts a
+# 0x48 capture on a held OK, and the bridge's folder label, draft and receipt
+# drive the real dispatcher. Nothing goes to the selected session.
+import asyncio
+from whale_voice import VoiceBridge, READY, DRAFT, SENT
+m = v.Workspace()
+m.update(dict(sessionId='ctx', runId='r', state='question', title='Waiting'))
+link = v.Link(m)
+link.receive(2, v.pack('BBIHHB', 2, 2, v.CAPS, 20, 20, 0))
+assert link.voice_task
+calls = []
+def http(path, data=None):
+    calls.append((path, data))
+    return {'ready': True} if path == '/ready' else {'status': 'ok', 'cwd': 'D:\\work\\shop', 'label': 'shop'} \
+        if path == '/target' else {'status': 'accepted'}
+voice = VoiceBridge(m, http); voice.audio_supported = True; voice.task_supported = link.voice_task
+lines, serial = [], [0, 0]
+send(*v.hello())
+for kind, body in link.snapshot(0) + link.changes(): send(kind, body)
+sid = m.keys['ctx']
+start = v.pack('QI', m.epoch, sid) + bytes([7]) * 16  # host stub fills nonces with 7
+lines += ['view 26', 'key 258', 'view 23']
+async def bridge():
+    voice.receive(0x48, start); await voice.task
+    out = voice.poll()
+    voice.notice(DRAFT, '把登录页的 bug 修一下'); out += voice.poll()
+    voice.receive(0x45, voice.identity()); await voice.task
+    return out + voice.poll()
+out = asyncio.run(bridge())
+assert [k for k, _ in out] == [0x49, 0x41, 0x41, 0x41] and voice.status == SENT
+assert calls[-1] == ('/create', {'id': (bytes([7]) * 16).hex(), 'cwd': 'D:\\work\\shop', 'text': '把登录页的 bug 修一下'})
+for kind, body in out[:2]: send(kind, body)
+lines += ['voice 1', 'key 2']  # recording started; OK finishes the take
+send(*out[2])
+lines += ['key 2', 'view 23']
+send(*out[3])
+lines += ['key 2', 'view 26']
+r = subprocess.run([w/'fw_replay.exe'], input='\n'.join(lines)+'\n', capture_output=True, text=True, timeout=8)
+if r.returncode: raise RuntimeError(r.stderr+r.stdout)
+assert 'tx 48 '+start.hex() in r.stdout and 'tx 40 ' not in r.stdout
+assert 'tx 45 '+voice.identity().hex() in r.stdout
+assert 'tx 02 '+v.pack('BBIHHB', 2, 2, v.CAPS, 20, 20, 0).hex() in r.stdout
+print('PASS: spoken new task negotiated, started on home, labelled, confirmed once, back home')

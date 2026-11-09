@@ -292,7 +292,7 @@ export function apply(ctx: any) {
       socket.send(Buffer.from(JSON.stringify(out)),PORT,HOST)
     } catch {}
   })
-  const voiceService = createVoiceService(ctx, visible, isMainSession, key => ['question','waiting'].includes(states.get(key)?.state || ''))
+  const voiceService = createVoiceService(ctx, visible, isMainSession, key => ['question','waiting'].includes(states.get(key)?.state || ''), () => activeKey)
   let activeKey = 'agent'
   let bridgeChild: ChildProcess | null = null
   let hardware: HardwareStatus = {

@@ -234,7 +234,10 @@ static void voice_cancel(void) {
     memset(a.voice_identity, 0, sizeof a.voice_identity);
     memset(a.voice_text, 0, sizeof a.voice_text);
     a.voice_submitted = false;
-    page(TASK_DETAIL);
+    a.voice_held = false;
+    bool fresh = a.voice_new;
+    a.voice_new = false;
+    page(fresh ? HOME : TASK_DETAIL);
 }
 static void voice_prepare(void) {
     whale_audio_interrupt();
@@ -242,7 +245,7 @@ static void voice_prepare(void) {
         voice_page(VOICE_DISCONNECTED);
         return;
     }
-    if (!a.voice_cap || !whale_ble_audio_ready()) {
+    if (!a.voice_cap || !whale_ble_audio_ready() || (a.voice_new && !a.voice_task_cap)) {
         voice_page(VOICE_UNSUPPORTED);
         return;
     }
@@ -259,8 +262,32 @@ static void voice_prepare(void) {
     put32(b + 8, a.voice_session);
     memcpy(b + 12, a.voice_identity + 8, 16);
     voice_page(VOICE_PREPARE);
-    if (!whale_send(0x40, b, sizeof b))
+    if (!whale_send(a.voice_new ? 0x48 : 0x40, b, sizeof b))
         voice_page(VOICE_DISCONNECTED);
+}
+/* Hold OK on the home page: speak a new task. The selected session, if any, is
+ * only context for the computer's choice of folder; nothing is sent to it. */
+static void voice_task_start(void) {
+    a.voice_new = true;
+    a.voice_held = true;
+    a.voice_session = a.count ? a.rows[a.selected].session : 0;
+    /* The folder label arrives with 0x49 before recording starts. */
+    snprintf(a.voice_title, sizeof a.voice_title, "新任务");
+    a.voice_text[0] = 0;
+    a.voice_submitted = false;
+    voice_prepare();
+}
+/* Releasing the held key ends the recording; released early it stays a
+ * normal recording that the OK key finishes. */
+static void voice_talk_release(void) {
+    if (!a.voice_held)
+        return;
+    a.voice_held = false;
+    dirty = true;
+    if (a.view == VOICE && a.voice_new && a.voice_phase == VOICE_RECORD) {
+        whale_voice_stop(false);
+        voice_page(VOICE_FINISH);
+    }
 }
 static void voice_retake(void) {
     /* Drop this recording on the computer, then start a fresh identity. */
@@ -329,6 +356,9 @@ static void voice_key(unsigned k, bool hold) {
             voice_cancel();
     } else if (p == VOICE_SENT || p == VOICE_QUEUED) {
         if (k == BSP_BTN_OK)
+            voice_cancel();
+    } else if (p == VOICE_NO_TARGET) {
+        if (k != BSP_BTN_DOWN)
             voice_cancel();
     } else if (k == BSP_BTN_UP) {
         if (a.voice_text[0] && (p == VOICE_FAILED || p == VOICE_ARCHIVED || p == VOICE_QUESTION))
@@ -859,8 +889,11 @@ static void key(uint32_t code) {
     }
     int direction = k == BSP_BTN_UP ? -1 : k == BSP_BTN_DOWN ? 1 : 0;
     if (a.view == HOME) {
-        if (hold)
+        if (hold) {
+            if (k == BSP_BTN_OK)
+                voice_task_start();
             return;
+        }
         if (direction)
             a.dock = (a.dock + direction + 3) % 3;
         else if (a.dock == 0)
@@ -1159,7 +1192,8 @@ static void apply_message(whale_msg_t msg) {
         uint16_t frame =
             whale_frame_grant(offered, w16(p + 6), w16(p + 8), whale_ble_frame_limit());
         uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
-        put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION)) |
+        put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION |
+                                 ((offered & 512) ? WHALE_CAP_VOICE_TASK : 0))) |
                          (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
         a.global_cap = (w32(p + 2) & 2048) != 0;
         a.global_valid = false;
@@ -1168,6 +1202,7 @@ static void apply_message(whale_msg_t msg) {
         memset(&reminders, 0, sizeof reminders);
         disconnect_pending = false;
         a.voice_cap = (w32(p + 2) & 512) != 0;
+        a.voice_task_cap = a.voice_cap && (offered & WHALE_CAP_VOICE_TASK);
         a.attention_cap = (w32(p + 2) & 1024) != 0;
         if (a.cache_invalidation && !(offered & WHALE_CAP_CACHE_INVALIDATION)) {
             whale_reply_cache_clear();
@@ -1360,14 +1395,22 @@ static void apply_message(whale_msg_t msg) {
         whale_voice_ack(p, w32(p + 24));
         return;
     }
+    if (msg.type == 0x49 && a.view == VOICE && a.voice_new && n >= 24 &&
+        n <= 24 + WHALE_VOICE_LABEL_MAX && !memcmp(p, a.voice_identity, 24)) {
+        if (n > 24 && voice_displayable(p + 24, n - 24))
+            snprintf(a.voice_title, sizeof a.voice_title, "新任务 · %.*s", (int)(n - 24),
+                     (const char *)(p + 24));
+        dirty = true;
+        return;
+    }
     if (msg.type == 0x41 && a.view == VOICE && n >= 27 && n == 27u + w16(p + 25) &&
         w16(p + 25) <= 1800 && !memcmp(p, a.voice_identity, 24)) {
         static const uint8_t phases[] = {
             VOICE_FINISH,   VOICE_RECORD,  VOICE_PREVIEW,     VOICE_SENT,      VOICE_QUEUED,
             VOICE_FAILED,   VOICE_UNKNOWN, VOICE_UNSUPPORTED, VOICE_ASR_ERROR, VOICE_ARCHIVED,
-            VOICE_QUESTION, VOICE_EXPIRED, VOICE_EMPTY,       VOICE_BROKEN};
+            VOICE_QUESTION, VOICE_EXPIRED, VOICE_EMPTY,       VOICE_BROKEN,    VOICE_NO_TARGET};
         unsigned code = p[24];
-        if (!code || code >= sizeof phases)
+        if (!code || code >= sizeof phases || (code == 14 && !a.voice_new))
             return;
         if (code == 1) {
             if (a.voice_phase == VOICE_PREPARE && !whale_voice_begin(a.voice_identity))
@@ -1806,7 +1849,11 @@ static void service(whale_event_t e) {
             page(HOME);
             break;
         }
+        if (ev == BSP_BTN_RELEASE && k == BSP_BTN_OK && a.voice_held)
+            voice_talk_release();
         if (ev == BSP_BTN_PRESS) {
+            if (k == BSP_BTN_OK)
+                a.voice_held = false; /* a missed release must not end a later take */
             /* After a key wake the waking press may still be held at boot. */
             armed[k] = !dim && (int32_t)(a.now - key_guard_until) >= 0;
             pressed_revision[k] = view_revision;

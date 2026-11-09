@@ -758,7 +758,8 @@ void whale_ui_draw(const whale_app_t *a) {
                 "核对文字",   "发送选项",         "正在发送",         "已发送",
                 "已排队",     "发送结果待核对",   "尚未发送",         "语音尚未就绪",
                 "识别未完成", "会话已归档或删除", "请先处理当前问题", "草稿已过期",
-                "没有听清",   "录音传输中断",     "电脑已断开",       "录音暂不可用"};
+                "没有听清",   "录音传输中断",     "电脑已断开",       "录音暂不可用",
+                "电脑上没有会话"};
             const char *detail = "确认开始  最长 60 秒";
             int n = 11;
             foot = "确认录音  ↑ 返回";
@@ -773,7 +774,7 @@ void whale_ui_draw(const whale_app_t *a) {
                          (unsigned long)a->voice_ms / 60000,
                          (unsigned long)a->voice_ms / 1000 % 60);
                 detail = value;
-                foot = "确认结束  ↑ 取消";
+                foot = a->voice_held ? "离开按键结束  ↑ 取消" : "确认结束  ↑ 取消";
                 n = 2;
                 break;
             case VOICE_FINISH:
@@ -787,7 +788,7 @@ void whale_ui_draw(const whale_app_t *a) {
                 n = 2;
                 break;
             case VOICE_SENT:
-                detail = "已送达当前会话";
+                detail = a->voice_new ? "电脑上已开新会话" : "已送达当前会话";
                 foot = "确认返回";
                 n = 12;
                 break;
@@ -807,7 +808,9 @@ void whale_ui_draw(const whale_app_t *a) {
                 n = 13;
                 break;
             case VOICE_UNSUPPORTED:
-                detail = "电脑启用本地语音识别";
+                detail = a->voice_new && a->voice_cap && !a->voice_task_cap
+                             ? "请更新电脑"
+                             : "电脑启用本地语音识别";
                 foot = "确认重试  ↑ 返回";
                 n = 15;
                 break;
@@ -849,14 +852,23 @@ void whale_ui_draw(const whale_app_t *a) {
                 foot = "确认重试  ↑ 返回";
                 n = 13;
                 break;
+            case VOICE_NO_TARGET:
+                detail = "先在电脑打开会话";
+                foot = "确认返回";
+                n = 15;
+                break;
             default:
                 break;
             }
             text_at(16, 40, 208, 20, &lv_font_cn_14, a->voice_title, MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
             pose(n, 72);
-            center(206, v < sizeof headings / sizeof headings[0] ? headings[v] : "语音回复", NAV,
-                   PAPER);
+            const char *heading = v < sizeof headings / sizeof headings[0] ? headings[v] : "语音回复";
+            if (a->voice_new && v == VOICE_SENT)
+                heading = "新任务已开始";
+            else if (a->voice_new && v == VOICE_PREPARE)
+                heading = "说出新任务";
+            center(206, heading, NAV, PAPER);
             center(244, detail, MUT, PAPER);
         }
     } else if (a->view == LIST) {

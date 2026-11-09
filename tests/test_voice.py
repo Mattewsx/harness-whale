@@ -121,6 +121,75 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         self.v.receive(0x43,self.v.identity()+pack('II',2,640));self.v.poll()
         self.assertEqual(self.v.status,BROKEN)
 
+class VoiceTaskTests(unittest.IsolatedAsyncioTestCase):
+    """Hold-to-talk on the home page opens a new session instead of replying."""
+    async def asyncSetUp(self):
+        self.m=Workspace();self.m.update(dict(sessionId='synthetic',runId='r',state='waiting'))
+        self.sid=self.m.keys['synthetic'];self.calls=[];self.target={'status':'ok','cwd':'D:\\work\\demo','label':'demo'}
+        self.create={'status':'accepted'}
+        def http(path,data=None):
+            self.calls.append((path,data))
+            if path=='/ready': return {'ready':True}
+            if path=='/target': return self.target
+            if path in ('/create','/create-query'): return self.create
+            return {'status':'accepted'}
+        self.v=VoiceBridge(self.m,http);self.v.audio_supported=True;self.v.task_supported=True
+    async def asyncTearDown(self):
+        self.v.cancel_task();await asyncio.sleep(0)
+    async def start(self,nonce=b'0123456789abcdef',sid=None):
+        self.v.receive(0x48,pack('QI',self.m.epoch,self.sid if sid is None else sid)+nonce)
+        if self.v.task: await self.v.task
+        return self.v.poll()
+    async def test_target_precedes_ready_even_when_a_question_waits(self):
+        out=await self.start()
+        self.assertEqual([k for k,_ in out],[0x49,0x41])
+        self.assertEqual(out[0][1],self.v.identity()+'demo'.encode())
+        self.assertEqual(self.v.status,READY)
+        self.assertEqual(self.calls[1],('/target',{'sessionId':'synthetic'}))
+    async def test_confirm_creates_once_with_resolved_folder(self):
+        from whale_voice import QUEUED
+        await self.start();self.v.notice(DRAFT,'把登录页的 bug 修一下')
+        self.v.receive(0x45,self.v.identity());await self.v.task
+        self.assertEqual(self.v.status,SENT)
+        self.assertEqual(self.calls[-1],('/create',{'id':self.v.nonce.hex(),'cwd':'D:\\work\\demo','text':'把登录页的 bug 修一下'}))
+        self.v.receive(0x45,self.v.identity())
+        self.assertEqual(sum(p=='/create' for p,_ in self.calls),1)
+        self.assertFalse(any(p=='/submit' for p,_ in self.calls))
+        self.v.status=UNKNOWN;self.v.submitting=True
+        self.v.receive(0x46,self.v.identity());await self.v.task
+        self.assertEqual(self.calls[-1][0],'/create-query')
+    async def test_no_folder_is_reported(self):
+        from whale_voice import NO_TARGET
+        self.target={'status':'no_target'}
+        out=await self.start()
+        self.assertEqual(self.v.status,NO_TARGET);self.assertNotIn(0x49,[k for k,_ in out])
+    async def test_unknown_context_and_old_firmware(self):
+        from whale_voice import UNSUPPORTED
+        await self.start(sid=999)
+        self.assertEqual(self.calls[1],('/target',{'sessionId':''}))
+        self.v.task_supported=False
+        await self.start(nonce=b'fedcba9876543210')
+        self.assertEqual(self.v.status,UNSUPPORTED)
+    async def test_label_is_display_safe_and_bounded(self):
+        self.target={'status':'ok','cwd':'/x','label':'项目'*40}
+        out=await self.start()
+        label=out[0][1][24:]
+        self.assertLessEqual(len(label),48);label.decode()
+    async def test_reply_capture_still_targets_session(self):
+        await self.start()
+        self.m.sessions[self.sid]['state']='idle'
+        self.v.receive(0x40,pack('QI',self.m.epoch,self.sid)+b'fedcba9876543210');await self.v.task
+        self.v.notice(DRAFT,'追加');self.v.receive(0x45,self.v.identity());await self.v.task
+        self.assertEqual(self.calls[-1][0],'/submit')
+
+class LinkVoiceTaskTests(unittest.TestCase):
+    def test_bit_16_needs_voice_and_firmware_echo(self):
+        from whale_v2 import VOICE_TASK, hello
+        self.assertTrue(struct.unpack('<BBIHH',hello()[1])[2] & VOICE_TASK)
+        for caps,expected in ((63|512|VOICE_TASK,True),(63|512,False),(63|VOICE_TASK,False)):
+            link=Link(Workspace());link.receive(2,struct.pack('<BBIHHB',2,2,caps,20,20,0))
+            self.assertEqual(link.voice_task,expected)
+
 class VoiceInstallerTests(unittest.TestCase):
     def test_complete_payload_in_clean_install(self):
         import importlib.util
@@ -136,6 +205,8 @@ class VoiceInstallerTests(unittest.TestCase):
 class PluginVoiceTests(unittest.TestCase):
     def test_service_replay(self):
         subprocess.run(['node',str(Path(__file__).with_name('replay_voice.mjs'))],check=True,timeout=20)
+    def test_new_task_service_replay(self):
+        subprocess.run(['node',str(Path(__file__).with_name('replay_voice_task.mjs'))],check=True,timeout=20)
 
 class OpusTests(unittest.TestCase):
     def test_header_delay_codec_pin(self):

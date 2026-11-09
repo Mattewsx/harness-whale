@@ -176,13 +176,27 @@ int main(void) {
     strcpy(a.voice_title, "整理蓝牙连接文档");
     strcpy(a.voice_text, "请把今天完成的修改整理成说明，先列出已经验证的功能，再"
                          "列出仍然需要实机测试的项目。\n暂时不要提交或发布。");
-    for (int i = 0; i <= VOICE_MIC_ERROR; i++) {
+    for (int i = 0; i <= VOICE_NO_TARGET; i++) {
         a.voice_phase = i;
         char name[40];
         snprintf(name, sizeof name, "r11-voice-%02d", i);
         whale_ui_draw(&a);
         save(name);
     }
+    /* Spoken new task from the home page: folder label, push-to-talk, result. */
+    a.voice_new = a.voice_held = a.voice_cap = a.voice_task_cap = true;
+    strcpy(a.voice_title, "新任务 · harness-whale");
+    strcpy(a.voice_text, "把登录页的 bug 修一下");
+    static const int task_phases[] = {VOICE_PREPARE, VOICE_RECORD, VOICE_ACTIONS, VOICE_SENT,
+                                      VOICE_NO_TARGET};
+    for (unsigned i = 0; i < sizeof task_phases / sizeof task_phases[0]; i++) {
+        a.voice_phase = task_phases[i];
+        char name[40];
+        snprintf(name, sizeof name, "voice-task-%02d", task_phases[i]);
+        whale_ui_draw(&a);
+        save(name);
+    }
+    a.voice_new = a.voice_held = false;
     a.view = LIST;
     a.count = a.total = 3;
     for (int i = 0; i < 3; i++) {
