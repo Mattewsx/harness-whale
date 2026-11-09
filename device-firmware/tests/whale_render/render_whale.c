@@ -196,7 +196,7 @@ int main(void) {
         whale_ui_draw(&a);
         save(name);
     }
-    a.voice_new = false;
+    a.voice_new = a.voice_cap = a.voice_task_cap = false;
     a.view = LIST;
     a.count = a.total = 3;
     for (int i = 0; i < 3; i++) {
@@ -331,6 +331,22 @@ int main(void) {
     a.count = 0;
     whale_ui_draw(&a);
     save("list-empty");
+    /* Voice new-task row above the first session (first window, voice bridge). */
+    a.voice_cap = true;
+    a.count = 3;
+    a.list_back = false;
+    a.selected = 0;
+    whale_ui_draw(&a);
+    save("list-new-row");
+    a.list_new = true;
+    whale_ui_draw(&a);
+    save("list-new-focus");
+    a.count = 0;
+    a.list_back = true;
+    whale_ui_draw(&a);
+    save("list-new-empty");
+    a.list_new = a.voice_cap = false;
+    a.list_back = false;
     a.count = 1;
     a.list_back = false;
     a.view = DESK;

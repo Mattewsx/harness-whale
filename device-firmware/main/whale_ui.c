@@ -504,14 +504,13 @@ void whale_ui_draw(const whale_app_t *a) {
         dressed(a, life[a->activity % 8], 22, y, 256);
         if (a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
-        static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_mic, ICON_settings};
-        static const char *const names[] = {"互动", "会话", "说任务", "设置"};
-        strip(icons, names, WHALE_DOCK_ITEMS, a->dock, -1, 0, true);
+        static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
+        static const char *const names[] = {"互动", "会话", "设置"};
+        strip(icons, names, 3, a->dock, -1, 0, true);
         if (a->global_unread) {
-            /* Badge beside the 会话 icon (second of four, 66 px apart). */
             snprintf(value, sizeof value, "%u", a->global_unread);
-            panel(menu_box, 97, 250, 29, 16, 0xeac58c, 8);
-            text_at(97, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
+            panel(menu_box, 130, 250, 29, 16, 0xeac58c, 8);
+            text_at(130, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
         }
     } else if (a->view == TASK_DETAIL || inline_reply) {
         int n = r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
@@ -876,13 +875,23 @@ void whale_ui_draw(const whale_app_t *a) {
         parent_icon(ICON_home, a->list_back);
         center(35, "会话", NAV, -1);
         pose_at(task_pose(r), 52, 54, 178);
-        int start = a->selected > 2 ? a->selected - 2 : 0;
+        /* Row -1 is "语音新任务", above the first session of the first window. */
+        int first = whale_list_has_new(a) ? -1 : 0;
+        int focus = a->list_new ? -1 : a->selected;
+        int start = focus - 2 > first ? focus - 2 : first;
         if (!a->count)
-            center(238, "还没有任务", MUT, PAPER);
-        for (int j = start; j < start + 3 && j < a->count; j++) {
+            center(first < 0 ? 278 : 238, "还没有任务", MUT, PAPER);
+        if (start < 0) {
+            int y = 201;
+            if (a->list_new && !a->list_back)
+                panel(status_box, 8, y, 218, 34, 0xd6e7da, 7);
+            icon_at(ICON_mic, 11, y + 7, TEAL);
+            text_at(38, y + 6, 180, 21, &lv_font_cn_14, "语音新任务", TEAL, -1, LV_TEXT_ALIGN_LEFT);
+        }
+        for (int j = start < 0 ? 0 : start; j < start + 3 && j < a->count; j++) {
             const whale_row_t *t = &a->rows[j];
             int y = 201 + 38 * (j - start);
-            bool selected = j == a->selected && !a->list_back;
+            bool selected = j == a->selected && !a->list_back && !a->list_new;
             if (selected)
                 panel(status_box, 8, y, 218, 34, 0xd6e7da, 7);
             list_state_icon(t, y);
@@ -900,6 +909,8 @@ void whale_ui_draw(const whale_app_t *a) {
                      (unsigned long)sec % 60);
             text_at(169, y + 8, 54, 19, &lv_font_cn_12, value, MUT, -1, LV_TEXT_ALIGN_RIGHT);
         }
+        if (start < 0)
+            start = 0; /* scroll bar covers sessions only */
         if (a->total > 3) {
             unsigned visible = a->count - start < 3 ? a->count - start : 3;
             int h = 108 * visible / a->total;

@@ -181,6 +181,8 @@ static void page(whale_page_t v) {
         seek_to_list = false;
     }
     a.back_focus = a.defer_question = a.locked_notice = false;
+    if (v != LIST && v != LIST_LOAD && v != LIST_FAILED)
+        a.list_new = false;
     if (v != REPLY_READ && v != REPLY_LOAD && v != REPLY_FAILED)
         a.read_pending = false;
     view_revision++;
@@ -236,7 +238,12 @@ static void voice_cancel(void) {
     a.voice_submitted = false;
     bool fresh = a.voice_new;
     a.voice_new = false;
-    page(fresh ? HOME : TASK_DETAIL);
+    page(fresh ? LIST : TASK_DETAIL);
+    if (fresh) {
+        /* Back on the row that started it. */
+        a.list_new = true;
+        a.list_back = false;
+    }
 }
 static void voice_prepare(void) {
     whale_audio_interrupt();
@@ -264,9 +271,9 @@ static void voice_prepare(void) {
     if (!whale_send(a.voice_new ? 0x48 : 0x40, b, sizeof b))
         voice_page(VOICE_DISCONNECTED);
 }
-/* "说任务" on the home dock: speak a new task, OK to start and OK to stop like
- * a voice reply. The selected session, if any, is only context for the
- * computer's choice of folder; nothing is sent to it. */
+/* "语音新任务" at the top of the session list: speak a new task, OK to start
+ * and OK to stop like a voice reply. The last highlighted session, if any, is
+ * only context for the computer's choice of folder; nothing is sent to it. */
 static void voice_task_start(void) {
     a.voice_new = true;
     a.voice_session = a.count ? a.rows[a.selected].session : 0;
@@ -393,6 +400,7 @@ static bool question_view(void) { return a.view >= LOADING && a.view <= UNSURE; 
 static void open_list(void) {
     bool from_detail = a.view != HOME;
     a.list_back = !a.count;
+    a.list_new = false;
     priority_list = false;
     seek_to_list = false;
     seek_session = 0;
@@ -880,13 +888,11 @@ static void key(uint32_t code) {
         if (hold)
             return;
         if (direction)
-            a.dock = (a.dock + direction + WHALE_DOCK_ITEMS) % WHALE_DOCK_ITEMS;
+            a.dock = (a.dock + direction + 3) % 3;
         else if (a.dock == 0)
             enter_companion();
         else if (a.dock == 1)
             open_list();
-        else if (a.dock == 2)
-            voice_task_start();
         else {
             a.menu_choice = 0;
             page(MANAGE);
@@ -1002,7 +1008,9 @@ static void key(uint32_t code) {
         case TASK_DETAIL:
             break;
         case LIST:
-            if (a.list_back || !a.count)
+            if (a.list_new && !a.list_back && whale_list_has_new(&a))
+                voice_task_start();
+            else if (a.list_back || !a.count)
                 page(HOME);
             else if (a.rows[a.selected].question)
                 open_task();
@@ -1122,8 +1130,24 @@ static void key(uint32_t code) {
         return;
     }
     if (a.view == LIST) {
-        if (a.list_back) {
+        bool has_new = whale_list_has_new(&a);
+        if (a.list_new && !has_new)
+            a.list_new = false;
+        if (a.list_new && !a.list_back) {
             if (d > 0 && a.count) {
+                a.list_new = false;
+                a.selected = 0;
+            } else if (d < 0) {
+                a.list_new = false;
+                a.list_back = true;
+            }
+            return;
+        }
+        if (a.list_back) {
+            if (d > 0 && has_new) {
+                a.list_back = false;
+                a.list_new = true;
+            } else if (d > 0 && a.count) {
                 a.list_back = false;
                 a.selected = 0;
             } else if (d < 0 && !request_snap && a.ready && a.cursor) {
@@ -1143,7 +1167,9 @@ static void key(uint32_t code) {
             previous_window = true;
             page(LIST_LOAD);
             snap(a.cursor >= 8 ? a.cursor - 8 : 0);
-        } else if (d == -1)
+        } else if (d == -1 && has_new)
+            a.list_new = true;
+        else if (d == -1)
             a.list_back = true;
     } else if (a.view == QUESTION) {
         if (a.defer_question) {

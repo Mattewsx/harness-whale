@@ -151,6 +151,12 @@ int main(void) {
         }
     }
     a.voice_new = false;
+    /* The list's new-task row fits the same pool. */
+    a.view = LIST;
+    a.list_new = true;
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.list_new = a.voice_cap = a.voice_task_cap = false;
     a.view = COMPANION;
     a.companion_at = a.now;
     for (unsigned action = 0; action <= 4; action++) {

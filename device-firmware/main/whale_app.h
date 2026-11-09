@@ -34,8 +34,6 @@ typedef enum {
     WARDROBE,
     DESK /* desk display: large clock with the whale, entered when idle */
 } whale_page_t;
-/* Home dock: 互动, 会话, 说任务 (spoken new task), 设置. */
-#define WHALE_DOCK_ITEMS 4
 typedef struct {
     whale_row_t rows[8];
     struct {
@@ -74,6 +72,8 @@ typedef struct {
     uint32_t title_session, title_run;
     char full_title[513];
     bool list_back;
+    /* Focus on the "语音新任务" row above the first session (first window only). */
+    bool list_new;
     uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
     bool back_focus, defer_question, locked_notice;
     uint8_t unlock_new; /* accessories just unlocked, shown once on the companion pages */
@@ -88,6 +88,10 @@ typedef struct {
 } whale_app_t;
 /* Accessory bits unlocked at a bond level (bit 1 daisy clip, bit 2 glasses). */
 uint8_t whale_unlocks_for(uint8_t bond);
+/* The voice new-task row sits above the first session of the first window. */
+static inline bool whale_list_has_new(const whale_app_t *app) {
+    return app->voice_cap && app->cursor == 0;
+}
 void whale_ui_init(void);
 void whale_ui_draw(const whale_app_t *app);
 #define HOME_REPLY_LINES 6

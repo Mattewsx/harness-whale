@@ -730,7 +730,7 @@ static void test_companion_and_global_cues(void) {
     assert(cue_count == 1);
     setup();
     page(HOME);
-    a.dock = 3;
+    a.dock = 2;
     key(BSP_BTN_OK);
     assert(a.view == MANAGE);
     key(BSP_BTN_OK);
@@ -864,7 +864,6 @@ static void test_settings_navigation(void) {
     setup();
     page(HOME);
     key(BSP_BTN_DOWN);
-    key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
     assert(a.view == MANAGE);
     key(BSP_BTN_DOWN);
@@ -876,7 +875,7 @@ static void test_settings_navigation(void) {
     key(BSP_BTN_DOWN);
     assert(a.back_focus);
     key(BSP_BTN_OK);
-    assert(a.view == HOME && a.dock == 3);
+    assert(a.view == HOME && a.dock == 2);
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
     assert(a.view == COMPANION);
@@ -1385,10 +1384,19 @@ static void voice_status(uint8_t code) {
     apply_message((whale_msg_t){0x41, b, sizeof b});
 }
 static void home_voice(void) {
+    /* Home -> 会话 list (first session focused) -> ↑ to the new-task row -> OK. */
     page(HOME);
     a.dock = 1;
-    key(BSP_BTN_DOWN); /* 会话 -> 说任务 */
-    assert(a.dock == 2);
+    a.cursor = 0;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST || a.view == LIST_LOAD);
+    page(LIST);
+    a.list_back = false;
+    a.selected = 1;
+    key(BSP_BTN_UP);
+    assert(!a.list_new && a.selected == 0);
+    key(BSP_BTN_UP);
+    assert(a.list_new && !a.list_back);
     key(BSP_BTN_OK);
 }
 static void test_voice_new_task(void) {
@@ -1401,7 +1409,7 @@ static void test_voice_new_task(void) {
     home_voice();
     assert(a.view == VOICE && a.voice_phase == VOICE_UNSUPPORTED && a.voice_new && !sends);
     key(BSP_BTN_UP);
-    assert(a.view == HOME && !a.voice_new && a.dock == 2);
+    assert(a.view == LIST && a.list_new && !a.voice_new);
     /* New bridge: the firmware echoes bit 16 only together with voice. */
     hello(63 | 512 | WHALE_CAP_VOICE_TASK, 20, 20);
     assert(a.voice_task_cap && (w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
@@ -1413,7 +1421,7 @@ static void test_voice_new_task(void) {
     a.selected = 1;
     home_voice();
     assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sent_type == 0x48);
-    assert(sent_length == 28 && w32(sent_bytes + 8) == 11); /* context, not target */
+    assert(sent_length == 28 && w32(sent_bytes + 8) == 10); /* last highlighted, context only */
     assert(!strcmp(a.voice_title, "新任务"));
     /* The folder label arrives before recording; foreign identities are ignored. */
     uint8_t label[24 + 4];
@@ -1461,19 +1469,19 @@ static void test_voice_new_task(void) {
     voice_status(3);
     assert(a.voice_phase == VOICE_SENT);
     key(BSP_BTN_OK);
-    assert(a.view == HOME && !a.voice_new && a.dock == 2 && a.rows[0].question == 7);
+    assert(a.view == LIST && a.list_new && !a.voice_new && a.rows[0].question == 7);
     /* No folder on the computer; the status is ignored outside a new task. */
     home_voice();
     voice_status(14);
     assert(a.voice_phase == VOICE_NO_TARGET);
     key(BSP_BTN_OK);
-    assert(a.view == HOME);
+    assert(a.view == LIST && a.list_new);
     a.voice_new = false;
     a.voice_phase = VOICE_PREPARE;
     page(VOICE);
     voice_status(14);
     assert(a.voice_phase == VOICE_PREPARE);
-    /* Holding OK on home no longer starts anything. */
+    /* Holding OK on home starts nothing; the dock keeps three entries. */
     setup();
     a.voice_cap = a.voice_task_cap = true;
     page(HOME);
@@ -1481,13 +1489,47 @@ static void test_voice_new_task(void) {
     key_event(BSP_BTN_OK, BSP_BTN_PRESS);
     key_event(BSP_BTN_OK, BSP_BTN_LONG);
     assert(a.view == HOME && !sends);
-    /* The dock wraps over four entries. */
     a.dock = 0;
     key(BSP_BTN_UP);
-    assert(a.dock == 3);
+    assert(a.dock == 2);
+    /* List focus order: home ‹ / new task / sessions, both ways. */
+    page(LIST);
+    a.selected = 0;
+    a.list_back = true;
     key(BSP_BTN_DOWN);
-    assert(a.dock == 0);
-    puts("Voice new task: home dock entry, folder label, retake, compatibility PASS");
+    assert(a.list_new && !a.list_back);
+    key(BSP_BTN_DOWN);
+    assert(!a.list_new && a.selected == 0);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.list_back && !a.list_new);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME);
+    /* No row without voice, nor beyond the first window. */
+    page(LIST);
+    a.list_back = false;
+    a.voice_cap = false;
+    key(BSP_BTN_UP);
+    assert(a.list_back && !a.list_new);
+    a.voice_cap = true;
+    a.cursor = 8;
+    a.ready = false; /* no window reload in this check */
+    page(LIST);
+    a.list_back = false;
+    a.selected = 0;
+    key(BSP_BTN_UP);
+    assert(!a.list_new);
+    /* Empty list: ↓ from the home arrow reaches the new-task row. */
+    a.cursor = 0;
+    a.count = 0;
+    page(LIST);
+    a.list_back = true;
+    key(BSP_BTN_DOWN);
+    assert(a.list_new);
+    a.ready = true;
+    key(BSP_BTN_OK);
+    assert(a.view == VOICE && a.voice_new && sent_type == 0x48 && w32(sent_bytes + 8) == 0);
+    puts("Voice new task: list entry, folder label, retake, compatibility PASS");
 }
 int main(void) {
     test_voice_new_task();
