@@ -1202,13 +1202,14 @@ static void test_bond_daily_cap(void) {
     a.bond = 97;
     for (int i = 0; i < 4; i++)
         interact();
-    assert(a.bond == WHALE_BOND_MAX && a.bond_today == 2 && a.bond_day == today + 3);
+    /* At the top, taps still count as the day's activity. */
+    assert(a.bond == WHALE_BOND_MAX && a.bond_today == 4 && a.bond_day == today + 3);
     /* The save carries bond, the daily count and the day. */
     room_unsaved = true;
     companion_tick();
     last_cue_capture = NULL;
     assert(!room_unsaved && sent.kind == WHALE_CMD_ROOM_SAVE && sent.mode == WHALE_BOND_MAX);
-    assert((uint8_t)(sent.generation >> 6) == 2 && (sent.generation >> 14) == today + 3);
+    assert((uint8_t)(sent.generation >> 6) == 4 && (sent.generation >> 14) == today + 3);
 }
 static void test_wardrobe_screen_off(void) {
     const uint8_t states[] = {5, 2, 8}; /* finished, thinking, pending question */
@@ -1295,6 +1296,49 @@ static void test_bond_work_and_unlocks(void) {
     assert(a.unlocked == 6 && (a.unlock_new & 4));
     puts("Bond from work, daily caps and accessory unlocks PASS");
 }
+static void test_bond_cooling(void) {
+    setup();
+    int64_t day0 = 1793750400LL;
+    uint32_t today = (uint32_t)(day0 / 86400);
+    a.bond = 30;
+    a.unlocked = 0;
+    wall_clock(a.epoch, day0 + 3600, 0);
+    assert(a.bond_day == today);
+    /* An active day keeps bond; the clock sync alone is not activity. */
+    interact();
+    wall_clock(a.epoch, day0 + 86400 + 3600, 0);
+    assert(a.bond == 31 && a.bond_day == today + 1 && !a.bond_today);
+    /* A synced but idle day costs one at the next day. */
+    wall_clock(a.epoch, day0 + 2 * 86400 + 3600, 0);
+    assert(a.bond == 30);
+    /* Work alone counts as activity. */
+    a.global_cap = true;
+    cue_event(1, 10, 30, 3, 3);
+    assert(a.bond == 32);
+    wall_clock(a.epoch, day0 + 3 * 86400 + 3600, 0);
+    assert(a.bond == 32);
+    /* Three days away (the last synced day idle, two unseen): minus three. */
+    wall_clock(a.epoch, day0 + 6 * 86400 + 3600, 0);
+    assert(a.bond == 29);
+    /* Never below the best unlocked accessory's threshold. */
+    a.unlocked = 2;
+    a.bond = 22;
+    wall_clock(a.epoch, day0 + 16 * 86400 + 3600, 0);
+    assert(a.bond == WHALE_UNLOCK_FLOWER && a.unlocked == 2);
+    a.unlocked = 0;
+    a.bond = 3;
+    wall_clock(a.epoch, day0 + 30 * 86400 + 3600, 0);
+    assert(a.bond == 0);
+    /* Gains made while the clock was lost cover one day of the gap. */
+    a.bond = 40;
+    interact();
+    *whale_sleep_clock() = (whale_clock_t){0};
+    interact();
+    assert(a.bond_undated == 1);
+    wall_clock(a.epoch, day0 + 33 * 86400 + 3600, 0);
+    assert(a.bond == 41); /* 42 minus two unseen days, one of them covered */
+    puts("Bond cooling on idle days PASS");
+}
 static void test_voice_retake(void) {
     setup();
     a.voice_cap = true;
@@ -1336,6 +1380,7 @@ int main(void) {
     test_power();
     test_bond_daily_cap();
     test_bond_work_and_unlocks();
+    test_bond_cooling();
     test_voice_retake();
     test_wardrobe_screen_off();
     test_large_frame_negotiation();

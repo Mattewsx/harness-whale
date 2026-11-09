@@ -454,15 +454,35 @@ static void companion_work(uint32_t session, bool attention) {
         open_list();
     }
 }
+/* Bond cools by one for each local day with no interaction and no work,
+ * never below the threshold of the best accessory already unlocked. */
+static void bond_cool(uint32_t day) {
+    uint32_t idle = day - a.bond_day - 1;
+    if (a.bond_today == a.bond_undated)
+        idle++; /* nothing credited on the previous day itself */
+    if (a.bond_undated && idle)
+        idle--; /* undated activity happened on some day of the gap */
+    uint8_t floor = a.unlocked & 4 ? WHALE_UNLOCK_GLASSES : a.unlocked & 2 ? WHALE_UNLOCK_FLOWER : 0;
+    uint8_t drop = a.bond > floor ? a.bond - floor : 0;
+    if (idle < drop)
+        drop = (uint8_t)idle;
+    if (drop) {
+        a.bond -= drop;
+        dirty = true;
+    }
+}
 static bool sync_bond_day(void) {
     uint32_t day;
     if (!whale_clock_day(whale_sleep_clock(), rtc_seconds(), &day))
         return false;
     if (day > a.bond_day) {
         /* On first sync, all gains belong to this day. On later advances,
-         * carry only gains earned since the clock lost its date. */
-        if (a.bond_day)
+         * cool off idle days, then carry only gains earned since the clock
+         * lost its date. */
+        if (a.bond_day) {
+            bond_cool(day);
             a.bond_today = a.bond_undated;
+        }
         a.bond_day = day;
         room_unsaved = true;
     }
@@ -489,11 +509,11 @@ static void bond_gain(uint8_t points) {
     unsigned room = WHALE_BOND_DAILY_MAX > a.bond_today ? WHALE_BOND_DAILY_MAX - a.bond_today : 0;
     if (points > room)
         points = room;
-    if (points > WHALE_BOND_MAX - a.bond)
-        points = WHALE_BOND_MAX - a.bond;
     if (!points)
         return;
-    a.bond += points;
+    /* bond_today records the day's activity even when bond is already full. */
+    unsigned headroom = WHALE_BOND_MAX - a.bond;
+    a.bond += points < headroom ? points : headroom;
     a.bond_today += points;
     if (!dated)
         a.bond_undated += points;
@@ -512,9 +532,9 @@ static void bond_tap(void) {
     }
     if (bond_taps >= WHALE_BOND_TAP_MAX)
         return;
-    uint8_t before = a.bond;
+    uint8_t before = a.bond_today;
     bond_gain(1);
-    bond_taps += a.bond != before;
+    bond_taps += a.bond_today != before;
 }
 static void companion_tick(void) {
     if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
