@@ -55,6 +55,10 @@ typedef enum {
 #endif
 /* A global summary older than this cannot prove that every session is idle. */
 #define WHALE_SUMMARY_FRESH_MS 30000u
+/* Pending queue: the result page shows this long before the next question. */
+#define WHALE_QUEUE_NEXT_MS 1500u
+/* The home page pops a new question only after the user left it alone this long. */
+#define WHALE_QUEUE_IDLE_MS 10000u
 /* The whale's mood steers the idle animation for this long. */
 #define WHALE_MOOD_MS 300000u
 
@@ -63,12 +67,15 @@ typedef enum {
     WHALE_GO_HOME,      /* task home page */
     WHALE_GO_DESK,      /* desk display */
     WHALE_GO_ATTENTION, /* list opened at the highest-priority items */
-    WHALE_GO_FOCUS      /* the session that just started work */
+    WHALE_GO_FOCUS,     /* the session that just started work */
+    WHALE_GO_QUEUE      /* the oldest question the device can answer, else the list */
 } whale_go_t;
 
 typedef struct {
     whale_page_t view;
     uint32_t now, last_input;
+    uint32_t page_at; /* when the current page opened */
+    bool answered;    /* result page for an answer the computer accepted */
     bool linked, ready;
     /* Global summary (0x50) from a bridge with capability bit 11. */
     bool global_cap, global_valid;
@@ -101,6 +108,13 @@ whale_go_t whale_director_summary(const whale_director_in_t *in);
 whale_go_t whale_director_trigger(const whale_director_in_t *in, uint8_t trigger);
 /* A key press. The desk display always yields to the user. */
 whale_go_t whale_director_key(const whale_director_in_t *in);
+/* Pending queue. Questions wait in arrival order on the computer; the device
+ * shows one at a time. The confirm key on an accepted result opens the next. */
+bool whale_director_more_waiting(const whale_director_in_t *in);
+/* Periodic: an accepted result moves on to the next question by itself. */
+whale_go_t whale_director_queue(const whale_director_in_t *in);
+/* Confirm on the result page: next question if one waits, else stay. */
+whale_go_t whale_director_result_key(const whale_director_in_t *in);
 /* Screen and sleep wishes passed on to the power policy. */
 whale_director_screen_t whale_director_screen(const whale_director_in_t *in);
 

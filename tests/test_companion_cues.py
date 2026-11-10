@@ -42,6 +42,24 @@ class CompanionCues(unittest.TestCase):
         self.l.receive(0x52,pack('QI',self.m.epoch,sid));self.assertIn(sid,self.l.rows)
         self.m.resolve('q',0,1)
         self.assertEqual([b for k,b in self.l.changes() if k==0x51][0][-2:],bytes((0,0)))
+    def test_pending_queue_is_first_in_first_out(self):
+        # Questions arrive in sessions 7, 2, 9: the priority snapshot lists them
+        # first in that order, whatever the session order, and moves on as each
+        # one is answered.
+        self.l.attention=True;self.l.changes()
+        for index in (7,2,9):
+            self.update(index,state='question')
+            self.m.question(dict(sessionId=f's{index}',runId='run',requestId=f'q{index}',question='Pick',options=['A','B']),('127.0.0.1',1))
+        self.update(4,state='thinking')
+        def order():
+            rows=[b for k,b in self.l.snapshot(0) if k==0x12]
+            return [struct.unpack_from('<I',b,13)[0] for b in rows]
+        ids=lambda *xs:[self.m.keys[f's{i}'] for i in xs]
+        self.assertEqual(order()[:3],ids(7,2,9))
+        self.m.resolve('q7',0,0);self.update(7,state='thinking')
+        self.assertEqual(order()[:2],ids(2,9))
+        summary=[b for k,b in self.l.changes() if k==0x50][-1]
+        self.assertEqual(struct.unpack('<QIHHHHIB',summary)[4],2)
     def test_new_messages_fragment_roundtrip(self):
         self.l.changes();self.update(10,state='error');rx=Receiver()
         for serial,(kind,body) in enumerate(self.l.changes(),1):

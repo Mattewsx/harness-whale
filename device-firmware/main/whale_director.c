@@ -44,23 +44,52 @@ whale_go_t whale_director_offline(const whale_director_in_t *in) {
     return WHALE_GO_STAY;
 }
 
-/* Work interrupts only the desk display; every other page belongs to the user. */
+/* Work interrupts only the desk display and a home page left alone; every
+ * other page belongs to the user, who still sees the list badge. */
 whale_go_t whale_director_summary(const whale_director_in_t *in) {
     if (in->view != DESK || !in->global_valid)
         return WHALE_GO_STAY;
-    if (in->waiting || in->unread)
+    if (in->waiting)
+        return WHALE_GO_QUEUE;
+    if (in->unread)
         return WHALE_GO_ATTENTION;
     return in->running ? WHALE_GO_FOCUS : WHALE_GO_STAY;
 }
 
 whale_go_t whale_director_trigger(const whale_director_in_t *in, uint8_t trigger) {
-    if (in->view != DESK || !trigger)
+    if (!trigger)
         return WHALE_GO_STAY;
-    return trigger == 5 ? WHALE_GO_FOCUS : WHALE_GO_ATTENTION;
+    if (in->view == DESK)
+        return trigger == 1 ? WHALE_GO_QUEUE : trigger == 5 ? WHALE_GO_FOCUS : WHALE_GO_ATTENTION;
+    /* A new question pops up on a quiet home page, never over voice or a
+     * companion reaction, and never while the user is still using it. */
+    if (trigger == 1 && in->view == HOME && in->now - in->last_input >= WHALE_QUEUE_IDLE_MS &&
+        !in->voice_busy && !in->companion_action)
+        return WHALE_GO_QUEUE;
+    return WHALE_GO_STAY;
 }
 
 whale_go_t whale_director_key(const whale_director_in_t *in) {
     return in->view == DESK ? WHALE_GO_HOME : WHALE_GO_STAY;
+}
+
+/* Another question waits, by a summary that arrived after the answer (an
+ * older one may still count the question just answered). */
+bool whale_director_more_waiting(const whale_director_in_t *in) {
+    return in->view == RESULT && in->answered && in->linked && in->ready && in->global_cap &&
+           in->global_valid && in->waiting && (int32_t)(in->global_at - in->page_at) >= 0 &&
+           in->now - in->global_at < WHALE_SUMMARY_FRESH_MS;
+}
+
+whale_go_t whale_director_queue(const whale_director_in_t *in) {
+    if (whale_director_more_waiting(in) && in->now - in->page_at >= WHALE_QUEUE_NEXT_MS &&
+        !in->voice_busy)
+        return WHALE_GO_QUEUE;
+    return WHALE_GO_STAY;
+}
+
+whale_go_t whale_director_result_key(const whale_director_in_t *in) {
+    return whale_director_more_waiting(in) ? WHALE_GO_QUEUE : WHALE_GO_STAY;
 }
 
 const uint8_t whale_activity_pool[WHALE_ACTIVITY_SETS][WHALE_ACTIVITY_CHOICES] = {

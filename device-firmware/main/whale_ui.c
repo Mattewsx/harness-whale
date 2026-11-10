@@ -1225,6 +1225,14 @@ void whale_ui_draw(const whale_app_t *a) {
                       : a->result == 2 ? "问题已撤回"
                                        : "答案已过期";
             n = a->result <= 1 ? 12 : 14;
+            /* Pending queue: the next question opens by itself. Count only a
+             * summary newer than the answer, which no longer includes it. */
+            if (a->result == 0 && !a->unsupported && a->global_valid && a->global_waiting &&
+                (int32_t)(a->global_at - a->page_at) >= 0) {
+                snprintf(value, sizeof value, "还有 %u 个待处理，接着打开",
+                         (unsigned)a->global_waiting);
+                detail = value;
+            }
             break;
         default:
             break;

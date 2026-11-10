@@ -724,16 +724,21 @@ class Link:
             def priority(sid):
                 row = m.row(sid, True, self.question_read, self.rich)
                 state, flags = row[8], row[10]
-                question = m.needs_answer(sid, state, int.from_bytes(row[19:23], 'little'))
+                qid = int.from_bytes(row[19:23], 'little')
+                question = m.needs_answer(sid, state, qid)
+                # Pending queue: questions the device can answer come first, oldest
+                # first (question IDs are allocated in arrival order), so the device
+                # can open row 0 and move on to the next one after each answer.
+                fifo = qid if qid else 1 << 32
                 if flags & 32 or (question and not self.question_read):
-                    return 0
+                    return (0, fifo)
                 if flags & 16:
-                    return 1
+                    return (1, 0)
                 if flags & (8 | 64):
-                    return 2
+                    return (2, 0)
                 if question:
-                    return 3
-                return 4 if state in (2, 3, 4) else 5
+                    return (3, fifo)
+                return (4 if state in (2, 3, 4) else 5, 0)
             keys.sort(key=priority)  # stable within a priority; no heartbeat jitter
         elif not refresh_order:
             keys = [sid for sid in self.order if sid in m.sessions] + [sid for sid in keys if sid not in self.order]

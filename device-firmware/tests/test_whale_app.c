@@ -1929,6 +1929,100 @@ static void test_rich_questions(void) {
     assert(a.meta && a.question_mode == WHALE_MODE_SINGLE);
     puts("Approval and multi-select questions PASS");
 }
+/* Deliver a two-row priority snapshot; row 0 carries question qid (0: none). */
+static void queue_snapshot(uint32_t qid) {
+    memset(&stage, 0, sizeof stage);
+    stage.active = true;
+    stage.epoch = a.epoch;
+    stage.snap = stage.count = stage.taken = stage.total = 2;
+    stage.next = UINT32_MAX;
+    stage.rows[0] = (whale_row_t){.session = 11, .run = 21, .state = 8, .question = qid};
+    stage.rows[1] = (whale_row_t){.session = 10, .run = 20, .state = 2};
+    uint8_t end[17] = {0};
+    put64(end, a.epoch);
+    put32(end + 8, 2);
+    end[12] = 2;
+    apply_message((whale_msg_t){0x13, end, sizeof end});
+}
+static void test_pending_queue(void) {
+    /* After an accepted answer, the next waiting question opens by itself. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    answer_accepted();
+    uint32_t answered_at = a.now;
+    summary(0, 2, 0); /* stale order: arrives with the result, still counts it */
+    a.global_at = answered_at - 1;
+    a.now += WHALE_QUEUE_NEXT_MS;
+    companion_tick();
+    assert(a.view == RESULT);
+    a.now = answered_at + 200;
+    summary(0, 1, 0); /* newer summary: one more question waits */
+    a.now = answered_at + WHALE_QUEUE_NEXT_MS - 1;
+    companion_tick();
+    assert(a.view == RESULT); /* the result shows first */
+    a.now++;
+    companion_tick();
+    assert(a.view == LIST_LOAD && queue_next && sent_type == 0x10 && sent_bytes[13] == 2);
+    queue_snapshot(77);
+    assert(a.view == LOADING && sent_type == 0x24 && a.selected == 0 &&
+           w32(a.identity + 8) == 11 && w32(a.identity + 16) == 77 && !queue_next);
+
+    /* Confirm skips the wait; with nothing answerable left, land on the list. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    answer_accepted();
+    a.now += 100;
+    summary(0, 1, 0);
+    last_input = a.now;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST_LOAD && queue_next);
+    queue_snapshot(0);
+    assert(a.view == LIST && !queue_next);
+
+    /* Nothing more waiting: confirm goes back to the task as before. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    answer_accepted();
+    a.now += 100;
+    summary(0, 0, 0);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL);
+    page(RESULT);
+    a.now += WHALE_QUEUE_NEXT_MS;
+    companion_tick();
+    assert(a.view == RESULT); /* nothing waits: the result stays until confirmed */
+
+    /* A question pops up on a home page left alone, but not on one in use. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    last_input = a.now;
+    a.now += WHALE_QUEUE_IDLE_MS - 1;
+    cue_event(1, 11, 5, 1, 1);
+    assert(a.view == HOME);
+    a.now++;
+    cue_event(2, 11, 6, 1, 1);
+    assert(a.view == LIST_LOAD && queue_next && queue_from == HOME);
+    queue_snapshot(0); /* only questions for the computer: stay home */
+    assert(a.view == HOME && !queue_next);
+    /* Recording and the list in use are never interrupted. */
+    a.now += WHALE_QUEUE_IDLE_MS;
+    fake_voice_busy = true;
+    cue_event(4, 11, 8, 1, 1);
+    assert(a.view == HOME);
+    fake_voice_busy = false;
+    page(LIST);
+    cue_event(5, 11, 9, 1, 1);
+    assert(a.view == LIST && !queue_next);
+    /* The desk display opens the queue too. */
+    page(DESK);
+    cue_event(6, 11, 10, 1, 1);
+    assert(a.view == LIST_LOAD && queue_next && queue_from == DESK);
+    queue_snapshot(0);
+    assert(a.view == LIST);
+    puts("Pending queue: next question after an answer, quiet home pop-up, fallbacks PASS");
+}
+
 /* Seeded random frames, keys, links and time through the whole application.
  * Built with ASan/UBSan in validate.sh; it looks for crashes, out-of-range
  * state and broken screen-director invariants rather than exact behavior.
@@ -1942,7 +2036,9 @@ static uint32_t app_random(void) {
 }
 static void app_fuzz_check(uint64_t seed, unsigned step, unsigned action) {
     bool ok = a.view <= STANDBY && a.count <= 8 && (!a.count || a.selected < a.count) &&
-              a.scroll >= 0 && a.options <= 3 && a.focus <= 8;
+              a.scroll >= 0 && a.options <= 3 && a.focus <= 8 &&
+              /* The queue only waits on its own priority snapshot. */
+              (!queue_next || a.view == LIST_LOAD || a.view == LIST_FAILED);
     /* The desk display never hides work that needs the user. */
     if (ok && a.view == DESK && a.linked && a.ready && a.global_cap && a.global_valid &&
         a.now - a.global_at < WHALE_SUMMARY_FRESH_MS)
@@ -2070,6 +2166,7 @@ int main(void) {
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();
+    test_pending_queue();
     test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");

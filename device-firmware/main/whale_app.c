@@ -31,6 +31,10 @@ static uint32_t disconnected_at, seek_session, title_requested_at;
 static bool disconnect_pending;
 static bool rich_questions; /* bridge negotiated WHALE_CAP_RICH_QUESTIONS */
 static bool seek_to_list, priority_list;
+/* Pending queue: the priority snapshot in flight should open its oldest
+ * answerable question; queue_from is the page that asked for it. */
+static bool queue_next;
+static whale_page_t queue_from;
 static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
 #define WHALE_CMD_SLEEP 7
@@ -188,6 +192,7 @@ static void page(whale_page_t v) {
     if (v != a.view && !(a.view == HOME && v == COMPANION && !a.invitation_settling))
         invitation_dismiss();
     if (v != LIST_LOAD && v != LIST_FAILED) {
+        queue_next = false;
         previous_window = false;
         seek_session = 0;
         seek_to_list = false;
@@ -457,6 +462,8 @@ static whale_director_in_t director_in(void) {
         .view = a.view,
         .now = a.now,
         .last_input = last_input,
+        .page_at = a.page_at,
+        .answered = a.view == RESULT && a.result == 0 && !a.unsupported,
         .linked = a.linked,
         .ready = a.ready,
         .global_cap = a.global_cap,
@@ -483,7 +490,12 @@ static void enter_desk(void) {
 /* The director sent the desk display back to work: open the task pages.
  * WHALE_GO_ATTENTION opens the list at the highest-priority items,
  * WHALE_GO_FOCUS the session that just started. */
+static void open_queue(void);
 static void companion_work(uint32_t session, whale_go_t go) {
+    if (go == WHALE_GO_QUEUE) {
+        open_queue();
+        return;
+    }
     if (go != WHALE_GO_ATTENTION && go != WHALE_GO_FOCUS)
         return;
     if (go == WHALE_GO_ATTENTION) {
@@ -519,6 +531,29 @@ static void companion_work(uint32_t session, whale_go_t go) {
         seek_session = 0;
         open_list();
     }
+}
+/* Pending queue: open the oldest question the device can answer. The bridge
+ * sorts waiting questions first, in arrival order; the snapshot handler opens
+ * row 0 when it carries one. Otherwise the desk display and the result page
+ * fall back to the list, and a home page that was left alone stays home. */
+static void open_queue(void) {
+    whale_page_t from = a.view;
+    if (!a.ready || !a.linked || !a.attention_cap) {
+        if (from == DESK) {
+            a.selected = 0;
+            page(LIST);
+        } else if (from == RESULT)
+            page(TASK_DETAIL);
+        return;
+    }
+    seek_session = 0;
+    seek_to_list = false;
+    a.list_back = false;
+    priority_list = true;
+    page(LIST_LOAD);
+    queue_next = true;
+    queue_from = from;
+    snap(0);
 }
 /* Bond cools by one for each local day with no interaction and no work,
  * never below the threshold of the best accessory already unlocked. */
@@ -741,6 +776,8 @@ static void companion_tick(void) {
         page(HOME);
         break;
     default:
+        if (whale_director_queue(&in) == WHALE_GO_QUEUE)
+            open_queue();
         break;
     }
     if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
@@ -1267,7 +1304,10 @@ static void key(uint32_t code) {
             page(MANAGE);
             break;
         case RESULT:
-            page(TASK_DETAIL);
+            if (whale_director_result_key(&in) == WHALE_GO_QUEUE)
+                open_queue();
+            else
+                page(TASK_DETAIL);
             break;
         default:
             break;
@@ -1594,6 +1634,14 @@ static void apply_message(whale_msg_t msg) {
         }
         if (new_epoch && (a.view == REPLY_READ || a.view == REPLY_LOAD || a.view == REPLY_FAILED))
             page(LIST);
+        if (queue_next && a.view == LIST_LOAD) {
+            queue_next = false;
+            if (a.count && a.rows[0].question) {
+                a.selected = 0;
+                open_task();
+            } else if (queue_from == HOME)
+                page(HOME);
+        }
         if (a.view == LIST_LOAD || a.view == LIST_FAILED)
             page(LIST);
         if (new_epoch && question_view()) {
@@ -2245,7 +2293,8 @@ void app_main(void) {
         if ((stage.active || request_snap) && (int32_t)(a.now - stage.deadline) >= 0 && a.linked) {
             if (a.view == LIST_LOAD) {
                 stage.active = request_snap = false;
-                page(LIST_FAILED);
+                /* A home page that was left alone does not turn into an error. */
+                page(queue_next && queue_from == HOME ? HOME : LIST_FAILED);
             } else
                 snap(requested_cursor);
         }

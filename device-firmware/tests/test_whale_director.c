@@ -88,19 +88,21 @@ static void test_work_interrupts_only_the_desk(void) {
     assert(whale_director_summary(&in) == WHALE_GO_FOCUS);
     in.unread = 1;
     assert(whale_director_summary(&in) == WHALE_GO_ATTENTION);
+    in.waiting = 1; /* a waiting question opens the queue */
+    assert(whale_director_summary(&in) == WHALE_GO_QUEUE);
     in.unread = 0;
-    in.waiting = 1;
-    assert(whale_director_summary(&in) == WHALE_GO_ATTENTION);
+    assert(whale_director_summary(&in) == WHALE_GO_QUEUE);
     in.global_valid = false;
     assert(whale_director_summary(&in) == WHALE_GO_STAY);
     in = base();
     in.view = DESK;
     assert(whale_director_trigger(&in, 0) == WHALE_GO_STAY);
-    for (uint8_t t = 1; t <= 4; t++)
+    assert(whale_director_trigger(&in, 1) == WHALE_GO_QUEUE);
+    for (uint8_t t = 2; t <= 4; t++)
         assert(whale_director_trigger(&in, t) == WHALE_GO_ATTENTION);
     assert(whale_director_trigger(&in, 5) == WHALE_GO_FOCUS);
     for (int v = TASK_DETAIL; v <= STANDBY; v++) {
-        if (v == DESK)
+        if (v == DESK || v == HOME)
             continue;
         in = base();
         in.view = (whale_page_t)v;
@@ -113,6 +115,68 @@ static void test_work_interrupts_only_the_desk(void) {
     in = base();
     in.view = DESK;
     assert(whale_director_key(&in) == WHALE_GO_HOME);
+}
+
+static whale_director_in_t answered(void) {
+    whale_director_in_t in = base();
+    in.view = RESULT;
+    in.answered = true;
+    in.page_at = in.now - WHALE_QUEUE_NEXT_MS;
+    in.global_at = in.page_at + 200; /* summary after the answer */
+    in.waiting = 2;
+    in.last_input = in.page_at;
+    return in;
+}
+
+static void test_queue(void) {
+    /* A new question pops up on a home page left alone, not on one in use. */
+    whale_director_in_t in = base();
+    in.last_input = in.now - WHALE_QUEUE_IDLE_MS;
+    assert(whale_director_trigger(&in, 1) == WHALE_GO_QUEUE);
+    for (uint8_t t = 2; t <= 5; t++)
+        assert(whale_director_trigger(&in, t) == WHALE_GO_STAY);
+    in.last_input++;
+    assert(whale_director_trigger(&in, 1) == WHALE_GO_STAY);
+    in.last_input--;
+    in.voice_busy = true;
+    assert(whale_director_trigger(&in, 1) == WHALE_GO_STAY);
+    in.voice_busy = false;
+    in.companion_action = true;
+    assert(whale_director_trigger(&in, 1) == WHALE_GO_STAY);
+
+    /* After an accepted answer, move on to the next question by itself. */
+    in = answered();
+    assert(whale_director_more_waiting(&in));
+    assert(whale_director_queue(&in) == WHALE_GO_QUEUE);
+    assert(whale_director_result_key(&in) == WHALE_GO_QUEUE);
+    in.page_at++; /* the result shows for WHALE_QUEUE_NEXT_MS first */
+    in.global_at++;
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    assert(whale_director_result_key(&in) == WHALE_GO_QUEUE); /* confirm skips the wait */
+    in = answered();
+    in.global_at = in.page_at - 1; /* an older summary may still count this answer */
+    assert(!whale_director_more_waiting(&in));
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    assert(whale_director_result_key(&in) == WHALE_GO_STAY);
+    in = answered();
+    in.waiting = 0;
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    in = answered();
+    in.answered = false; /* withdrawn, expired or handled on the computer */
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    in = answered();
+    in.voice_busy = true;
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    in = answered();
+    in.linked = false;
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    in = answered();
+    in.global_at = in.now - WHALE_SUMMARY_FRESH_MS;
+    in.page_at = in.global_at - 1;
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
+    in = answered();
+    in.view = QUESTION;
+    assert(whale_director_queue(&in) == WHALE_GO_STAY);
 }
 
 static void test_offline_and_screen(void) {
@@ -263,6 +327,12 @@ static void carry_out(whale_director_in_t *in, whale_go_t go) {
     case WHALE_GO_FOCUS:
         in->view = below(2) ? TASK_DETAIL : LIST_LOAD;
         break;
+    case WHALE_GO_QUEUE:
+        /* Oldest answerable question, or the list, or home when none. */
+        in->view = below(3) == 0 ? QUESTION : below(2) ? LIST : HOME;
+        in->answered = false;
+        in->page_at = in->now;
+        break;
     default:
         break;
     }
@@ -283,6 +353,20 @@ static void loop_pass(whale_director_in_t *in) {
         CHECK(!before.voice_busy, "desk display interrupted voice", &before);
         CHECK(!before.companion_action, "desk display interrupted a companion reaction",
               &before);
+    }
+    if (desk == WHALE_GO_STAY) {
+        whale_go_t next = whale_director_queue(in);
+        if (next == WHALE_GO_QUEUE) {
+            CHECK(before.view == RESULT && before.answered,
+                  "the queue moved on from a page that is not an accepted answer", &before);
+            CHECK(before.now - before.page_at >= WHALE_QUEUE_NEXT_MS,
+                  "the queue hid the result before it was shown", &before);
+            CHECK(!before.voice_busy, "the queue interrupted voice", &before);
+            CHECK(before.waiting && (int32_t)(before.global_at - before.page_at) >= 0,
+                  "the queue moved on without a newer summary showing more questions",
+                  &before);
+        }
+        desk = next;
     }
     carry_out(in, desk);
     /* No flapping: a page the director just chose is stable on the next pass. */
@@ -342,6 +426,20 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
             break;
         }
         case EV_KEY: {
+            if (in.view == RESULT && below(2)) {
+                /* Confirm on the result page. */
+                whale_go_t next = whale_director_result_key(&in);
+                CHECK(next == WHALE_GO_STAY || (in.answered && in.waiting),
+                      "confirm opened the queue with nothing waiting", &in);
+                in.last_input = in.now;
+                if (next == WHALE_GO_QUEUE)
+                    carry_out(&in, next);
+                else {
+                    in.view = TASK_DETAIL;
+                    in.page_at = in.now;
+                }
+                break;
+            }
             whale_go_t go = whale_director_key(&in);
             CHECK(go == (in.view == DESK ? WHALE_GO_HOME : WHALE_GO_STAY),
                   "a key press did not reach the user's page", &in);
@@ -355,6 +453,8 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
             if (in.view != DESK) {
                 in.view = pages[arg % (sizeof pages / sizeof *pages)];
                 in.last_input = in.now;
+                in.page_at = in.now;
+                in.answered = in.view == RESULT && below(2);
                 in.voice_busy = in.view == VOICE && below(2);
             }
             break;
@@ -380,7 +480,7 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
                 whale_go_t go = whale_director_summary(&in);
                 carry_out(&in, go);
                 if (was.view == DESK && was.global_valid && (was.waiting || was.unread))
-                    CHECK(go == WHALE_GO_ATTENTION && in.view != DESK,
+                    CHECK((go == WHALE_GO_QUEUE) == (was.waiting != 0) && in.view != DESK,
                           "work that needs the user left the desk display up", &was);
                 if (was.view != DESK)
                     CHECK(go == WHALE_GO_STAY, "a summary took over the user's page", &was);
@@ -395,9 +495,16 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
             carry_out(&in, go);
             if (was.view == DESK && trigger)
                 CHECK(in.view != DESK, "a live trigger left the desk display up", &was);
-            if (was.view != DESK || !trigger)
+            if (go == WHALE_GO_QUEUE && was.view != DESK)
+                CHECK(was.view == HOME && trigger == 1 &&
+                          was.now - was.last_input >= WHALE_QUEUE_IDLE_MS && !was.voice_busy &&
+                          !was.companion_action,
+                      "a question popped over a page in use", &was);
+            else if (was.view != DESK || !trigger)
                 CHECK(go == WHALE_GO_STAY, "a trigger took over the user's page", &was);
-            if (trigger >= 1 && trigger <= 4 && was.view == DESK)
+            if (trigger == 1 && was.view == DESK)
+                CHECK(go == WHALE_GO_QUEUE, "a question did not open the queue", &was);
+            if (trigger >= 2 && trigger <= 4 && was.view == DESK)
                 CHECK(go == WHALE_GO_ATTENTION, "a cue did not open the attention list", &was);
             break;
         }
@@ -452,6 +559,7 @@ int main(void) {
     test_idle();
     test_desk();
     test_work_interrupts_only_the_desk();
+    test_queue();
     test_offline_and_screen();
     test_activity();
     test_fuzz();
