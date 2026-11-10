@@ -1,10 +1,10 @@
 {
-  "version": "0.16.0-demo",
+  "version": "0.17.0-dev",
   "chip": "esp32c3",
   "flash_size": "8MB",
   "offset": "0x0",
   "device_name": "HARNESS-WHALE",
   "sha256": {
-    "Harness-Whale-ESP32C3-8MB.bin": "8b24b2e188424cbcd949ab9f1e828c8e63ea738dd8b5fa96f5bf642abcf21b87"
+    "Harness-Whale-ESP32C3-8MB.bin": "56574846c903fa527f85adb3a68db64904ee422866fd21697e67f68915de93f5"
   }
 }

@@ -36,6 +36,15 @@ static uint32_t pose_checksum(void) {
             value = (value ^ screen[y * 240 + x]) * 16777619u;
     return value;
 }
+static void summary_stays_inside_card(const whale_app_t *a) {
+    int top = a->night ? 196 : 250;
+    uint16_t background = screen[(top - 1) * 240];
+    for (int y = top; y < top + 58; y++)
+        for (int x = 0; x < 4; x++) {
+            assert(screen[y * 240 + x] == background);
+            assert(screen[y * 240 + 239 - x] == background);
+        }
+}
 int main(void) {
     FILE *file = fopen(WHALE_POSES_PATH, "rb");
     assert(file && fread(poses, 1, sizeof poses, file) == sizeof poses);
@@ -225,6 +234,37 @@ int main(void) {
         draw(&a);
         assert(draw(&a) == 0);
     }
+    /* All invitation poses/feedback retain the native skin offsets and do not
+     * churn LVGL allocations when a still frame is redrawn. */
+    static const uint8_t invitation_skins[] = {0, 2, 4, 8};
+    a.global_unread = 0;
+    for (unsigned skin = 0; skin < sizeof invitation_skins; skin++) {
+        a.worn = invitation_skins[skin];
+        for (unsigned action = 1; action <= 4; action++) {
+            a.view = HOME;
+            a.invitation = action;
+            a.invitation_variant = action % 3;
+            a.invitation_settling = false;
+            draw(&a);
+            assert(draw(&a) == 0);
+            a.invitation_settling = true;
+            draw(&a);
+            assert(draw(&a) == 0);
+            a.invitation_settling = false;
+            a.view = COMPANION;
+            a.companion_choice = action - 1;
+            draw(&a);
+            assert(draw(&a) == 0);
+            a.invitation = 0;
+            a.companion_invited = true;
+            a.companion_action = action;
+            a.action_at = a.now - 1000;
+            draw(&a);
+            assert(draw(&a) == 0);
+        }
+    }
+    a.companion_invited = false;
+    a.companion_action = 0;
     /* Desk display: still frames do not redraw; a minute change redraws only
      * the clock; the night clock and the return home repaint fully. */
     a.view = DESK;
@@ -250,6 +290,24 @@ int main(void) {
     a.view = TASK_DETAIL;
     assert(draw(&a) > 0);
     assert(draw(&a) == 0);
+    /* Real raster margins catch clipped statistics, including the 16-bit count
+     * boundary. Run both single-line and stacked layouts in day/night themes. */
+    a.view = DESK;
+    a.clock_valid = a.summary_valid = true;
+    a.standby_mode = 0;
+    static const uint16_t done_cases[] = {1, 5, 100, 65535};
+    static const uint32_t time_cases[] = {60, 7800, 46740, 3599940};
+    for (unsigned night = 0; night < 2; night++) {
+        a.night = night;
+        for (unsigned i = 0; i < sizeof done_cases / sizeof done_cases[0]; i++) {
+            a.summary_done = done_cases[i];
+            a.summary_seconds = time_cases[i];
+            draw(&a);
+            summary_stays_inside_card(&a);
+            assert(draw(&a) == 0);
+        }
+    }
+    a.summary_valid = false;
     for (unsigned i = 0; i < 100; i++) {
         a.view = i % 3 == 0 ? DESK : i % 3 == 1 ? TASK_DETAIL : COMPANION;
         a.night = i % 2;

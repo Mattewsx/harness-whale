@@ -34,6 +34,7 @@ static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
 #define WHALE_CMD_SLEEP 7
 #define WHALE_CMD_ROOM_SAVE 8
+#define WHALE_CMD_STANDBY_SAVE 9
 /* Bond earned per local day from all sources. Without a synced clock the
  * day never rolls over, so the count keeps limiting until the next sync.
  * Companion taps add at most WHALE_BOND_TAP_MAX of it;
@@ -63,6 +64,8 @@ static bool sleep_requested;
 static uint32_t sleep_retry_at, key_guard_until;
 /* Idle this long on the task home (or companion) with no work: desk display. */
 #define WHALE_DESK_IDLE_MS 120000u
+#define WHALE_INVITATION_MS 20000u
+#define WHALE_INVITATION_END_MS 3000u
 static uint32_t rtc_seconds(void);
 static void clock_step(void);
 static unsigned stack_headroom(const char *task) {
@@ -123,12 +126,20 @@ static uint32_t last_input, load_progress, last_draw, unbind_at;
 static unsigned queries;
 static bool dim, dirty = true, request_snap;
 static uint8_t screen_applied = WHALE_SCREEN_ON;
+static void invitation_dismiss(void) {
+    if (a.invitation)
+        dirty = true;
+    a.invitation = 0;
+    a.invitation_settling = a.invitation_scheduled = false;
+}
 /* dim means "not fully lit" (dimmed or off); the first press only wakes it. */
 static void apply_screen(uint8_t screen) {
     if (screen == screen_applied && dim == (screen != WHALE_SCREEN_ON))
         return;
     screen_applied = screen;
     dim = screen != WHALE_SCREEN_ON;
+    if (dim)
+        invitation_dismiss();
     bsp_display_backlight(screen == WHALE_SCREEN_ON ? 75 : screen == WHALE_SCREEN_DIM ? 18 : 0);
     dirty = true;
     ESP_LOGI("whale_power", "screen=%s", whale_power_screen_name(screen));
@@ -174,6 +185,9 @@ static void button(bsp_btn_t key, bsp_btn_ev_t ev, void *unused) {
         whale_post(&(whale_event_t){.kind = WE_KEY, .value = (uint32_t)key | ((unsigned)ev << 8)});
 }
 static void page(whale_page_t v) {
+    /* Only entering Interact from the room carries an unanswered invitation. */
+    if (v != a.view && !(a.view == HOME && v == COMPANION && !a.invitation_settling))
+        invitation_dismiss();
     if (v != LIST_LOAD && v != LIST_FAILED) {
         previous_window = false;
         seek_session = 0;
@@ -183,8 +197,10 @@ static void page(whale_page_t v) {
     if (v != REPLY_READ && v != REPLY_LOAD && v != REPLY_FAILED)
         a.read_pending = false;
     view_revision++;
-    if (v != COMPANION)
+    if (v != COMPANION) {
         a.companion_action = 0;
+        a.companion_invited = false;
+    }
     a.view = v;
     a.page_at = a.now;
     a.scroll = 0;
@@ -405,7 +421,7 @@ static void open_list(void) {
     }
 }
 static void enter_companion(void) {
-    a.companion_choice = 0;
+    a.companion_choice = a.invitation && !a.invitation_settling ? a.invitation - 1 : 0;
     a.companion_action = 0;
     a.companion_at = a.now;
     page(COMPANION);
@@ -588,9 +604,60 @@ static void room_load(void) {
     }
     room_restore(profile);
 }
+static void invitation_tick(bool idle) {
+    bool quiet = idle && !dim && !a.night && !whale_voice_busy() && !whale_voice_pending();
+    if (a.invitation) {
+        if (!quiet || (a.view != HOME && a.view != COMPANION)) {
+            invitation_dismiss();
+        } else if (a.invitation_settling) {
+            if (a.now - a.invitation_at >= WHALE_INVITATION_END_MS)
+                invitation_dismiss();
+        } else if (a.now - a.invitation_at >= WHALE_INVITATION_MS) {
+            if (a.view == HOME) {
+                a.invitation_settling = true;
+                a.invitation_at = a.now;
+                dirty = true;
+            } else
+                invitation_dismiss();
+        }
+        return;
+    }
+    if (!quiet || a.view != HOME) {
+        a.invitation_scheduled = false;
+        return;
+    }
+    if (a.invitation_cooling && (int32_t)(a.now - a.invitation_next) < 0)
+        return;
+    a.invitation_cooling = false;
+    if (!a.invitation_scheduled) {
+        uint32_t random;
+        esp_fill_random(&random, sizeof random);
+        a.invitation_due = a.now + 45000 + random % 30001;
+        a.invitation_scheduled = true;
+        return;
+    }
+    if ((int32_t)(a.now - a.invitation_due) < 0)
+        return;
+    a.invitation_scheduled = false;
+    /* Do not prolong the normal idle clock/dimming policy for an invitation. */
+    if (a.now - last_input >= WHALE_DESK_IDLE_MS - WHALE_INVITATION_MS - WHALE_INVITATION_END_MS)
+        return;
+    uint32_t random;
+    esp_fill_random(&random, sizeof random);
+    uint8_t next = 1 + random % 4;
+    if (next == a.invitation_last)
+        next = 1 + next % 4;
+    a.invitation = a.invitation_last = next;
+    a.invitation_variant = (random >> 8) % 3;
+    a.invitation_at = a.now;
+    a.invitation_next = a.now + 480000 + (random >> 4) % 420001;
+    a.invitation_cooling = true;
+    dirty = true;
+}
 static void companion_tick(void) {
     if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
         a.companion_action = 0;
+        a.companion_invited = false;
         dirty = true;
     }
     if (room_unsaved && cues && (int32_t)(a.now - save_retry_at) >= 0) {
@@ -628,6 +695,7 @@ static void companion_tick(void) {
     bool idle =
         !a.linked || (a.ready && a.global_cap && a.global_valid && a.now - a.global_at < 30000 &&
                       !a.global_running && !a.global_waiting && !a.global_unread);
+    invitation_tick(idle);
     if ((a.view == HOME || a.view == TASK_DETAIL) && a.now - last_input >= WHALE_DESK_IDLE_MS &&
         idle && !whale_voice_busy() && !a.companion_action)
         enter_desk();
@@ -928,7 +996,8 @@ static void key(uint32_t code) {
         }
         return;
     }
-    if (a.view == COMPANION || a.view == WARDROBE || a.view == MANAGE || a.view == SOUND) {
+    if (a.view == COMPANION || a.view == WARDROBE || a.view == MANAGE || a.view == SOUND ||
+        a.view == STANDBY) {
         if (hold) {
             if (k == BSP_BTN_OK && a.view == COMPANION)
                 page(HOME);
@@ -936,10 +1005,12 @@ static void key(uint32_t code) {
         }
         if (a.companion_action)
             return;
-        unsigned count = a.view == COMPANION ? 5 : a.view == WARDROBE ? 4 : a.view == SOUND ? 2 : 3;
+        unsigned count = a.view == COMPANION ? 5
+                         : a.view == SOUND || a.view == STANDBY ? 2 : 4;
         uint8_t *choice = a.view == COMPANION  ? &a.companion_choice
                           : a.view == WARDROBE ? &a.outfit_choice
                           : a.view == SOUND    ? &a.sound_choice
+                          : a.view == STANDBY  ? &a.standby_choice
                                                : &a.menu_choice;
         if (direction) {
             int next = ((a.back_focus ? 0 : *choice + 1) + direction + count + 1) % (count + 1);
@@ -948,7 +1019,9 @@ static void key(uint32_t code) {
                 *choice = next - 1;
             a.locked_notice = false;
         } else if (a.back_focus) {
-            page(a.view == WARDROBE ? COMPANION : a.view == SOUND ? MANAGE : HOME);
+            page(a.view == WARDROBE                       ? COMPANION
+                 : a.view == SOUND || a.view == STANDBY ? MANAGE
+                                                        : HOME);
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
                 a.outfit_choice = a.worn & 8 ? 3 : a.worn & 4 ? 2 : a.worn & 2 ? 1 : 0;
@@ -956,10 +1029,19 @@ static void key(uint32_t code) {
                 a.unlock_new = 0;
                 page(WARDROBE);
             } else {
+                bool invited = a.invitation == *choice + 1 && !a.invitation_settling &&
+                               a.now - a.invitation_at < WHALE_INVITATION_MS;
+                invitation_dismiss();
+                a.companion_invited = invited;
                 a.mood = a.companion_action = *choice + 1;
                 static const uint8_t after[] = {4, 5, 0, 3};
                 a.activity = after[*choice];
                 a.activity_at = a.mood_at = a.action_at = a.now;
+                /* A normal manual interaction also buys a quiet interval. Keep
+                 * any longer randomized cooldown already earned by an offer. */
+                if (!a.invitation_cooling || (int32_t)(a.invitation_next - a.now) < 480000)
+                    a.invitation_next = a.now + 480000;
+                a.invitation_cooling = true;
                 bond_tap();
             }
         } else if (a.view == WARDROBE) {
@@ -977,7 +1059,18 @@ static void key(uint32_t code) {
             room_unsaved = true;
         } else if (a.view == MANAGE) {
             a.sound_choice = a.sound_mode;
-            page(*choice == 0 ? SOUND : *choice == 1 ? KEEP : VERSION);
+            a.standby_choice = a.standby_mode;
+            static const whale_page_t pages[] = {SOUND, KEEP, STANDBY, VERSION};
+            page(pages[*choice]);
+        } else if (a.view == STANDBY) {
+            /* NVS writes run on the peripheral task; the result arrives as 98. */
+            whale_audio_cmd_t cmd = {WHALE_CMD_STANDBY_SAVE, *choice, 0};
+            if (cues && xQueueSend(cues, &cmd, 0) == pdTRUE) {
+                a.standby_mode = *choice;
+                a.sound_saved = 0;
+                page(MANAGE);
+            } else
+                a.sound_saved = -1;
         } else {
             whale_audio_interrupt();
             whale_audio_cmd_t cmd = {6, *choice, 0};
@@ -996,8 +1089,8 @@ static void key(uint32_t code) {
             return;
         if (a.view == TASK_DETAIL || a.view == LIST)
             return;
-        if (a.view == SOUND || a.view == KEEP || a.view == REVOKE || a.view == VERSION ||
-            a.view == UNBIND_FAILED) {
+        if (a.view == SOUND || a.view == STANDBY || a.view == KEEP || a.view == REVOKE ||
+            a.view == VERSION || a.view == UNBIND_FAILED) {
             page(MANAGE);
             return;
         }
@@ -1308,6 +1401,7 @@ static void apply_message(whale_msg_t msg) {
         bool resumed = !a.ready;
         bool new_epoch = a.epoch && a.epoch != stage.epoch;
         if (new_epoch) {
+            a.summary_valid = false;
             a.cache_sequence = 0;
             a.title_session = 0;
             a.full_title[0] = 0;
@@ -1477,6 +1571,15 @@ static void apply_message(whale_msg_t msg) {
         }
         return;
     }
+    if (msg.type == 0x54 && n == 18) {
+        /* Daily summary: epoch, work day, finished tasks, AI working seconds. */
+        a.summary_day = w32(p + 8);
+        a.summary_done = w16(p + 12);
+        a.summary_seconds = w32(p + 14);
+        a.summary_valid = true;
+        clock_step();
+        return;
+    }
     if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
         w32(p + 8) == a.title_session && w32(p + 12) == a.title_run && whale_text(p + 18, n - 18)) {
         memcpy(a.full_title, p + 18, n - 18);
@@ -1494,6 +1597,8 @@ static void apply_message(whale_msg_t msg) {
         a.global_waiting = w16(p + 16);
         a.global_unread = w16(p + 18);
         a.global_focus = w32(p + 20);
+        if (!a.global_valid || a.global_running || a.global_waiting || a.global_unread)
+            invitation_dismiss();
         /* The desk display leaves on any summary that shows work; the
          * companion page only reacts to the first one after (re)connecting. */
         if (a.view == DESK && a.global_valid) {
@@ -1521,8 +1626,10 @@ static void apply_message(whale_msg_t msg) {
             a.activity = 5;
             a.mood_at = a.activity_at = a.now;
         }
-        if (p[25])
+        if (p[25]) {
+            invitation_dismiss();
             companion_work(w32(p + 12), p[25] != 5);
+        }
         return;
     }
     if (msg.type == 0x14 && n >= 13) {
@@ -1706,6 +1813,11 @@ static void clock_step(void) {
     if (a.clock_valid)
         a.clock = t;
     a.night = a.clock_valid && whale_clock_night(&a.clock);
+    /* Totals from an earlier work day (e.g. kept offline past 05:00) read as zero. */
+    uint32_t work_day;
+    a.summary_stale = a.summary_valid &&
+                      whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day) &&
+                      work_day != a.summary_day;
 }
 static void batt_dump(const char *name) {
     if (!whale_blob_load(name, &batt_log, sizeof batt_log) || !whale_batt_log_valid(&batt_log))
@@ -1758,8 +1870,9 @@ static void peripheral_task(void *unused) {
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
                     if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
                         whale_post(&(whale_event_t){.kind = 97});
-                } else if (cue.kind == 6) {
-                    bool saved = whale_sound_save(cue.mode);
+                } else if (cue.kind == 6 || cue.kind == WHALE_CMD_STANDBY_SAVE) {
+                    bool saved = cue.kind == 6 ? whale_sound_save(cue.mode)
+                                               : whale_standby_save(cue.mode);
                     whale_post(&(whale_event_t){.kind = 98, .value = saved ? 1 : 0});
                 } else if (!whale_voice_busy()) {
                     bool played = whale_audio_play(cue);
@@ -1799,6 +1912,7 @@ static void service(whale_event_t e) {
         break;
     }
     case WE_LINK:
+        invitation_dismiss();
         a.linked = true;
         whale_power_link(&power, a.now, true);
         log_diag("link-up");
@@ -1821,6 +1935,7 @@ static void service(whale_event_t e) {
         }
         break;
     case WE_DOWN:
+        invitation_dismiss();
         whale_power_link(&power, a.now, false);
         log_diag("link-down");
         rx.frame = 0;
@@ -1901,6 +2016,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     room_load();
     a.sound_mode = whale_sound_load();
+    a.standby_mode = whale_standby_load();
     a.sound_saved = 1;
     events = xQueueCreate(40, sizeof(whale_event_t));
     assert(events);
@@ -1913,7 +2029,7 @@ void app_main(void) {
     whale_ble_start();
     ESP_LOGI(
         "whale",
-        "v0.16.0-demo / protocol 2.3 large frames + companion cues + power saving + desk clock; "
+        "v0.17.0-dev / protocol 2.3 large frames + companion cues + power saving + desk clock; "
         "minimum free heap: %lu",
         (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST
@@ -1991,7 +2107,7 @@ void app_main(void) {
                 whale_reply_cache_clear();
                 memset(sounded, 0, sizeof sounded);
                 sounded_next = 0;
-                uint8_t mode = a.sound_mode;
+                uint8_t mode = a.sound_mode, standby = a.standby_mode;
                 uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated,
                                      a.bond_taps, a.bond_taps_undated};
                 uint32_t bond_day = a.bond_day;
@@ -2006,6 +2122,7 @@ void app_main(void) {
                 a.bond_day = bond_day;
                 a.dock = 1;
                 a.sound_mode = mode;
+                a.standby_mode = standby;
                 memset(&reminders, 0, sizeof reminders);
                 a.global_valid = false;
                 a.soc = -1;

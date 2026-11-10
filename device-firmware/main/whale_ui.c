@@ -169,6 +169,67 @@ static void parent_icon(enum room_icon id, bool focused) {
     text_at(11, 35, 10, 18, &lv_font_cn_14, "‹", TEAL, -1, LV_TEXT_ALIGN_CENTER);
     icon_at(id, 22, 34, TEAL);
 }
+#define CARD 0xf4ede0
+static int text_width(const lv_font_t *font, const char *s) {
+    int w = 0;
+    while (*s) {
+        uint32_t cp = decode(&s);
+        w += lv_font_get_glyph_width(font, cp, 0);
+    }
+    return w;
+}
+/* One line of mixed 21 px numbers and 14 px words on a shared baseline. */
+typedef struct {
+    const char *text;
+    bool big;
+    bool strong;
+} run_part_t;
+static int run_width(const run_part_t *parts, int count) {
+    int w = 0;
+    for (int i = 0; i < count; i++)
+        w += text_width(parts[i].big ? &lv_font_cn_21 : &lv_font_cn_14, parts[i].text) +
+             (i ? 2 : 0);
+    return w;
+}
+static void run_at(const run_part_t *parts, int count, int x, int base, int strong, int weak) {
+    for (int i = 0; i < count; i++) {
+        const lv_font_t *font = parts[i].big ? &lv_font_cn_21 : &lv_font_cn_14;
+        int w = text_width(font, parts[i].text);
+        int ascent = font->line_height - font->base_line;
+        text_at(x, base - ascent, w + 1, font->line_height, font, parts[i].text,
+                parts[i].strong ? strong : weak, -1, LV_TEXT_ALIGN_LEFT);
+        x += w + 2;
+    }
+}
+/* "已完成 5 个工作 | 已工作 2h 10m" on a rounded card. */
+static void summary_card(const whale_app_t *a, int y, int card, int rule, int strong, int weak) {
+    char done[6], hours[6], minutes[4];
+    unsigned total = a->summary_seconds / 60;
+    snprintf(done, sizeof done, "%u", (unsigned)a->summary_done);
+    snprintf(hours, sizeof hours, "%u", total / 60 > 999 ? 999 : total / 60);
+    snprintf(minutes, sizeof minutes, "%u", total % 60);
+    run_part_t left[] = {{"已完成", false, false}, {done, true, true}, {"个工作", false, false}};
+    run_part_t long_time[] = {{"已工作", false, false}, {hours, true, true}, {"h", false, true},
+                              {minutes, true, true},   {"m", false, true}};
+    run_part_t short_time[] = {{"已工作", false, false}, {minutes, true, true}, {"m", false, true}};
+    run_part_t *time = total >= 60 ? long_time : short_time; /* under an hour: "已工作 45m" */
+    int time_count = total >= 60 ? 5 : 3;
+    int lw = run_width(left, 3), rw = run_width(time, time_count);
+    int gap = 15;
+    if (lw + gap + rw <= 204) {
+        int x = 120 - (lw + gap + rw) / 2, base = y + 34;
+        panel(sheet, 6, y, 228, 50, card, 14);
+        run_at(left, 3, x, base, strong, weak);
+        panel(hold_box, x + lw + gap / 2, y + 14, 1, 22, rule, 0);
+        run_at(time, time_count, x + lw + gap, base, strong, weak);
+    } else {
+        /* Preserve readable digits and units instead of clipping wide totals.
+         * Even the maximum count and duration fit on their own centered row. */
+        panel(sheet, 6, y, 228, 58, card, 14);
+        run_at(left, 3, 120 - lw / 2, y + 23, strong, weak);
+        run_at(time, time_count, 120 - rw / 2, y + 49, strong, weak);
+    }
+}
 static void strip(const enum room_icon *icons, const char *const *names, int count, int selected,
                   int active, unsigned locked, bool home) {
     int step = home ? 66 : count == 5 ? 43 : 55;
@@ -196,6 +257,30 @@ static void dressed(uint8_t worn, int pose_id, int x, int y, unsigned scale) {
                 break;
             }
     pose_at(pose_id, x, y, scale);
+}
+static const char *invitation_line(const whale_app_t *a) {
+    static const char *const offers[][3] = {
+        {"嗨，看看我呀。", "歇一下，打个招呼？", "想跟你挥挥手。"},
+        {"可以摸摸头吗？", "脑袋准备好啦。", "再摸摸我，好不好？"},
+        {"想分我一条小鱼吗？", "小鱼时间到了吗？", "今天也想吃小鱼。"},
+        {"一起喝杯咖啡？", "碰个杯，再慢慢忙？", "要陪我喝咖啡吗？"}};
+    static const char *const endings[] = {"我继续陪着你。", "我在这里歇会儿。",
+                                          "小鱼先收好。", "我先喝一口啦。"};
+    if (!a->invitation || a->invitation > 4)
+        return NULL;
+    return a->invitation_settling ? endings[a->invitation - 1]
+                                  : offers[a->invitation - 1][a->invitation_variant % 3];
+}
+static void show_coffee(int x, int y, unsigned scale, unsigned elapsed, bool animate) {
+    lv_obj_remove_flag(coffee_cup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(coffee_steam, LV_OBJ_FLAG_HIDDEN);
+    lv_image_set_pivot(coffee_cup, 0, 0);
+    lv_image_set_pivot(coffee_steam, 0, 0);
+    lv_image_set_scale(coffee_cup, scale);
+    lv_image_set_scale(coffee_steam, scale);
+    lv_obj_set_pos(coffee_cup, x + 78 * scale / 256, y + 104 * scale / 256);
+    lv_obj_set_pos(coffee_steam, x + 121 * scale / 256,
+                   y + (72 - (animate ? (elapsed / 250) % 4 : 0)) * scale / 256);
 }
 /* Static RGB565 landscapes in flash. LVGL clips them to the invalidated
  * rectangle; the display never allocates a full scene buffer in RAM. */
@@ -513,12 +598,29 @@ void whale_ui_draw(const whale_app_t *a) {
         room_night = a->night;
         static const int life[] = {20, 19, 15, 3, 18, 19, 10, 1};
         int y = 45 + (animate && (a->now / 900) % 2);
-        dressed(a->worn, life[a->activity % 8], 22, y, 256);
-        if (a->activity == 1)
+        const char *offer = invitation_line(a);
+        bool inviting = offer && !a->invitation_settling;
+        if (offer) {
+            static const int poses[] = {18, 16, 20, 20};
+            int n = a->invitation_settling ? (a->invitation == 4 ? 20 : 19)
+                                           : poses[a->invitation - 1];
+            if (n == 16 && animate && a->now % 5000 > 4750)
+                n = 17;
+            int pose_y = 43 + (animate && (a->now / 900) % 2);
+            dressed(a->worn, n, 29, pose_y, 236);
+            if (a->invitation == 4) {
+                painted_coffee = true;
+                show_coffee(29, pose_y, 236, a->now - a->invitation_at, animate);
+            }
+            panel(sheet, 14, 225, 212, 24, PAPER, 10);
+            text_at(20, 228, 200, 20, &lv_font_cn_14, offer, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        } else
+            dressed(a->worn, life[a->activity % 8], 22, y, 256);
+        if (!offer && a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
         static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
-        static const char *const names[] = {"互动", "会话", "设置"};
-        strip(icons, names, 3, a->dock, -1, 0, true);
+        const char *const names[] = {inviting ? "回应邀请" : "互动", "会话", "设置"};
+        strip(icons, names, 3, a->dock, inviting ? 0 : -1, 0, true);
         if (a->global_unread) {
             snprintf(value, sizeof value, "%u", a->global_unread);
             panel(menu_box, 130, 250, 29, 16, 0xeac58c, 8);
@@ -640,8 +742,17 @@ void whale_ui_draw(const whale_app_t *a) {
         unsigned action = a->companion_action <= 4 ? a->companion_action : 0;
         unsigned elapsed = a->now - a->action_at;
         /* Leave a clear line for action feedback above the dock. */
-        int n = 16, x = 22, y = 44;
+        const char *pending_offer = a->invitation == a->companion_choice + 1 && !a->back_focus
+                                        ? invitation_line(a) : NULL;
+        bool feedback = action || pending_offer || a->unlock_new;
+        unsigned scale = feedback ? 236 : 256;
+        int n = 16, x = feedback ? 29 : 22, y = 44;
         const char *line = lines[action];
+        if (action && a->companion_invited) {
+            static const char *const replies[] = {"嘿，等到你啦。", "嘿嘿，就等你啦。",
+                                                  "啊呜，收到小鱼啦。", "一起喝，慢慢来。"};
+            line = replies[action - 1];
+        }
         if (!action) {
             unsigned phase = (a->now - a->companion_at) % 24000;
             n = phase > 20000 && phase < 22000 ? 21 : a->now % 5000 > 4750 ? 17 : 16;
@@ -664,19 +775,18 @@ void whale_ui_draw(const whale_app_t *a) {
                     line = "嗯，精神一点啦。";
                 } else {
                     painted_coffee = true;
-                    lv_obj_remove_flag(coffee_cup, LV_OBJ_FLAG_HIDDEN);
-                    lv_obj_remove_flag(coffee_steam, LV_OBJ_FLAG_HIDDEN);
-                    lv_obj_set_pos(coffee_cup, x + 78, y + 104);
-                    lv_obj_set_pos(coffee_steam, x + 121,
-                                   y + 72 - (animate ? (elapsed / 250) % 4 : 0));
+                    show_coffee(x, y, scale, elapsed, animate);
                 }
             }
         }
-        dressed(a->worn, n, x, y, 256);
+        dressed(a->worn, n, x, y, scale);
         parent_icon(ICON_home, a->back_focus);
         text_at(54, 35, 132, 18, &lv_font_cn_14, "互动", NAV, -1, LV_TEXT_ALIGN_CENTER);
         if (action)
             text_at(8, 232, 224, 21, &lv_font_cn_14, line, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        else if (pending_offer)
+            text_at(8, 232, 224, 21, &lv_font_cn_14, pending_offer, NAV, -1,
+                    LV_TEXT_ALIGN_CENTER);
         else if (a->unlock_new)
             text_at(8, 232, 224, 21, &lv_font_cn_14,
                     "新服饰已解锁，去服饰试试",
@@ -722,12 +832,34 @@ void whale_ui_draw(const whale_app_t *a) {
         else
             snprintf(line, sizeof line, "等待电脑校准时间  ·  %s", value);
         int low = a->battery_level == 0 ? -1 : a->battery_level == 1 ? GOLD : RED;
+        /* Today's summary replaces the plain clock unless chosen otherwise in
+         * settings; without totals from the bridge the plain clock remains. */
+        bool summary = !a->standby_mode && a->summary_valid;
+        bool idle_day = summary && (a->summary_stale || (!a->summary_done && !a->summary_seconds));
         if (a->night) {
             /* Night: she is asleep; only a dark clock remains. */
             panel(sea, 0, 0, 240, 320, 0x0b1120, 0);
-            text_at(0, 102, 240, 67, &lv_font_cn_64, clock, 0x5b6a82, -1, LV_TEXT_ALIGN_CENTER);
-            text_at(8, 184, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : 0x3f4d63, -1,
+            int y = summary && !idle_day ? 84 : 102;
+            text_at(0, y, 240, 67, &lv_font_cn_64, clock, 0x5b6a82, -1, LV_TEXT_ALIGN_CENTER);
+            text_at(8, y + 82, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : 0x3f4d63, -1,
                     LV_TEXT_ALIGN_CENTER);
+            if (summary && !idle_day)
+                summary_card(a, 196, 0x121a2b, 0x22304a, 0x5b6a82, 0x3f4d63);
+        } else if (summary) {
+            text_at(0, 0, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
+            text_at(8, 66, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
+                    LV_TEXT_ALIGN_CENTER);
+            unsigned phase = (a->now - a->page_at) % 24000;
+            int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
+            if (idle_day) {
+                pose_at(n, 45, 92, 196);
+                panel(sheet, 64, 254, 112, 30, CARD, 15);
+                text_at(64, 260, 112, 18, &lv_font_cn_14, "今天还没开工", MUT, -1,
+                        LV_TEXT_ALIGN_CENTER);
+            } else {
+                pose_at(n, 50, 92, 183);
+                summary_card(a, 250, CARD, 0xddd3c2, NAV, MUT);
+            }
         } else {
             text_at(0, 8, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
@@ -736,20 +868,24 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 290, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
         }
-    } else if (a->view == MANAGE || a->view == SOUND) {
-        bool sound = a->view == SOUND;
-        parent_icon(sound ? ICON_settings : ICON_home, a->back_focus);
-        center(35, sound ? "声音提醒" : "设备设置", NAV, -1);
+    } else if (a->view == MANAGE || a->view == SOUND || a->view == STANDBY) {
+        bool sound = a->view == SOUND, standby = a->view == STANDBY;
+        parent_icon(sound || standby ? ICON_settings : ICON_home, a->back_focus);
+        center(35, sound ? "声音提醒" : standby ? "待机画面" : "设备设置", NAV, -1);
         pose_at(sound ? 18 : 9, 22, 60, 245);
-        static const enum room_icon settings[] = {ICON_speaker, ICON_bt, ICON_info};
+        static const enum room_icon settings[] = {ICON_speaker, ICON_bt, ICON_clock, ICON_info};
         static const enum room_icon modes[] = {ICON_music, ICON_voice};
-        static const char *const names[] = {"声音提醒", "蓝牙连接", "版本信息"};
+        static const enum room_icon screens[] = {ICON_completed, ICON_clock};
+        static const char *const names[] = {"声音提醒", "蓝牙连接", "待机画面", "版本信息"};
         static const char *const sounds[] = {"音效", "语音"};
-        strip(sound ? modes : settings, sound ? sounds : names, sound ? 2 : 3,
+        static const char *const desks[] = {"今日小结", "时钟"};
+        strip(sound ? modes : standby ? screens : settings, sound ? sounds : standby ? desks : names,
+              sound || standby ? 2 : 4,
               a->back_focus ? -1
               : sound       ? a->sound_choice
+              : standby     ? a->standby_choice
                             : a->menu_choice,
-              sound ? a->sound_mode : -1, 0, false);
+              sound ? a->sound_mode : standby ? a->standby_mode : -1, 0, false);
         if (a->sound_saved < 0)
             center(228, "保存失败，请重试", RED, -1);
     } else if (a->view == VOICE) {
@@ -997,7 +1133,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v0.16.0 Demo";
+            heading = "固件 v0.17.0 Dev";
             detail = "HARNESS-WHALE · BLE 2.3";
             break;
         case LOADING:
@@ -1051,7 +1187,7 @@ void whale_ui_draw(const whale_app_t *a) {
     if (!painted_pose)
         lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
     if (a->view != HOME && a->view != WARDROBE && a->view != LIST && a->view != MANAGE &&
-        a->view != SOUND && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
+        a->view != SOUND && a->view != STANDBY && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
         !desk && foot) {
         panel(action_bar, 0, 292, 240, 28, BAR, 0);
         text_at(8, 297, 224, 19, &lv_font_cn_12, foot, NAV, -1, LV_TEXT_ALIGN_CENTER);

@@ -35,7 +35,8 @@ typedef enum {
     SOUND,
     HOME,
     WARDROBE,
-    DESK /* desk display: large clock with the whale, entered when idle */
+    DESK, /* desk display: clock, whale and today's summary, entered when idle */
+    STANDBY /* settings: choose the desk display (summary or plain clock) */
 } whale_page_t;
 typedef struct {
     whale_row_t rows[8];
@@ -74,6 +75,10 @@ typedef struct {
     char full_title[513];
     bool list_back;
     uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
+    /* Ephemeral invitations never earn affection until the user confirms an action. */
+    uint8_t invitation, invitation_variant, invitation_last;
+    bool invitation_settling, invitation_scheduled, invitation_cooling, companion_invited;
+    uint32_t invitation_at, invitation_due, invitation_next;
     bool back_focus, defer_question, locked_notice;
     uint8_t unlock_new; /* skins just unlocked, shown once on the companion pages */
     uint32_t activity_at, mood_at;
@@ -85,6 +90,12 @@ typedef struct {
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;
     whale_local_time_t clock;
+    /* Desk display mode (0 = today's summary, 1 = plain clock) and the
+     * bridge's daily totals; stale once the local work day moves on. */
+    uint8_t standby_mode, standby_choice;
+    bool summary_valid, summary_stale;
+    uint16_t summary_done;
+    uint32_t summary_day, summary_seconds;
 } whale_app_t;
 /* Skin bits: apprentice witch at 20, long-sleeved pajamas at 40, loungewear at 60. */
 uint8_t whale_unlocks_for(uint8_t bond);

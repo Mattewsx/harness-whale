@@ -3,6 +3,7 @@
 static uint8_t sent_type, sent_bytes[64];
 static size_t sent_length;
 static unsigned sends, answers, voice_starts;
+static bool fake_voice_busy, fake_voice_pending;
 static unsigned cue_count, audio_plays, sleep_commands;
 static bool slow_adv_set;
 static int backlight_level = -1;
@@ -30,7 +31,8 @@ int xQueueSend(void *q, const void *in, int wait) {
                 *last_cue_capture = *(const whale_audio_cmd_t *)in;
             return 1;
         }
-        assert(wait == 0 && (*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7));
+        assert(wait == 0 && ((*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7) ||
+                             *(const uint8_t *)in == WHALE_CMD_STANDBY_SAVE));
         if (*(const uint8_t *)in == WHALE_CMD_SLEEP)
             sleep_commands++;
         if (!cue_ok)
@@ -184,6 +186,7 @@ static void setup(void) {
     requested_cursor = 0;
     sends = answers = 0;
     voice_starts = 0;
+    fake_voice_busy = fake_voice_pending = false;
     memset(pending_reads, 0, sizeof pending_reads);
     pending_read_next = 0;
     send_ok = true;
@@ -213,28 +216,29 @@ static void preview(uint32_t sid, uint32_t rev) {
     memcpy(p + 17, "new", 3);
     apply_message((whale_msg_t){0x19, p, sizeof p});
 }
-static void snapshot(bool keep_first) {
+static void snapshot_epoch(bool keep_first, uint64_t epoch) {
     uint8_t begin[27] = {0}, row[37] = {0}, end[17] = {0};
-    put64(begin, a.epoch);
+    put64(begin, epoch);
     put32(begin + 8, 1);
     put32(begin + 20, UINT32_MAX);
     put16(begin + 24, 1);
     begin[26] = 1;
     uint32_t crc = whale_crc(0, begin, sizeof begin);
     apply_message((whale_msg_t){0x11, begin, sizeof begin});
-    put64(row, a.epoch);
+    put64(row, epoch);
     put32(row + 8, 1);
     put32(row + 13, keep_first ? 10 : 11);
     put32(row + 17, keep_first ? 20 : 21);
     row[21] = 5;
     crc = whale_crc(crc, row + 13, 24);
     apply_message((whale_msg_t){0x12, row, sizeof row});
-    put64(end, a.epoch);
+    put64(end, epoch);
     put32(end + 8, 1);
     end[12] = 1;
     put32(end + 13, bad_snapshot_crc ? crc ^ 1 : crc);
     apply_message((whale_msg_t){0x13, end, sizeof end});
 }
+static void snapshot(bool keep_first) { snapshot_epoch(keep_first, a.epoch); }
 static void test_detail_and_reading(void) {
     setup();
     preview(10, 30);
@@ -748,6 +752,143 @@ static void test_companion_and_global_cues(void) {
     puts("Companion actions, global idle, interruption, deferred/merged cues and "
          "settings PASS");
 }
+static void invitation_room(bool linked) {
+    setup();
+    page(HOME);
+    a.linked = linked;
+    a.global_cap = true;
+    a.global_valid = true;
+    a.global_at = last_input = a.now;
+}
+static void start_random_invitation(void) {
+    companion_tick();
+    assert(a.invitation_scheduled && !a.invitation);
+    uint32_t delay = a.invitation_due - a.now;
+    assert(delay >= 45000 && delay <= 75000);
+    a.now = a.invitation_due;
+    a.global_at = a.now;
+    companion_tick();
+    assert(a.invitation >= 1 && a.invitation <= 4 && !a.invitation_settling);
+}
+static void test_random_invitations(void) {
+    invitation_room(true);
+    uint32_t input = last_input;
+    start_random_invitation();
+    uint8_t first = a.invitation;
+    uint32_t cooldown = a.invitation_next - a.now;
+    assert(cooldown >= 480000 && cooldown <= 900000);
+    assert(a.dock == 1 && a.bond == 12 && last_input == input);
+    a.now += WHALE_INVITATION_MS;
+    a.global_at = a.now;
+    companion_tick();
+    assert(a.invitation_settling && !a.bond_today && !a.bond_taps);
+    a.now += WHALE_INVITATION_END_MS;
+    a.global_at = a.now;
+    companion_tick();
+    assert(!a.invitation && a.bond == 12 && last_input == input && !cue_count);
+    companion_tick();
+    assert(!a.invitation_scheduled); /* quiet cooldown, including after ignore */
+    a.now = a.invitation_next;
+    last_input = a.global_at = a.now;
+    start_random_invitation();
+    assert(a.invitation != first);
+    invitation_room(true);
+    a.mood = 2; /* work completion can leave her happy without blocking a later offer */
+    a.mood_at = a.now;
+    companion_tick();
+    assert(a.invitation_scheduled);
+    invitation_room(false);
+    enter_companion();
+    key(BSP_BTN_OK);
+    page(HOME);
+    companion_tick();
+    assert(a.invitation_cooling && !a.invitation_scheduled);
+    a.now += 480000;
+    last_input = a.now;
+    start_random_invitation();
+    for (unsigned action = 1; action <= 4; action++) {
+        invitation_room(false); /* manual acceptance works offline too */
+        a.invitation = action;
+        a.invitation_at = a.now;
+        key(BSP_BTN_UP);
+        assert(a.view == HOME && a.dock == 0);
+        key(BSP_BTN_OK);
+        assert(a.view == COMPANION && a.companion_choice == action - 1 && a.invitation);
+        assert(a.bond == 12);
+        key(BSP_BTN_OK);
+        assert(!a.invitation && a.companion_invited && a.companion_action == action);
+        assert(a.bond == 13 && a.bond_taps == 1 && !cue_count);
+        key(BSP_BTN_OK);
+        assert(a.bond == 13); /* repeated confirm cannot stack the action or reward */
+        a.now += 3000;
+        companion_tick();
+        assert(!a.companion_invited && !a.companion_action);
+    }
+    invitation_room(true);
+    a.invitation = 4;
+    a.invitation_at = a.now;
+    enter_companion();
+    a.companion_choice = 1;
+    key(BSP_BTN_OK);
+    assert(!a.invitation && !a.companion_invited && a.companion_action == 2);
+    /* Work anywhere, including outside the current list page, cancels the invitation. */
+    for (unsigned kind = 0; kind < 3; kind++) {
+        invitation_room(true);
+        a.invitation = 1;
+        summary(kind == 0, kind == 1, kind == 2);
+        assert(!a.invitation && a.view == HOME && a.global_unread == (kind == 2));
+    }
+    invitation_room(true);
+    a.invitation = 2;
+    cue_event(1, 10, 20, 1, 1);
+    assert(!a.invitation);
+    invitation_room(true);
+    a.invitation = 3;
+    apply_screen(WHALE_SCREEN_DIM);
+    assert(!a.invitation);
+    companion_tick();
+    assert(!a.invitation_scheduled && dim);
+    invitation_room(true);
+    a.invitation = 4;
+    fake_voice_busy = true;
+    companion_tick();
+    assert(!a.invitation && !a.invitation_scheduled);
+    invitation_room(true);
+    a.invitation = 4;
+    fake_voice_pending = true;
+    companion_tick();
+    assert(!a.invitation);
+    invitation_room(true);
+    a.night = true;
+    companion_tick();
+    assert(!a.invitation_scheduled);
+    invitation_room(true);
+    a.global_cap = false; /* a connected old bridge cannot prove global idle */
+    companion_tick();
+    assert(!a.invitation_scheduled);
+    invitation_room(true);
+    a.global_at = a.now - 30000;
+    companion_tick();
+    assert(!a.invitation_scheduled);
+    const whale_page_t protected[] = {REPLY_READ, QUESTION, VOICE, WARDROBE, MANAGE, COMPANION};
+    for (unsigned i = 0; i < sizeof protected / sizeof protected[0]; i++) {
+        invitation_room(true);
+        page(protected[i]);
+        companion_tick();
+        assert(!a.invitation_scheduled && !a.invitation);
+    }
+    invitation_room(false);
+    start_random_invitation();
+    a.now = last_input + WHALE_DESK_IDLE_MS;
+    companion_tick();
+    assert(a.view == DESK && !a.invitation && last_input == 1000);
+    invitation_room(true);
+    a.now = UINT32_MAX - 30000;
+    a.global_at = last_input = a.now;
+    start_random_invitation(); /* deadlines also work across the millis wrap */
+    assert(a.invitation);
+    puts("Random invitations: acceptance, ignore, cooldown, work, power, voice and wrap PASS");
+}
 static void key_event(unsigned k, unsigned ev) {
     service((whale_event_t){.kind = WE_KEY, .value = k | (ev << 8)});
 }
@@ -860,7 +1001,45 @@ static void test_desk_display(void) {
     key(BSP_BTN_OK);
     companion_tick();
     assert(a.view == COMPANION);
-    puts("Desk display entry, wall clock sync, exits, night and offline power PASS");
+    /* Daily summary (0x54): stored for the bridge epoch; stale after the
+     * local work day (starting 05:00) moves on. */
+    setup();
+    wall_clock(a.epoch, afternoon, 480); /* 22:30 local */
+    uint32_t today;
+    assert(whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &today));
+    uint8_t s[18];
+    put64(s, a.epoch + 1);
+    put32(s + 8, today);
+    put16(s + 12, 5);
+    put32(s + 14, 7800);
+    apply_message((whale_msg_t){0x54, s, sizeof s}); /* another bridge epoch */
+    assert(!a.summary_valid);
+    put64(s, a.epoch);
+    apply_message((whale_msg_t){0x54, s, 17}); /* wrong size */
+    assert(!a.summary_valid);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert(a.summary_valid && !a.summary_stale && a.summary_done == 5 &&
+           a.summary_seconds == 7800 && a.summary_day == today);
+    wall_clock(a.epoch, afternoon + 6 * 3600 + 1799, 480); /* 04:59:59 next day */
+    assert(!a.summary_stale);
+    wall_clock(a.epoch, afternoon + 6 * 3600 + 1800, 480); /* 05:00 */
+    assert(a.summary_stale);
+    /* A same-day reconnect to an older bridge must use the clock fallback
+     * until this epoch supplies its own optional daily summary. */
+    wall_clock(a.epoch, afternoon, 480);
+    snapshot(true);
+    assert(a.summary_valid && !a.summary_stale);
+    uint64_t previous_epoch = a.epoch;
+    a.ready = false;
+    snapshot_epoch(true, previous_epoch + 1);
+    assert(a.ready && a.epoch == previous_epoch + 1 && a.clock_valid && !a.summary_valid);
+    apply_message((whale_msg_t){0x54, s, sizeof s}); /* old epoch stays invalid */
+    assert(!a.summary_valid);
+    put64(s, a.epoch);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert(a.summary_valid && !a.summary_stale && a.summary_day == today);
+    puts("Desk display entry, wall clock sync, exits, night, offline power and daily summary "
+         "PASS");
 }
 static void test_settings_navigation(void) {
     setup();
@@ -871,9 +1050,24 @@ static void test_settings_navigation(void) {
     key(BSP_BTN_DOWN);
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK);
+    assert(a.view == STANDBY && a.standby_choice == 0 && !a.back_focus);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK); /* plain clock */
+    assert(a.view == MANAGE && a.standby_mode == 1 && a.sound_saved == 0);
+    service((whale_event_t){.kind = 98, .value = 1});
+    assert(a.sound_saved == 1);
+    key(BSP_BTN_OK);
+    assert(a.view == STANDBY && a.standby_choice == 1);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.back_focus);
+    key(BSP_BTN_OK); /* back without saving */
+    assert(a.view == MANAGE && a.standby_mode == 1 && a.menu_choice == 2);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
     assert(a.view == VERSION);
     key(BSP_BTN_OK);
-    assert(a.view == MANAGE && a.menu_choice == 2);
+    assert(a.view == MANAGE && a.menu_choice == 3);
     key(BSP_BTN_DOWN);
     assert(a.back_focus);
     key(BSP_BTN_OK);
@@ -1471,6 +1665,7 @@ static void test_voice_retake(void) {
     puts("Voice retake PASS");
 }
 int main(void) {
+    test_random_invitations();
     test_power();
     test_bond_daily_cap();
     test_separate_work_and_tap_quota();
@@ -1513,8 +1708,8 @@ void whale_voice_ack(const uint8_t id[24], uint32_t next) {
     (void)id;
     (void)next;
 }
-bool whale_voice_busy(void) { return false; }
-bool whale_voice_pending(void) { return false; }
+bool whale_voice_busy(void) { return fake_voice_busy; }
+bool whale_voice_pending(void) { return fake_voice_pending; }
 void whale_voice_run(void) {}
 uint32_t whale_voice_milliseconds(void) { return 0; }
 
@@ -1527,6 +1722,8 @@ bool whale_audio_play(whale_audio_cmd_t c) {
 }
 uint8_t whale_sound_load(void) { return 1; }
 bool whale_sound_save(uint8_t mode) { return mode < 2; }
+uint8_t whale_standby_load(void) { return 0; }
+bool whale_standby_save(uint8_t mode) { return mode < 2; }
 bool whale_blob_load(const char *key, void *data, size_t size) {
     if (stored_room_key && !strcmp(key, stored_room_key) && size == stored_room_size) {
         memcpy(data, stored_room, size);

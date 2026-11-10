@@ -42,11 +42,16 @@ int main(void) {
            t.hour == 7 && !whale_clock_night(&t));
     assert(whale_clock_local(&c, 130 + 8 * 3600 - 1, &t) && t.hour == 6 &&
            whale_clock_night(&t));
+    /* The summary work day starts at 05:00: 04:59 still belongs to Friday. */
+    uint32_t day, work, later;
+    assert(whale_clock_day(&c, 130, &day) && whale_clock_work_day(&c, 130, &work) && work == day);
+    assert(whale_clock_work_day(&c, 130 + 6 * 3600 - 1, &later) && later == day);
+    assert(whale_clock_work_day(&c, 130 + 6 * 3600, &later) && later == day + 1);
     /* Negative offsets and a resync replace the previous reference. */
     assert(whale_clock_sync(&c, 5000, 1793977170, -300));
     assert(whale_clock_local(&c, 5000, &t) && t.hour == 9 && t.minute == 59 && t.day == 6);
     c.tz_min = 900; /* corrupted RTC memory */
-    assert(!whale_clock_valid(&c));
-    puts("Desk clock civil time, RTC carry-over and night window PASS");
+    assert(!whale_clock_valid(&c) && !whale_clock_work_day(&c, 130, &work));
+    puts("Desk clock civil time, RTC carry-over and night window and work day PASS");
     return 0;
 }
