@@ -194,6 +194,8 @@ static void page(whale_page_t v) {
         seek_to_list = false;
     }
     a.back_focus = a.defer_question = a.locked_notice = false;
+    if (v != LIST && v != LIST_LOAD && v != LIST_FAILED)
+        a.list_new = false;
     if (v != REPLY_READ && v != REPLY_LOAD && v != REPLY_FAILED)
         a.read_pending = false;
     view_revision++;
@@ -249,7 +251,14 @@ static void voice_cancel(void) {
     memset(a.voice_identity, 0, sizeof a.voice_identity);
     memset(a.voice_text, 0, sizeof a.voice_text);
     a.voice_submitted = false;
-    page(TASK_DETAIL);
+    bool fresh = a.voice_new;
+    a.voice_new = false;
+    page(fresh ? LIST : TASK_DETAIL);
+    if (fresh) {
+        /* Back on the row that started it. */
+        a.list_new = true;
+        a.list_back = false;
+    }
 }
 static void voice_prepare(void) {
     whale_audio_interrupt();
@@ -257,7 +266,7 @@ static void voice_prepare(void) {
         voice_page(VOICE_DISCONNECTED);
         return;
     }
-    if (!a.voice_cap || !whale_ble_audio_ready()) {
+    if (!a.voice_cap || !whale_ble_audio_ready() || (a.voice_new && !a.voice_task_cap)) {
         voice_page(VOICE_UNSUPPORTED);
         return;
     }
@@ -274,9 +283,22 @@ static void voice_prepare(void) {
     put32(b + 8, a.voice_session);
     memcpy(b + 12, a.voice_identity + 8, 16);
     voice_page(VOICE_PREPARE);
-    if (!whale_send(0x40, b, sizeof b))
+    if (!whale_send(a.voice_new ? 0x48 : 0x40, b, sizeof b))
         voice_page(VOICE_DISCONNECTED);
 }
+/* "语音新任务" at the top of the session list: speak a new task, OK to start
+ * and OK to stop like a voice reply. The last highlighted session, if any, is
+ * only context for the computer's choice of folder; nothing is sent to it. */
+static void voice_task_start(void) {
+    a.voice_new = true;
+    a.voice_session = a.count ? a.rows[a.selected].session : 0;
+    /* The folder label arrives with 0x49 before recording starts. */
+    snprintf(a.voice_title, sizeof a.voice_title, "新任务");
+    a.voice_text[0] = 0;
+    a.voice_submitted = false;
+    voice_prepare();
+}
+
 static void voice_retake(void) {
     /* Drop this recording on the computer, then start a fresh identity. */
     whale_voice_stop(true);
@@ -345,6 +367,9 @@ static void voice_key(unsigned k, bool hold) {
     } else if (p == VOICE_SENT || p == VOICE_QUEUED) {
         if (k == BSP_BTN_OK)
             voice_cancel();
+    } else if (p == VOICE_NO_TARGET) {
+        if (k != BSP_BTN_DOWN)
+            voice_cancel();
     } else if (k == BSP_BTN_UP) {
         if (a.voice_text[0] && (p == VOICE_FAILED || p == VOICE_ARCHIVED || p == VOICE_QUESTION))
             voice_page(VOICE_PREVIEW);
@@ -390,6 +415,7 @@ static bool question_view(void) { return a.view >= LOADING && a.view <= UNSURE; 
 static void open_list(void) {
     bool from_detail = a.view != HOME;
     a.list_back = !a.count;
+    a.list_new = false;
     priority_list = false;
     seek_to_list = false;
     seek_session = 0;
@@ -1132,7 +1158,9 @@ static void key(uint32_t code) {
         case TASK_DETAIL:
             break;
         case LIST:
-            if (a.list_back || !a.count)
+            if (a.list_new && !a.list_back && whale_list_has_new(&a))
+                voice_task_start();
+            else if (a.list_back || !a.count)
                 page(HOME);
             else if (a.rows[a.selected].question)
                 open_task();
@@ -1252,8 +1280,24 @@ static void key(uint32_t code) {
         return;
     }
     if (a.view == LIST) {
-        if (a.list_back) {
+        bool has_new = whale_list_has_new(&a);
+        if (a.list_new && !has_new)
+            a.list_new = false;
+        if (a.list_new && !a.list_back) {
             if (d > 0 && a.count) {
+                a.list_new = false;
+                a.selected = 0;
+            } else if (d < 0) {
+                a.list_new = false;
+                a.list_back = true;
+            }
+            return;
+        }
+        if (a.list_back) {
+            if (d > 0 && has_new) {
+                a.list_back = false;
+                a.list_new = true;
+            } else if (d > 0 && a.count) {
                 a.list_back = false;
                 a.selected = 0;
             } else if (d < 0 && !request_snap && a.ready && a.cursor) {
@@ -1273,7 +1317,9 @@ static void key(uint32_t code) {
             previous_window = true;
             page(LIST_LOAD);
             snap(a.cursor >= 8 ? a.cursor - 8 : 0);
-        } else if (d == -1)
+        } else if (d == -1 && has_new)
+            a.list_new = true;
+        else if (d == -1)
             a.list_back = true;
     } else if (a.view == QUESTION) {
         if (a.defer_question) {
@@ -1309,7 +1355,8 @@ static void apply_message(whale_msg_t msg) {
         uint16_t frame =
             whale_frame_grant(offered, w16(p + 6), w16(p + 8), whale_ble_frame_limit());
         uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
-        put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION)) |
+        put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION |
+                                 ((offered & 512) ? WHALE_CAP_VOICE_TASK : 0))) |
                          (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
         a.global_cap = (w32(p + 2) & 2048) != 0;
         a.global_valid = false;
@@ -1318,6 +1365,7 @@ static void apply_message(whale_msg_t msg) {
         memset(&reminders, 0, sizeof reminders);
         disconnect_pending = false;
         a.voice_cap = (w32(p + 2) & 512) != 0;
+        a.voice_task_cap = a.voice_cap && (offered & WHALE_CAP_VOICE_TASK);
         a.attention_cap = (w32(p + 2) & 1024) != 0;
         if (a.cache_invalidation && !(offered & WHALE_CAP_CACHE_INVALIDATION)) {
             whale_reply_cache_clear();
@@ -1511,14 +1559,22 @@ static void apply_message(whale_msg_t msg) {
         whale_voice_ack(p, w32(p + 24));
         return;
     }
+    if (msg.type == 0x49 && a.view == VOICE && a.voice_new && n >= 24 &&
+        n <= 24 + WHALE_VOICE_LABEL_MAX && !memcmp(p, a.voice_identity, 24)) {
+        if (n > 24 && voice_displayable(p + 24, n - 24))
+            snprintf(a.voice_title, sizeof a.voice_title, "新任务 · %.*s", (int)(n - 24),
+                     (const char *)(p + 24));
+        dirty = true;
+        return;
+    }
     if (msg.type == 0x41 && a.view == VOICE && n >= 27 && n == 27u + w16(p + 25) &&
         w16(p + 25) <= 1800 && !memcmp(p, a.voice_identity, 24)) {
         static const uint8_t phases[] = {
             VOICE_FINISH,   VOICE_RECORD,  VOICE_PREVIEW,     VOICE_SENT,      VOICE_QUEUED,
             VOICE_FAILED,   VOICE_UNKNOWN, VOICE_UNSUPPORTED, VOICE_ASR_ERROR, VOICE_ARCHIVED,
-            VOICE_QUESTION, VOICE_EXPIRED, VOICE_EMPTY,       VOICE_BROKEN};
+            VOICE_QUESTION, VOICE_EXPIRED, VOICE_EMPTY,       VOICE_BROKEN,    VOICE_NO_TARGET};
         unsigned code = p[24];
-        if (!code || code >= sizeof phases)
+        if (!code || code >= sizeof phases || (code == 14 && !a.voice_new))
             return;
         if (code == 1) {
             if (a.voice_phase == VOICE_PREPARE && !whale_voice_begin(a.voice_identity))

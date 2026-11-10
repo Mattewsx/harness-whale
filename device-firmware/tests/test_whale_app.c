@@ -1664,8 +1664,163 @@ static void test_voice_retake(void) {
     assert(a.view == TASK_DETAIL && sent_type == 0x44);
     puts("Voice retake PASS");
 }
+static void voice_status(uint8_t code) {
+    uint8_t b[27] = {0};
+    memcpy(b, a.voice_identity, 24);
+    b[24] = code;
+    apply_message((whale_msg_t){0x41, b, sizeof b});
+}
+static void home_voice(void) {
+    /* Home -> 会话 list (first session focused) -> ↑ to the new-task row -> OK. */
+    page(HOME);
+    a.dock = 1;
+    a.cursor = 0;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST || a.view == LIST_LOAD);
+    page(LIST);
+    a.list_back = false;
+    a.selected = 1;
+    key(BSP_BTN_UP);
+    assert(!a.list_new && a.selected == 0);
+    key(BSP_BTN_UP);
+    assert(a.list_new && !a.list_back);
+    key(BSP_BTN_OK);
+}
+static void test_voice_new_task(void) {
+    /* Old bridge (no bit 16): the dock entry explains instead of recording. */
+    setup();
+    hello(63 | 512, 20, 20);
+    assert(a.voice_cap && !a.voice_task_cap && !(w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
+    a.ready = a.linked = true;
+    sends = 0;
+    home_voice();
+    assert(a.view == VOICE && a.voice_phase == VOICE_UNSUPPORTED && a.voice_new && !sends);
+    key(BSP_BTN_UP);
+    assert(a.view == LIST && a.list_new && !a.voice_new);
+    /* New bridge: the firmware echoes bit 16 only together with voice. */
+    hello(63 | 512 | WHALE_CAP_VOICE_TASK, 20, 20);
+    assert(a.voice_task_cap && (w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
+    hello(63 | WHALE_CAP_VOICE_TASK, 20, 20);
+    assert(!a.voice_task_cap && !(w32(hello_reply + 2) & WHALE_CAP_VOICE_TASK));
+    setup();
+    a.voice_cap = a.voice_task_cap = true;
+    a.rows[0].question = 7; /* a waiting question does not block a new task */
+    a.selected = 1;
+    home_voice();
+    assert(a.view == VOICE && a.voice_phase == VOICE_PREPARE && sent_type == 0x48);
+    assert(sent_length == 28 && w32(sent_bytes + 8) == 10); /* last highlighted, context only */
+    assert(!strcmp(a.voice_title, "新任务"));
+    /* The folder label arrives before recording; foreign identities are ignored. */
+    uint8_t label[24 + 4];
+    memcpy(label, a.voice_identity, 24);
+    memcpy(label + 24, "shop", 4);
+    label[0] ^= 1;
+    apply_message((whale_msg_t){0x49, label, sizeof label});
+    assert(!strcmp(a.voice_title, "新任务"));
+    label[0] ^= 1;
+    apply_message((whale_msg_t){0x49, label, sizeof label});
+    assert(!strcmp(a.voice_title, "新任务 · shop"));
+    voice_status(1);
+    assert(voice_starts == 1);
+    whale_event_t e = {.kind = WE_VOICE, .len = 16, .value = 1};
+    memcpy(e.bytes, a.voice_identity + 8, 16);
+    service(e);
+    assert(a.voice_phase == VOICE_RECORD);
+    /* Tap to stop, exactly like a voice reply; a key release does nothing. */
+    key_event(BSP_BTN_OK, BSP_BTN_RELEASE);
+    assert(a.voice_phase == VOICE_RECORD);
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_FINISH);
+    uint8_t b[27 + 12];
+    memcpy(b, a.voice_identity, 24);
+    b[24] = 2;
+    put16(b + 25, 12);
+    memcpy(b + 27, "fix login", 9);
+    memcpy(b + 36, "!!!", 3);
+    apply_message((whale_msg_t){0x41, b, sizeof b});
+    assert(a.voice_phase == VOICE_ACTIONS && !strcmp(a.voice_text, "fix login!!!"));
+    /* Retake keeps the new-task target and asks again with 0x48. */
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(sent_type == 0x48 && a.voice_new && a.voice_phase == VOICE_PREPARE);
+    voice_status(1);
+    memcpy(e.bytes, a.voice_identity + 8, 16);
+    service(e);
+    assert(a.voice_phase == VOICE_RECORD);
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_FINISH);
+    memcpy(b, a.voice_identity, 24);
+    apply_message((whale_msg_t){0x41, b, sizeof b});
+    key(BSP_BTN_OK);
+    assert(a.voice_phase == VOICE_SENDING && sent_type == 0x45);
+    voice_status(3);
+    assert(a.voice_phase == VOICE_SENT);
+    key(BSP_BTN_OK);
+    assert(a.view == LIST && a.list_new && !a.voice_new && a.rows[0].question == 7);
+    /* No folder on the computer; the status is ignored outside a new task. */
+    home_voice();
+    voice_status(14);
+    assert(a.voice_phase == VOICE_NO_TARGET);
+    key(BSP_BTN_OK);
+    assert(a.view == LIST && a.list_new);
+    a.voice_new = false;
+    a.voice_phase = VOICE_PREPARE;
+    page(VOICE);
+    voice_status(14);
+    assert(a.voice_phase == VOICE_PREPARE);
+    /* Holding OK on home starts nothing; the dock keeps three entries. */
+    setup();
+    a.voice_cap = a.voice_task_cap = true;
+    page(HOME);
+    sends = 0;
+    key_event(BSP_BTN_OK, BSP_BTN_PRESS);
+    key_event(BSP_BTN_OK, BSP_BTN_LONG);
+    assert(a.view == HOME && !sends);
+    a.dock = 0;
+    key(BSP_BTN_UP);
+    assert(a.dock == 2);
+    /* List focus order: home ‹ / new task / sessions, both ways. */
+    page(LIST);
+    a.selected = 0;
+    a.list_back = true;
+    key(BSP_BTN_DOWN);
+    assert(a.list_new && !a.list_back);
+    key(BSP_BTN_DOWN);
+    assert(!a.list_new && a.selected == 0);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.list_back && !a.list_new);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME);
+    /* No row without voice, nor beyond the first window. */
+    page(LIST);
+    a.list_back = false;
+    a.voice_cap = false;
+    key(BSP_BTN_UP);
+    assert(a.list_back && !a.list_new);
+    a.voice_cap = true;
+    a.cursor = 8;
+    a.ready = false; /* no window reload in this check */
+    page(LIST);
+    a.list_back = false;
+    a.selected = 0;
+    key(BSP_BTN_UP);
+    assert(!a.list_new);
+    /* Empty list: ↓ from the home arrow reaches the new-task row. */
+    a.cursor = 0;
+    a.count = 0;
+    page(LIST);
+    a.list_back = true;
+    key(BSP_BTN_DOWN);
+    assert(a.list_new);
+    a.ready = true;
+    key(BSP_BTN_OK);
+    assert(a.view == VOICE && a.voice_new && sent_type == 0x48 && w32(sent_bytes + 8) == 0);
+    puts("Voice new task: list entry, folder label, retake, compatibility PASS");
+}
 int main(void) {
     test_random_invitations();
+    test_voice_new_task();
     test_power();
     test_bond_daily_cap();
     test_separate_work_and_tap_quota();

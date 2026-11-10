@@ -13,6 +13,8 @@ bool whale_control(uint8_t t) {
     case 0x45:
     case 0x46:
     case 0x47:
+    case 0x48:
+    case 0x49:
     case 0x4a:
     case 1:
     case 2:

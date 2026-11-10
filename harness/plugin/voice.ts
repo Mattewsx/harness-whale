@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage } from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { win32 } from 'node:path'
 
 // Private, process-owned bridge transport. No credentials or utterances are logged.
 const MAX_WAVE = 60 * 32000 + 44
@@ -28,6 +29,18 @@ export function acceptedInSession(session: any, id: string): boolean {
   })
 }
 
+// Folder label shown on the device before a spoken task is confirmed. Bounded
+// in UTF-8 bytes without splitting a character; the bridge sanitises it again.
+export function targetLabel(cwd: string): string {
+  const name = win32.basename(cwd.replace(/[\\/]+$/, '')) || cwd
+  let out = ''
+  for (const ch of name) {
+    if (Buffer.byteLength(out + ch) > 48) break
+    out += ch
+  }
+  return out
+}
+
 export function validWave(b: Buffer): boolean {
   return b.length >= 46 && b.length <= MAX_WAVE && b.toString('ascii', 0, 4) === 'RIFF' &&
     b.toString('ascii', 8, 16) === 'WAVEfmt ' && b.readUInt32LE(16) === 16 &&
@@ -48,9 +61,13 @@ async function body(req: IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 export function createVoiceService(ctx: any, visible: (id: string) => boolean,
-  main: (session: any) => boolean, waiting: (id: string) => boolean) {
+  main: (session: any) => boolean, waiting: (id: string) => boolean,
+  recent: () => string | undefined = () => undefined) {
   const token = randomUUID(), life = new AbortController()
   const receipts = new Map<string, { sessionId: string, text: string, status: string }>()
+  // Spoken new tasks: one receipt per device recording, so a repeated or
+  // retried confirmation can never open a second session.
+  const created = new Map<string, { cwd: string, text: string, status: string, sessionId?: string }>()
   const pending = new Map<string, Promise<any>>()
   const failedActivations = new Set<string>()
   const get = (name: string) => { try { return ctx.get?.(name) ?? ctx[name] } catch { return undefined } }
@@ -135,6 +152,105 @@ export function createVoiceService(ctx: any, visible: (id: string) => boolean,
     while (receipts.size > 128) receipts.delete(receipts.keys().next().value!)
     return { status }
   }
+
+  // ---- Spoken new task: open a fresh top-level session in a known folder ----
+  const sessionOf = (id: string) => get('agents')?.get?.(id)?.session ?? get('sessions')?.get?.(id)
+  const cwdOf = (session: any): string | undefined => {
+    const cwd = session?.header?.cwd ?? session?.cwd
+    return typeof cwd === 'string' && cwd.length > 0 && cwd.length <= 1024 ? cwd : undefined
+  }
+  const usable = (id: unknown): string | undefined => {
+    if (typeof id !== 'string' || !id || id.length > 256 || !visible(id)) return undefined
+    const session = sessionOf(id)
+    return session && main(session) ? cwdOf(session) : undefined
+  }
+  // Folders of the visible main sessions this host knows. A new session may only
+  // open in one of these, never in an arbitrary path supplied over loopback.
+  function knownFolders(): string[] {
+    const found: string[] = []
+    const add = (session: any) => {
+      const id = session?.header?.id ?? session?.id
+      const cwd = typeof id === 'string' && visible(id) && main(session) ? cwdOf(session) : undefined
+      if (cwd && !found.includes(cwd)) found.push(cwd)
+    }
+    try { for (const agent of get('agents')?.roots?.() ?? []) add(agent?.session) } catch {}
+    try { for (const session of get('sessions')?.list?.() ?? []) add(session) } catch {}
+    return found
+  }
+  // Default folder: the session the device was showing, else the most recently
+  // active one, else any visible session. Shown on the device before sending.
+  function target(req: any) {
+    const cwd = usable(req?.sessionId) ?? usable(recent()) ?? knownFolders()[0]
+    return cwd ? { status: 'ok', cwd, label: targetLabel(cwd) } : { status: 'no_target' }
+  }
+  function modelOptions() {
+    const selection = get('agentDefaultModel')?.currentSelection?.()
+    const { provider, model, reasoningEffort } = selection ?? {}
+    if (typeof provider !== 'string' || !provider || typeof model !== 'string' || !model) return undefined
+    return { provider, model, ...(typeof reasoningEffort === 'string' && reasoningEffort ? { reasoningEffort } : {}) }
+  }
+  async function createTask(req: any, query: boolean) {
+    if (!uuid.test(req.id)) return { status: 'invalid' }
+    const previous = created.get(req.id)
+    if (previous) {
+      if (!query && (previous.text !== req.text || previous.cwd !== req.cwd)) return { status: 'invalid' }
+      return { status: previous.status }
+    }
+    // After a plugin restart nothing proves whether the session was opened.
+    if (query) return { status: 'unknown' }
+    if (typeof req.cwd !== 'string' || typeof req.text !== 'string' || !req.text.trim() ||
+        Buffer.byteLength(req.text) > MAX_TEXT || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(req.text))
+      return { status: 'invalid' }
+    if (!knownFolders().includes(req.cwd)) return { status: 'no_target' }
+    const agents = get('agents')
+    if (typeof agents?.create !== 'function') return { status: 'unavailable', reason: 'create_missing' }
+    let workspace: any
+    try { workspace = await get('workspaceRegistry')?.resolveByPath?.(req.cwd) }
+    catch { return { status: 'unavailable', reason: 'workspace_failed' } }
+    if (!workspace) return { status: 'no_target' }
+    if (typeof workspace.attachSession !== 'function') return { status: 'unavailable', reason: 'attach_missing' }
+    // Resolve everything before creating: a session without a model or preset
+    // would sit idle, and a created session is never disposed again.
+    let agentOptions, presetId: string | undefined, setup: any
+    try {
+      agentOptions = modelOptions()
+      const presets = get('agentPresets')
+      if (presets) {
+        presetId = (await presets.resolve(undefined))?.id
+        if (typeof presetId !== 'string') return { status: 'unavailable', reason: 'preset_missing' }
+        setup = async (agentCtx: any) => { await presets.mount(agentCtx, presetId) }
+      }
+    } catch { return { status: 'unavailable', reason: 'preset_failed' } }
+    if (!agentOptions) return { status: 'unavailable', reason: 'model_missing' }
+    // Never evict a nonce that may already have created a session. At capacity,
+    // refuse fresh recordings rather than permitting a retry to create twice.
+    if (created.size >= 128) return { status: 'unavailable', reason: 'recording_limit' }
+    const record: { cwd: string, text: string, status: string, sessionId?: string } =
+      { cwd: req.cwd, text: req.text, status: 'unknown' }
+    created.set(req.id, record)
+    let agent: any
+    try {
+      const handle = await agents.create({ sessionId: randomUUID(), agentOptions, setup,
+        meta: { cwd: req.cwd, ...(presetId === undefined ? {} : { agentPreset: presetId }) } })
+      agent = handle?.agent
+    } catch {
+      return { status: record.status } // creation may have happened before rejection
+    }
+    if (!agent) return { status: record.status }
+    record.sessionId = String(agent.id ?? agent.session?.header?.id ?? '')
+    // A task may run only after it belongs to the folder's workspace. Keep its
+    // receipt on failure: the session exists, and retrying must not open another.
+    if (!record.sessionId) return { status: record.status }
+    try {
+      await workspace.attachSession(record.sessionId)
+    } catch { return { status: record.status } }
+    try {
+      agent.followup({ id: voiceMessageId(req.id), role: 'user',
+        content: [{ type: 'text', text: req.text }], source: { kind: 'user' } })
+      record.status = 'accepted'
+    } catch { /* created but the first message is uncertain: keep 'unknown' */ }
+    return { status: record.status }
+  }
   const server = createServer(async (req, res) => {
     const supplied = Buffer.from(req.headers.authorization ?? '')
     const expected = Buffer.from(`Bearer ${token}`)
@@ -162,11 +278,16 @@ export function createVoiceService(ctx: any, visible: (id: string) => boolean,
         // Preview and subsequent confirmed delivery share the exact same text.
         send(200, { text: normalizeVoiceTerms(text.trim()) }); return
       }
-      if (req.url !== '/submit' && req.url !== '/query') { send(404, {}); return }
+      if (req.url === '/target') {
+        send(200, target(JSON.parse((await body(req, 1024)).toString('utf8')))); return
+      }
+      const task = req.url === '/create' || req.url === '/create-query'
+      if (!task && req.url !== '/submit' && req.url !== '/query') { send(404, {}); return }
       const data = JSON.parse((await body(req, 8192)).toString('utf8'))
       if (!uuid.test(data.id)) { send(400, { status: 'invalid' }); return }
       const key = data.id
-      const action = (pending.get(key) ?? Promise.resolve()).catch(() => {}).then(() => submit(data, req.url === '/query'))
+      const action = (pending.get(key) ?? Promise.resolve()).catch(() => {}).then(() =>
+        task ? createTask(data, req.url === '/create-query') : submit(data, req.url === '/query'))
       pending.set(key, action)
       try { send(200, await action) } finally { if (pending.get(key) === action) pending.delete(key) }
     } catch { send(503, { status: 'unavailable' }) }
@@ -182,6 +303,6 @@ export function createVoiceService(ctx: any, visible: (id: string) => boolean,
         HARNESS_WHALE_VOICE_PORT: String(addr.port), HARNESS_WHALE_VOICE_TOKEN: token,
       } : {}
     },
-    close() { life.abort(); server.close(); server.closeAllConnections(); receipts.clear() },
+    close() { life.abort(); server.close(); server.closeAllConnections(); receipts.clear(); created.clear() },
   }
 }

@@ -60,6 +60,8 @@ typedef struct {
     uint16_t option_ids[3];
     char prompt[513], labels[3][257];
     bool voice_cap, voice_submitted, attention_cap;
+    /* Spoken new task: voice_new targets a fresh session instead of the selected one. */
+    bool voice_task_cap, voice_new;
     uint8_t voice_phase, voice_choice, voice_identity[24];
     uint32_t voice_session, voice_at, voice_ms;
     char voice_title[73], voice_text[1801];
@@ -74,6 +76,8 @@ typedef struct {
     uint32_t title_session, title_run;
     char full_title[513];
     bool list_back;
+    /* Focus on the "语音新任务" row above the first session (first window only). */
+    bool list_new;
     uint8_t dock, outfit_choice, bond, unlocked, worn, activity, mood;
     /* Ephemeral invitations never earn affection until the user confirms an action. */
     uint8_t invitation, invitation_variant, invitation_last;
@@ -99,6 +103,10 @@ typedef struct {
 } whale_app_t;
 /* Skin bits: apprentice witch at 20, long-sleeved pajamas at 40, loungewear at 60. */
 uint8_t whale_unlocks_for(uint8_t bond);
+/* The voice new-task row sits above the first session of the first window. */
+static inline bool whale_list_has_new(const whale_app_t *app) {
+    return app->voice_cap && app->cursor == 0;
+}
 void whale_ui_init(void);
 void whale_ui_draw(const whale_app_t *app);
 #define HOME_REPLY_LINES 6

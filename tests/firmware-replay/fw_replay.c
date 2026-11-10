@@ -43,6 +43,7 @@ int main(void){
         else if(sscanf(line,"frame %u",&val)==1){if(rx.frame!=(val>20?val:0)||tx_frame!=val){fprintf(stderr,"frame %u/%u expected %u\n",rx.frame,tx_frame,val);return 1;}}else if(sscanf(line,"key %u",&val)==1){key(val);}
         else if(sscanf(line,"advance %u",&val)==1){a.now+=val;companion_tick();}
         else if(!strncmp(line,"draw",4)){acknowledge_visible();}
+        else if(sscanf(line,"voice %u",&val)==1){whale_event_t e={.kind=WE_VOICE,.len=16,.value=val};memcpy(e.bytes,a.voice_identity+8,16);service(e);}
         else if(sscanf(line,"badge %u",&val)==1){assert(a.global_unread==val);}
         else if(sscanf(line,"options %u",&val)==1){assert(a.options==val);}
         else if(!strncmp(line,"cached ",7)){

@@ -189,11 +189,26 @@ int main(void) {
     a.view = VOICE;
     strcpy(a.voice_title, "Voice session");
     strcpy(a.voice_text, "Synthetic transcript line one\nAnother line");
-    for (unsigned phase = 0; phase <= VOICE_MIC_ERROR; phase++) {
-        a.voice_phase = phase;
-        draw(&a);
-        assert(draw(&a) == 0);
+    for (unsigned fresh = 0; fresh < 2; fresh++) {
+        /* Spoken new task reuses the same widgets with its own copy. */
+        a.voice_new = fresh;
+        a.voice_task_cap = !fresh;
+        a.voice_cap = true;
+        if (fresh)
+            strcpy(a.voice_title, "新任务 · shop");
+        for (unsigned phase = 0; phase <= VOICE_NO_TARGET; phase++) {
+            a.voice_phase = phase;
+            draw(&a);
+            assert(draw(&a) == 0);
+        }
     }
+    a.voice_new = false;
+    /* The list's new-task row fits the same pool. */
+    a.view = LIST;
+    a.list_new = true;
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.list_new = a.voice_cap = a.voice_task_cap = false;
     a.view = COMPANION;
     a.companion_at = a.now;
     for (unsigned action = 0; action <= 4; action++) {

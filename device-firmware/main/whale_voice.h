@@ -37,5 +37,6 @@ enum {
     VOICE_EMPTY,
     VOICE_BROKEN,
     VOICE_DISCONNECTED,
-    VOICE_MIC_ERROR
+    VOICE_MIC_ERROR,
+    VOICE_NO_TARGET /* new task only: no folder on the computer to open it in */
 };

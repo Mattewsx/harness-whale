@@ -29,6 +29,10 @@ static inline void put64(uint8_t *p, uint64_t n) {
 // stay 20 bytes (12-byte payload); version-3 fragments use the negotiated frame.
 #define WHALE_CAP_LARGE_FRAMES 4096u
 #define WHALE_CAP_CACHE_INVALIDATION 16384u
+// Bit 15 is reserved for rich questions. Bit 16: hold-to-talk on the home page
+// opens a new session on the computer (0x48 start, 0x49 target folder label).
+#define WHALE_CAP_VOICE_TASK 65536u
+#define WHALE_VOICE_LABEL_MAX 48u
 #define WHALE_FRAME_LEGACY 20u
 #define WHALE_FRAME_MAX 244u // ATT MTU 247 minus the 3-byte ATT header
 typedef struct {
