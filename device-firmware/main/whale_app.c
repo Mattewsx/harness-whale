@@ -476,6 +476,10 @@ static whale_director_in_t director_in(void) {
         .audio_busy = whale_audio_busy(),
         .cues_batching = reminders.batching,
         .companion_action = a.companion_action != 0,
+        .invitation = a.invitation != 0,
+        .cheer = a.cheer,
+        .cheer_at = a.cheer_at,
+        .waiting_at = a.waiting_at,
     };
     /* Rows are stale while offline; only a live task keeps the screen lit. */
     for (int i = 0; a.linked && i < a.count; i++)
@@ -779,6 +783,21 @@ static void companion_tick(void) {
         if (whale_director_queue(&in) == WHALE_GO_QUEUE)
             open_queue();
         break;
+    }
+    /* Feelings: time how long a question has been waiting, end the cheer. */
+    if (!a.global_valid || !a.global_waiting)
+        a.waiting_timed = false;
+    else if (!a.waiting_timed) {
+        a.waiting_timed = true;
+        a.waiting_at = a.now;
+    }
+    if (a.cheer && a.now - a.cheer_at >= WHALE_CELEBRATE_MS)
+        a.cheer = false;
+    in = director_in();
+    uint8_t feel = (uint8_t)whale_director_feel(&in);
+    if (feel != a.feel) {
+        a.feel = feel;
+        dirty = true;
     }
     if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
         disconnect_pending = false;
@@ -1786,6 +1805,8 @@ static void apply_message(whale_msg_t msg) {
             a.mood = 2;
             a.activity = 5;
             a.mood_at = a.activity_at = a.now;
+            a.cheer = true; /* celebrate the finished session for a moment */
+            a.cheer_at = a.now;
         }
         if (p[25]) {
             invitation_dismiss();

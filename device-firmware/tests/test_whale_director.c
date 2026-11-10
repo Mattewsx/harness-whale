@@ -179,6 +179,74 @@ static void test_queue(void) {
     assert(whale_director_queue(&in) == WHALE_GO_STAY);
 }
 
+static void test_feel(void) {
+    /* Anxious: a question left alone, counted from the later of its arrival
+     * and the last key press. */
+    whale_director_in_t in = base();
+    in.waiting = 1;
+    in.waiting_at = in.now - WHALE_ANXIOUS_MS;
+    in.last_input = in.now - WHALE_ANXIOUS_MS;
+    assert(whale_director_feel(&in) == WHALE_FEEL_ANXIOUS);
+    in.view = LIST;
+    assert(whale_director_feel(&in) == WHALE_FEEL_ANXIOUS);
+    in.view = HOME;
+    in.waiting_at++;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.waiting_at--;
+    in.last_input++; /* a recent key press: the user is busy with the device */
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.waiting_at = in.last_input = in.now - WHALE_VERY_ANXIOUS_MS;
+    assert(whale_director_feel(&in) == WHALE_FEEL_VERY_ANXIOUS);
+    in.last_input++;
+    assert(whale_director_feel(&in) == WHALE_FEEL_ANXIOUS);
+    in.last_input--;
+    in.waiting = 0; /* nothing waits: never anxious */
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.waiting = 1;
+    in.linked = false;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.linked = true;
+    in.global_valid = false;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.global_valid = true;
+    in.global_at = in.now - WHALE_SUMMARY_FRESH_MS;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.global_at = in.now;
+    assert(whale_director_feel(&in) == WHALE_FEEL_VERY_ANXIOUS);
+    /* Calm wherever the whale is not on show, and while she is occupied. */
+    static const whale_page_t elsewhere[] = {TASK_DETAIL, QUESTION, REPLY_READ, VOICE, COMPANION,
+                                             WARDROBE, DESK, RESULT, PAIR};
+    for (unsigned i = 0; i < sizeof elsewhere / sizeof *elsewhere; i++) {
+        in.view = elsewhere[i];
+        assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    }
+    in.view = HOME;
+    in.voice_busy = true;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.voice_busy = false;
+    in.companion_action = true;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.companion_action = false;
+    in.invitation = true;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in.invitation = false;
+    /* Celebrate: short, ends by itself, and comes before anxiety. */
+    in.cheer = true;
+    in.cheer_at = in.now;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CELEBRATE);
+    in.cheer_at = in.now - WHALE_CELEBRATE_MS + 1;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CELEBRATE);
+    in.cheer_at--;
+    assert(whale_director_feel(&in) == WHALE_FEEL_VERY_ANXIOUS);
+    in.waiting = 0;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    in = base();
+    in.linked = false; /* a celebration already started finishes offline */
+    in.cheer = true;
+    in.cheer_at = in.now - 1000;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CELEBRATE);
+}
+
 static void test_offline_and_screen(void) {
     whale_director_in_t in = base();
     in.linked = false;
@@ -274,11 +342,13 @@ enum {
     EV_COMPANION,
     EV_ROWS,
     EV_OLD_BRIDGE,
+    EV_CHEER,
+    EV_INVITE,
     EV_COUNT
 };
 static const char *const event_names[EV_COUNT] = {
     "time", "key", "navigate", "link", "drop", "summary", "trigger",
-    "voice", "audio", "batch", "companion", "rows", "old-bridge"};
+    "voice", "audio", "batch", "companion", "rows", "old-bridge", "cheer", "invite"};
 
 #define TRACE 48u
 static struct {
@@ -395,6 +465,28 @@ static void loop_pass(whale_director_in_t *in) {
     if (!in->linked && !s.hold && in->now - in->last_input >= WHALE_POWER_OFF_MS)
         CHECK(whale_director_main_view(in->view), "offline page outlives the screen-off time",
               in);
+    /* Feelings. The app drops an ended cheer on every pass. */
+    if (in->cheer && in->now - in->cheer_at >= WHALE_CELEBRATE_MS)
+        in->cheer = false;
+    whale_feel_t feel = whale_director_feel(in);
+    CHECK(feel == whale_director_feel(in), "feeling is not deterministic", in);
+    if (feel != WHALE_FEEL_CALM) {
+        CHECK(in->view == HOME || in->view == LIST, "a feeling shows on a page without the whale",
+              in);
+        CHECK(!in->voice_busy && !in->companion_action && !in->invitation,
+              "a feeling interrupts voice, a reaction or an invitation", in);
+    }
+    if (feel == WHALE_FEEL_CELEBRATE)
+        CHECK(in->cheer && in->now - in->cheer_at < WHALE_CELEBRATE_MS,
+              "a celebration with nothing finished, or one that does not end", in);
+    if (feel == WHALE_FEEL_ANXIOUS || feel == WHALE_FEEL_VERY_ANXIOUS) {
+        uint32_t limit = feel == WHALE_FEEL_ANXIOUS ? WHALE_ANXIOUS_MS : WHALE_VERY_ANXIOUS_MS;
+        CHECK(in->waiting && in->linked && in->ready && in->global_valid,
+              "anxious with nothing verifiably waiting", in);
+        CHECK(in->now - in->waiting_at >= limit, "anxious before the question waited long enough",
+              in);
+        CHECK(in->now - in->last_input >= limit, "anxious right after a key press", in);
+    }
     /* An old bridge cannot prove idleness: the desk display never stays. */
     if (in->linked && in->ready && !in->global_cap)
         CHECK(in->view != DESK, "desk display stays on an old bridge", in);
@@ -473,7 +565,12 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
             in.global_valid = below(8) != 0;
             in.global_at = in.now;
             in.running = (uint16_t)(below(3) ? 0 : below(4));
-            in.waiting = (uint16_t)(below(3) ? 0 : below(3));
+            {
+                uint16_t waiting = (uint16_t)(below(3) ? 0 : below(3));
+                if (waiting && !(in.waiting && in.global_valid))
+                    in.waiting_at = in.now; /* the app times the wait from here */
+                in.waiting = waiting;
+            }
             in.unread = (uint16_t)(below(3) ? 0 : below(3));
             {
                 whale_director_in_t was = in;
@@ -527,6 +624,13 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
             if (in.linked)
                 in.global_cap = false;
             break;
+        case EV_CHEER:
+            in.cheer = true;
+            in.cheer_at = in.now;
+            break;
+        case EV_INVITE:
+            in.invitation = !in.invitation;
+            break;
         }
         trace[traced % TRACE].kind = kind;
         trace[traced % TRACE].arg = arg;
@@ -560,6 +664,7 @@ int main(void) {
     test_desk();
     test_work_interrupts_only_the_desk();
     test_queue();
+    test_feel();
     test_offline_and_screen();
     test_activity();
     test_fuzz();

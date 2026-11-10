@@ -59,6 +59,11 @@ typedef enum {
 #define WHALE_QUEUE_NEXT_MS 1500u
 /* The home page pops a new question only after the user left it alone this long. */
 #define WHALE_QUEUE_IDLE_MS 10000u
+/* Feelings: a question left unanswered this long makes the whale anxious,
+ * then very anxious; a finished session is celebrated for a few seconds. */
+#define WHALE_ANXIOUS_MS 120000u
+#define WHALE_VERY_ANXIOUS_MS 300000u
+#define WHALE_CELEBRATE_MS 4000u
 /* The whale's mood steers the idle animation for this long. */
 #define WHALE_MOOD_MS 300000u
 
@@ -70,6 +75,13 @@ typedef enum {
     WHALE_GO_FOCUS,     /* the session that just started work */
     WHALE_GO_QUEUE      /* the oldest question the device can answer, else the list */
 } whale_go_t;
+
+typedef enum {
+    WHALE_FEEL_CALM,
+    WHALE_FEEL_CELEBRATE,
+    WHALE_FEEL_ANXIOUS,
+    WHALE_FEEL_VERY_ANXIOUS
+} whale_feel_t;
 
 typedef struct {
     whale_page_t view;
@@ -86,6 +98,10 @@ typedef struct {
     bool cues_batching;    /* reminder cues are still being collected */
     bool companion_action; /* a companion reaction is still on screen */
     bool live_task;        /* a cached row is running or has a question */
+    bool invitation;       /* the whale is inviting the user to interact */
+    bool cheer;            /* a session finished at cheer_at */
+    uint32_t cheer_at;
+    uint32_t waiting_at;   /* when the waiting count last rose from zero */
 } whale_director_in_t;
 
 typedef struct {
@@ -117,6 +133,13 @@ whale_go_t whale_director_queue(const whale_director_in_t *in);
 whale_go_t whale_director_result_key(const whale_director_in_t *in);
 /* Screen and sleep wishes passed on to the power policy. */
 whale_director_screen_t whale_director_screen(const whale_director_in_t *in);
+
+/* What the whale shows on the home page and above the list. Celebration is
+ * short and always ends; anxiety counts from the later of the question
+ * arriving and the last key press, so it never nags someone who is busy
+ * with the device. Calm on every other page and during voice, a companion
+ * reaction or an invitation. */
+whale_feel_t whale_director_feel(const whale_director_in_t *in);
 
 /* Idle animation on the home page. mood: 0 none, 1..2 happy, 3 calm, 4+ shy. */
 #define WHALE_ACTIVITY_SETS 5u

@@ -38,6 +38,18 @@ Highest first:
 | `whale_director_screen` | Voice, audio, cue batch, pairing or unbinding | Do not sleep |
 | `whale_director_activity_set` / `whale_director_activity` | Home page idle animation | Set from mood (5 min) or day and night; the next pick never repeats the current one |
 
+## Feelings
+
+`whale_director_feel` decides what the whale shows on the home page and above the list. The art is a placeholder: existing poses plus motion and a caption.
+
+| Feeling | When | Shown as |
+| --- | --- | --- |
+| Celebrate | A session finished (live cue 3), for `WHALE_CELEBRATE_MS` (4 s) | Happy and waving poses, bouncing, "任务完成啦！" |
+| Anxious | A question has waited `WHALE_ANXIOUS_MS` (2 min) and no key was pressed for as long | Waiting pose, shaking, "有 N 个问题在等你" |
+| Very anxious | The same for `WHALE_VERY_ANXIOUS_MS` (5 min) | Faster shake, "还在等你，来看看好不好？" |
+
+Anxiety needs a fresh valid summary from a linked bridge. It counts from the later of the first waiting question and the last key press. Celebration comes first while it lasts. The whale stays calm on every other page and during voice, a companion reaction or an invitation.
+
 "Pending queue" opens a priority snapshot. The bridge lists questions the device can answer first, oldest first, so the device opens row 0 directly. When row 0 has no such question (for example, only questions that must be handled on the computer), the desk display and the result page land on the list and a home page left alone stays home. Other pages are never interrupted: the list badge still shows the count.
 
 "Verifiably idle" means offline, or a fresh (under 30 s) valid global summary with no running, waiting or unread sessions.
@@ -51,6 +63,9 @@ The seeded fuzz test checks these after every random event:
 - A question pops up over the home page only after it was left alone for 10 s, and never over voice or a companion reaction.
 - The queue moves on only from the result of an accepted answer, after it has been shown, never during voice, and only on a summary newer than the answer that still counts a waiting question.
 - Confirm on a result page opens the queue only when a question waits.
+- A celebration needs a finished session and always ends after 4 s.
+- The whale is anxious only while something verifiably waits, after both the wait and the time since the last key press passed the threshold.
+- Feelings show only on the home page and the list, never during voice, a companion reaction or an invitation.
 - Work never takes over any other page: the list, a reply being read, a question in progress, voice or settings.
 - A key press always leaves the desk display.
 - The offline rule only fires when offline, after the screen-off time, on an operation page, and never interrupts voice, audio, pairing or unbinding.

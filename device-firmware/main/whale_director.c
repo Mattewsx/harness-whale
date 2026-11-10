@@ -92,6 +92,22 @@ whale_go_t whale_director_result_key(const whale_director_in_t *in) {
     return whale_director_more_waiting(in) ? WHALE_GO_QUEUE : WHALE_GO_STAY;
 }
 
+whale_feel_t whale_director_feel(const whale_director_in_t *in) {
+    if ((in->view != HOME && in->view != LIST) || in->voice_busy || in->companion_action ||
+        in->invitation)
+        return WHALE_FEEL_CALM;
+    if (in->cheer && in->now - in->cheer_at < WHALE_CELEBRATE_MS)
+        return WHALE_FEEL_CELEBRATE;
+    if (!in->linked || !in->ready || !in->global_cap || !in->global_valid || !in->waiting ||
+        in->now - in->global_at >= WHALE_SUMMARY_FRESH_MS)
+        return WHALE_FEEL_CALM;
+    uint32_t waited = in->now - in->waiting_at, untouched = in->now - in->last_input;
+    uint32_t ignored = waited < untouched ? waited : untouched;
+    return ignored >= WHALE_VERY_ANXIOUS_MS ? WHALE_FEEL_VERY_ANXIOUS
+           : ignored >= WHALE_ANXIOUS_MS    ? WHALE_FEEL_ANXIOUS
+                                            : WHALE_FEEL_CALM;
+}
+
 const uint8_t whale_activity_pool[WHALE_ACTIVITY_SETS][WHALE_ACTIVITY_CHOICES] = {
     {0, 1, 3, 6, 4, 7}, /* day */
     {2, 2, 2, 7, 7, 6}, /* night */

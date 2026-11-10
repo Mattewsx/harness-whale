@@ -62,6 +62,10 @@ typedef struct {
     uint8_t bond_taps, bond_taps_undated; /* independent, persisted interaction quota */
     uint32_t bond_day;  /* latest credited local day, zero until first sync */
     whale_page_t view;
+    /* Feelings (whale_feel_t), decided by the screen director. */
+    uint8_t feel;
+    bool cheer, waiting_timed;
+    uint32_t cheer_at, waiting_at;
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;
     whale_local_time_t clock;

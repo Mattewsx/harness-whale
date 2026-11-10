@@ -2023,6 +2023,69 @@ static void test_pending_queue(void) {
     puts("Pending queue: next question after an answer, quiet home pop-up, fallbacks PASS");
 }
 
+static void test_feelings(void) {
+    /* Anxious after a question waited two minutes untouched, very anxious
+     * after five; a key press or the answer calms her down. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    last_input = a.now;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && a.waiting_timed && a.waiting_at == a.now);
+    a.now += WHALE_ANXIOUS_MS - 1;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && a.view == HOME);
+    a.now++;
+    dirty = false;
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_ANXIOUS && dirty && a.view == HOME);
+    user_input();
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM);
+    a.now += WHALE_VERY_ANXIOUS_MS;
+    summary(0, 2, 0); /* a second question does not restart the wait */
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_VERY_ANXIOUS);
+    page(LIST);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_VERY_ANXIOUS);
+    page(TASK_DETAIL);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM);
+    page(HOME);
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && !a.waiting_timed);
+    /* A new question starts a new wait. */
+    a.now += 1000;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.waiting_at == a.now && a.feel == WHALE_FEEL_CALM);
+
+    /* A finished session is celebrated for a few seconds, then it is over. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    last_input = a.now;
+    cue_event(1, 10, 30, 3, 3);
+    companion_tick();
+    assert(a.cheer && a.feel == WHALE_FEEL_CELEBRATE && a.view == HOME);
+    a.now += WHALE_CELEBRATE_MS - 1;
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CELEBRATE);
+    a.now++;
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && !a.cheer);
+    /* Work that merely started, or an error, is not celebrated. */
+    cue_event(2, 10, 31, 0, 5);
+    cue_event(3, 10, 32, 2, 2);
+    companion_tick();
+    assert(!a.cheer && a.feel == WHALE_FEEL_CALM);
+    puts("Feelings: anxious after a long wait, calmed by a key or an answer, brief celebration PASS");
+}
+
 /* Seeded random frames, keys, links and time through the whole application.
  * Built with ASan/UBSan in validate.sh; it looks for crashes, out-of-range
  * state and broken screen-director invariants rather than exact behavior.
@@ -2038,7 +2101,11 @@ static void app_fuzz_check(uint64_t seed, unsigned step, unsigned action) {
     bool ok = a.view <= STANDBY && a.count <= 8 && (!a.count || a.selected < a.count) &&
               a.scroll >= 0 && a.options <= 3 && a.focus <= 8 &&
               /* The queue only waits on its own priority snapshot. */
-              (!queue_next || a.view == LIST_LOAD || a.view == LIST_FAILED);
+              (!queue_next || a.view == LIST_LOAD || a.view == LIST_FAILED) &&
+              a.feel <= WHALE_FEEL_VERY_ANXIOUS &&
+              /* Feelings only where the whale is on show; never anxious over nothing. */
+              (!a.feel || a.view == HOME || a.view == LIST) &&
+              (a.feel < WHALE_FEEL_ANXIOUS || (a.global_valid && a.global_waiting && a.linked));
     /* The desk display never hides work that needs the user. */
     if (ok && a.view == DESK && a.linked && a.ready && a.global_cap && a.global_valid &&
         a.now - a.global_at < WHALE_SUMMARY_FRESH_MS)
@@ -2167,6 +2234,7 @@ int main(void) {
     test_voice_and_attention();
     test_voice_direct_entry();
     test_pending_queue();
+    test_feelings();
     test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");
