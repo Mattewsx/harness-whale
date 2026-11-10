@@ -31,7 +31,8 @@ CACHE_INVALIDATION = 1 << 14
 # Bits 15 and 16 independently negotiate rich questions and spoken new tasks.
 RICH_QUESTIONS = 1 << 15
 VOICE_TASK = 1 << 16
-CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION | RICH_QUESTIONS | VOICE_TASK
+PENDING_QUEUE = 1 << 17  # independent FIFO answer queue, snapshot sort 3
+CAPS = 4095 | QUESTION_READ | CACHE_INVALIDATION | RICH_QUESTIONS | VOICE_TASK | PENDING_QUEUE
 MODES = {"single": 0, "multi": 1, "approval": 2}
 LARGE_FRAMES = 4096  # bit 12: protocol 2.3 negotiated large frames
 LEGACY_FRAME = 20
@@ -590,6 +591,7 @@ class Link:
         self.cache_invalidation = False
         self.cache_sequence = 0
         self.attention = False
+        self.pending_queue = False
         self.details = {}
         self.readable=False
         self.previews={}
@@ -717,23 +719,30 @@ class Link:
             self.global_summary, self.global_at = summary, now
         return out
 
-    def snapshot(self, cursor=0, limit=8, refresh_order=True):
+    def snapshot(self, cursor=0, limit=8, refresh_order=True, pending_queue=False):
         m = self.model
         keys = list(m.sessions)
         if refresh_order and self.attention:
             def priority(sid):
                 row = m.row(sid, True, self.question_read, self.rich)
                 state, flags = row[8], row[10]
-                question = m.needs_answer(sid, state, int.from_bytes(row[19:23], 'little'))
+                qid = int.from_bytes(row[19:23], 'little')
+                question = m.needs_answer(sid, state, qid)
+                fifo = qid if qid else 1 << 32
+                # Queue eligibility is independent of unread status. A question
+                # remains answerable after it was read and deferred; errors and
+                # computer-only questions must not hide it beyond row 0/page 1.
+                if pending_queue and qid:
+                    return (-1, fifo)
                 if flags & 32 or (question and not self.question_read):
-                    return 0
+                    return (0, fifo)
                 if flags & 16:
-                    return 1
+                    return (1, 0)
                 if flags & (8 | 64):
-                    return 2
+                    return (2, 0)
                 if question:
-                    return 3
-                return 4 if state in (2, 3, 4) else 5
+                    return (3, fifo)
+                return (4 if state in (2, 3, 4) else 5, 0)
             keys.sort(key=priority)  # stable within a priority; no heartbeat jitter
         elif not refresh_order:
             keys = [sid for sid in self.order if sid in m.sessions] + [sid for sid in keys if sid not in self.order]
@@ -841,6 +850,7 @@ class Link:
             self.rich = bool(caps & RICH_QUESTIONS)
             self.cache_invalidation = bool(caps & CACHE_INVALIDATION)
             self.attention=bool(caps & 1024)
+            self.pending_queue = self.attention and bool(caps & PENDING_QUEUE)
             self.global_cap=bool(caps & 2048)
             self.voice_task = bool(caps & VOICE_TASK) and bool(caps & 512)
             self.clock_at = None
@@ -871,7 +881,9 @@ class Link:
             return []
         if kind == 0x10 and len(body) == 14:
             _, cursor, limit, sort = struct.unpack("<QIBB", body)
-            return self.snapshot(cursor, limit, refresh_order=not self.cache_invalidation or sort == 2 or not self.order)
+            return self.snapshot(cursor, limit,
+                                 refresh_order=not self.cache_invalidation or sort in (2, 3) or not self.order,
+                                 pending_queue=sort == 3 and self.pending_queue)
         if kind == 0x1A and self.readable and len(body)==20:
             epoch,sid,rev,page=struct.unpack("<QIII",body)
             row=m.sessions.get(sid,{})

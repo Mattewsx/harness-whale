@@ -1,43 +1,12 @@
 #pragma once
 #include "whale_ble.h"
 #include "whale_clock.h"
+#include "whale_director.h"
 #include "whale_voice.h"
 
 /* Display slots map to persistent skin IDs. This permutation is its own inverse. */
 static const uint8_t whale_wardrobe_order[] = {0, 2, 1, 3};
 
-typedef enum {
-    TASK_DETAIL,
-    LIST,
-    PAIR,
-    MANAGE,
-    KEEP,
-    REVOKE,
-    UNBINDING,
-    UNBIND_FAILED,
-    LOADING,
-    LOAD_FAILED,
-    QUESTION,
-    PROMPT,
-    OPTION,
-    SENDING,
-    CHECKING,
-    UNSURE,
-    RESULT,
-    VERSION,
-    LIST_LOAD,
-    LIST_FAILED,
-    REPLY_LOAD,
-    REPLY_READ,
-    REPLY_FAILED,
-    VOICE,
-    COMPANION,
-    SOUND,
-    HOME,
-    WARDROBE,
-    DESK, /* desk display: clock, whale and today's summary, entered when idle */
-    STANDBY /* settings: choose the desk display (summary or plain clock) */
-} whale_page_t;
 typedef struct {
     whale_row_t rows[8];
     struct {
@@ -61,7 +30,7 @@ typedef struct {
     char prompt[513], labels[3][257];
     uint8_t question_mode; /* WHALE_MODE_*: single choice, multi-select or approval */
     uint64_t picked;       /* multi-select: chosen option ids as bits */
-    bool voice_cap, voice_submitted, attention_cap;
+    bool voice_cap, voice_submitted, attention_cap, pending_queue_cap;
     /* Spoken new task: voice_new targets a fresh session instead of the selected one. */
     bool voice_task_cap, voice_new;
     uint8_t voice_phase, voice_choice, voice_identity[24];
@@ -93,6 +62,10 @@ typedef struct {
     uint8_t bond_taps, bond_taps_undated; /* independent, persisted interaction quota */
     uint32_t bond_day;  /* latest credited local day, zero until first sync */
     whale_page_t view;
+    /* Feelings (whale_feel_t), decided by the screen director. */
+    uint8_t feel;
+    bool cheer, waiting_timed;
+    uint32_t cheer_at, waiting_at;
     /* Desk clock: local time from the bridge sync or the chip's RTC. */
     bool clock_valid, night;
     whale_local_time_t clock;

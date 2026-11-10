@@ -42,6 +42,24 @@ class CompanionCues(unittest.TestCase):
         self.l.receive(0x52,pack('QI',self.m.epoch,sid));self.assertIn(sid,self.l.rows)
         self.m.resolve('q',0,1)
         self.assertEqual([b for k,b in self.l.changes() if k==0x51][0][-2:],bytes((0,0)))
+    def test_pending_queue_is_first_in_first_out(self):
+        # Questions arrive in sessions 7, 2, 9: the priority snapshot lists them
+        # first in that order, whatever the session order, and moves on as each
+        # one is answered.
+        self.l.attention=True;self.l.changes()
+        for index in (7,2,9):
+            self.update(index,state='question')
+            self.m.question(dict(sessionId=f's{index}',runId='run',requestId=f'q{index}',question='Pick',options=['A','B']),('127.0.0.1',1))
+        self.update(4,state='thinking')
+        def order():
+            rows=[b for k,b in self.l.snapshot(0) if k==0x12]
+            return [struct.unpack_from('<I',b,13)[0] for b in rows]
+        ids=lambda *xs:[self.m.keys[f's{i}'] for i in xs]
+        self.assertEqual(order()[:3],ids(7,2,9))
+        self.m.resolve('q7',0,0);self.update(7,state='thinking')
+        self.assertEqual(order()[:2],ids(2,9))
+        summary=[b for k,b in self.l.changes() if k==0x50][-1]
+        self.assertEqual(struct.unpack('<QIHHHHIB',summary)[4],2)
     def test_new_messages_fragment_roundtrip(self):
         self.l.changes();self.update(10,state='error');rx=Receiver()
         for serial,(kind,body) in enumerate(self.l.changes(),1):
@@ -49,6 +67,54 @@ class CompanionCues(unittest.TestCase):
             result=None
             for frame in fragments(kind,serial,body):result=rx.accept(frame)
             self.assertEqual(result,(kind,body))
+
+    def test_pending_queue_includes_read_questions_outside_attention_window(self):
+        # Read is not answered: the oldest question is behind more than one
+        # normal attention page, but must still be first in the answer queue.
+        pending_queue = 1 << 17
+        self.l.receive(2, pack('BBIHHB',2,2,CAPS | pending_queue,20,20,0))
+        self.update(11,state='question')
+        self.m.question(dict(sessionId='s11',runId='run',requestId='oldest',
+                             question='Pick',options=['A','B']),('127.0.0.1',1))
+        old_id = self.m.by_request['oldest']
+        sid, qid = struct.unpack_from('<I',old_id,8)[0], struct.unpack_from('<I',old_id,16)[0]
+        self.m.read_mark(sid,qid,3)
+        for index in range(9):
+            self.update(index,state='error')
+        self.update(9,state='question')  # unsupported question: computer only
+        self.update(10,state='question')
+        self.m.question(dict(sessionId='s10',runId='run',requestId='newer',
+                             question='Pick again',options=['A','B']),('127.0.0.1',1))
+
+        def request(sort):
+            return [b[13:] for k,b in self.l.receive(
+                0x10,pack('QIBB',self.m.epoch,0,8,sort)) if k==0x12]
+        normal=request(2)
+        self.assertNotIn(sid,[int.from_bytes(row[:4],'little') for row in normal])
+        queued=request(3)
+        self.assertEqual([int.from_bytes(row[:4],'little') for row in queued[:2]],
+                         [sid,self.m.keys['s10']])
+        self.assertFalse(queued[0][10] & 32)  # no unread resurrection
+        self.assertEqual(self.m.row(sid,True,True,True)[10] & 32,0)
+        # Resolving the oldest advances to the newer one. Opening an ordinary
+        # list afterwards restores attention order rather than leaking queue order.
+        self.m.resolve('oldest',0,0)
+        self.assertEqual(int.from_bytes(request(3)[0][:4],'little'),self.m.keys['s10'])
+        self.assertEqual([row[:4] for row in request(2)],[row[:4] for row in normal])
+        self.m.evict('s10')
+        self.assertTrue(all(int.from_bytes(row[19:23],'little')==0 for row in request(3)))
+
+    def test_pending_queue_sort_requires_negotiation(self):
+        self.l.receive(2,pack('BBIHHB',2,2,CAPS & ~(1 << 17),20,20,0))
+        sid=self.update(11,state='question')
+        self.m.question(dict(sessionId='s11',runId='run',requestId='seen',
+                             question='Pick',options=['A','B']),('127.0.0.1',1))
+        qid=int.from_bytes(self.m.by_request['seen'][16:20],'little')
+        self.m.read_mark(sid,qid,3)
+        self.update(0,state='error')
+        # An unnegotiated mode must keep ordinary list priority.
+        rows=[b[13:] for k,b in self.l.receive(0x10,pack('QIBB',self.m.epoch,0,8,3)) if k==0x12]
+        self.assertEqual(int.from_bytes(rows[0][:4],'little'),self.m.keys['s0'])
     def test_completion_without_reply_is_once_and_network_wait_is_silent(self):
         self.l.changes();self.update(0,state='thinking');self.l.changes()
         self.update(0,state='waiting',hint=0)

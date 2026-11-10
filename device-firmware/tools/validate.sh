@@ -39,9 +39,29 @@ run_static_checks() {
     "${test_dir}/test_whale_voice"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain \
-        tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c main/whale_power.c \
+        tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c main/whale_power.c main/whale_director.c \
         main/whale_battery_log.c main/whale_clock.c -o "${test_dir}/test_whale_app"
     "${test_dir}/test_whale_app"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_whale_director.c main/whale_director.c -o "${test_dir}/test_whale_director"
+    "${test_dir}/test_whale_director"
+    # The seeded fuzz tests again under AddressSanitizer and UBSan, where the
+    # compiler and platform support them.
+    sanitize=(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    if printf 'int main(void){return 0;}\n' |
+        "${CC:-cc}" "${sanitize[@]}" -x c - -o "${test_dir}/sanitize_probe" 2>/dev/null &&
+        "${test_dir}/sanitize_probe"; then
+        "${CC:-cc}" -std=c11 -g "${sanitize[@]}" -Imain \
+            tests/test_whale_director.c main/whale_director.c -o "${test_dir}/test_whale_director_san"
+        "${test_dir}/test_whale_director_san"
+        "${CC:-cc}" -std=c11 -g "${sanitize[@]}" -Itests/whale_stubs -Imain \
+            tests/test_whale_app.c main/whale_wire.c main/whale_reply_cache.c main/whale_power.c \
+            main/whale_director.c main/whale_battery_log.c main/whale_clock.c \
+            -o "${test_dir}/test_whale_app_san"
+        "${test_dir}/test_whale_app_san"
+    else
+        echo "Sanitizers unavailable for ${CC:-cc}; ran the fuzz tests without them."
+    fi
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
         -Itests/whale_stubs -Imain tests/test_whale_audio.c -o "${test_dir}/test_whale_audio"
     "${test_dir}/test_whale_audio"

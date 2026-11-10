@@ -169,6 +169,71 @@ assert hellos==['tx 02 '+granted.hex(),'tx 02 '+v.pack('BBIHHB',2,3,v.CAPS,20,20
 assert large*4<legacy,(large,legacy)
 print(f'PASS: protocol 2.3 grant from C, version-3 eight-row window ({large} frames vs {legacy} legacy), reset on disconnect')
 
+# A deferred question beyond the normal attention window must still open first
+# in the independent FIFO queue. Drive the actual Python frames through C,
+# accept one answer, and verify that C requests and opens the next question.
+m=v.Workspace();m.set_roster({f'Q{i}' for i in range(12)})
+for i in range(12):m.update(dict(sessionId=f'Q{i}',runId='run',state='idle',title=f'Queue {i}'))
+link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,v.CAPS,20,20,0));lines=[];serial=[0,0]
+send(*v.hello())
+for kind,body in link.snapshot()+link.changes():send(kind,body)
+lines+=['view 26','advance 11000']
+m.question(dict(sessionId='Q11',runId='run',requestId='first',question='First',options=['A','B']),('127.0.0.1',1))
+first=m.by_request['first'];m.read_mark(m.keys['Q11'],int.from_bytes(first[16:20],'little'),3)
+for i in range(9):m.update(dict(sessionId=f'Q{i}',runId='run',state='error',title=f'Queue {i}'))
+m.update(dict(sessionId='Q9',runId='run',state='question',title='Computer only'))
+m.question(dict(sessionId='Q10',runId='run',requestId='second',question='Second',options=['A','B']),('127.0.0.1',1))
+second=m.by_request['second']
+for kind,body in link.changes():send(kind,body)
+lines+=['view 18']
+queue_request=v.pack('QIBB',m.epoch,0,8,3)
+for kind,body in link.receive(0x10,queue_request):send(kind,body)
+lines+=['view 8',f'selected {m.keys["Q11"]}']
+for kind,body in link.receive(0x24,first+b'\xff')+link.receive(0x24,first+b'\0'):send(kind,body)
+lines+=['view 10','key 2','view 13','advance 1']
+m.resolve('first',0,0)
+for kind,body in link.receive(0x25,first)+link.changes():send(kind,body)
+lines+=['view 16','advance 1500','view 18']
+for kind,body in link.receive(0x10,queue_request):send(kind,body)
+lines+=['view 8',f'selected {m.keys["Q10"]}']
+r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+assert r.stdout.count('tx 10 '+queue_request.hex())==2,r.stdout
+assert [line for line in r.stdout.splitlines() if line.startswith('tx 22 ')]==['tx 22 '+(first+b'\0\0').hex()],r.stdout
+assert 'tx 24 '+(second+b'\xff').hex() in r.stdout,r.stdout
+assert not m.row(m.keys['Q11'],True,True,True)[10] & 32
+print('PASS: FIFO queue across attention pages, read badge retained, one accepted answer and automatic next question')
+
+# A drop while a queue snapshot is in flight cancels the jump. Neither an old
+# bridge nor a fresh epoch may reinterpret its new baseline as that response.
+for downgrade in (True,False):
+    m=v.Workspace();m.set_roster({'R0','R1'})
+    for i in range(2):m.update(dict(sessionId=f'R{i}',runId='run',state='idle',title=f'Reconnect {i}'))
+    link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,v.CAPS,20,20,0));lines=[];serial=[0,0]
+    send(*v.hello())
+    for kind,body in link.snapshot()+link.changes():send(kind,body)
+    lines+=['advance 11000']
+    for i in range(2):
+        m.question(dict(sessionId=f'R{i}',runId='run',requestId=f'r{i}',question='Choose',options=['A','B']),('127.0.0.1',1))
+    first=m.by_request['r0'];m.read_mark(m.keys['R0'],int.from_bytes(first[16:20],'little'),3)
+    for kind,body in link.changes():send(kind,body)
+    lines+=['view 18','down']
+    if not downgrade:
+        old_epoch=m.epoch
+        m=v.Workspace();assert m.epoch!=old_epoch
+        for i in range(2):
+            m.update(dict(sessionId=f'R{i}',runId='new',state='idle',title=f'Fresh {i}'))
+            m.question(dict(sessionId=f'R{i}',runId='new',requestId=f'fresh{i}',question='Fresh',options=['A','B']),('127.0.0.1',1))
+    caps=v.CAPS & ~v.PENDING_QUEUE if downgrade else v.CAPS
+    link=v.Link(m);link.receive(2,v.pack('BBIHHB',2,2,caps,20,20,0))
+    send(1,v.pack('BBIHH',2,2,caps,20,20))
+    for kind,body in link.snapshot():send(kind,body)
+    lines+=['view 1']
+    r=subprocess.run([w/'fw_replay.exe'],input='\n'.join(lines)+'\n',capture_output=True,text=True,timeout=8)
+    if r.returncode:raise RuntimeError(r.stderr+r.stdout)
+    assert not any(line.startswith('tx 24 ') for line in r.stdout.splitlines()),r.stdout
+print('PASS: in-flight FIFO cancelled across capability downgrade and a new bridge epoch')
+
 # Integrated features: time sync and global work outside the current page must
 # still reach the desk display after switching to large frames.
 m=v.Workspace();m.set_roster({f'I{i}' for i in range(10)})

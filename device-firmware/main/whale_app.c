@@ -31,6 +31,10 @@ static uint32_t disconnected_at, seek_session, title_requested_at;
 static bool disconnect_pending;
 static bool rich_questions; /* bridge negotiated WHALE_CAP_RICH_QUESTIONS */
 static bool seek_to_list, priority_list;
+/* Pending queue: the priority snapshot in flight should open its oldest
+ * answerable question; queue_from is the page that asked for it. */
+static bool queue_next;
+static whale_page_t queue_from;
 static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
 #define WHALE_CMD_SLEEP 7
@@ -63,8 +67,6 @@ static volatile uint8_t power_flags;
 static volatile uint32_t sleep_timer_ms, sleep_cycles;
 static bool sleep_requested;
 static uint32_t sleep_retry_at, key_guard_until;
-/* Idle this long on the task home (or companion) with no work: desk display. */
-#define WHALE_DESK_IDLE_MS 120000u
 #define WHALE_INVITATION_MS 20000u
 #define WHALE_INVITATION_END_MS 3000u
 static uint32_t rtc_seconds(void);
@@ -190,6 +192,7 @@ static void page(whale_page_t v) {
     if (v != a.view && !(a.view == HOME && v == COMPANION && !a.invitation_settling))
         invitation_dismiss();
     if (v != LIST_LOAD && v != LIST_FAILED) {
+        queue_next = false;
         previous_window = false;
         seek_session = 0;
         seek_to_list = false;
@@ -408,7 +411,8 @@ static void snap(uint32_t cursor) {
     put64(b, a.epoch);
     put32(b + 8, cursor);
     b[12] = 8;
-    b[13] = !a.cache_invalidation || !a.ready || priority_list ? 2 : 0;
+    b[13] = queue_next && a.pending_queue_cap ? 3
+             : !a.cache_invalidation || !a.ready || priority_list ? 2 : 0;
     whale_send(0x10, b, sizeof b);
     stage.deadline = a.now + 3000;
 }
@@ -453,16 +457,53 @@ static void enter_companion(void) {
     a.companion_at = a.now;
     page(COMPANION);
 }
+/* Snapshot of everything the screen director decides on. */
+static whale_director_in_t director_in(void) {
+    whale_director_in_t in = {
+        .view = a.view,
+        .now = a.now,
+        .last_input = last_input,
+        .page_at = a.page_at,
+        .answered = a.view == RESULT && a.result == 0 && !a.unsupported,
+        .linked = a.linked,
+        .ready = a.ready,
+        .global_cap = a.global_cap,
+        .global_valid = a.global_valid,
+        .global_at = a.global_at,
+        .running = a.global_running,
+        .waiting = a.global_waiting,
+        .unread = a.global_unread,
+        .voice_busy = whale_voice_busy(),
+        .audio_busy = whale_audio_busy(),
+        .cues_batching = reminders.batching,
+        .companion_action = a.companion_action != 0,
+        .invitation = a.invitation != 0,
+        .cheer = a.cheer,
+        .cheer_at = a.cheer_at,
+        .waiting_at = a.waiting_at,
+    };
+    /* Rows are stale while offline; only a live task keeps the screen lit. */
+    for (int i = 0; a.linked && i < a.count; i++)
+        if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
+            in.live_task = true;
+    return in;
+}
 static void enter_desk(void) {
     ESP_LOGI("whale", "desk display on (clock %s)", a.clock_valid ? "synced" : "unknown");
     page(DESK);
 }
-/* Work started or needs attention while the companion or desk display is up:
- * go back to the task pages. */
-static void companion_work(uint32_t session, bool attention) {
-    if (a.view != DESK)
+/* The director sent the desk display back to work: open the task pages.
+ * WHALE_GO_ATTENTION opens the list at the highest-priority items,
+ * WHALE_GO_FOCUS the session that just started. */
+static void open_queue(void);
+static void companion_work(uint32_t session, whale_go_t go) {
+    if (go == WHALE_GO_QUEUE) {
+        open_queue();
         return;
-    if (attention) {
+    }
+    if (go != WHALE_GO_ATTENTION && go != WHALE_GO_FOCUS)
+        return;
+    if (go == WHALE_GO_ATTENTION) {
         seek_session = 0;
         seek_to_list = false;
         a.list_back = false;
@@ -495,6 +536,36 @@ static void companion_work(uint32_t session, bool attention) {
         seek_session = 0;
         open_list();
     }
+}
+/* Pending queue: open the oldest question the device can answer. The bridge
+ * sorts waiting questions first, in arrival order; the snapshot handler opens
+ * row 0 when it carries one. Otherwise the desk display and the result page
+ * fall back to the list, and a home page that was left alone stays home. */
+static void open_queue(void) {
+    whale_page_t from = a.view;
+    if (!a.ready || !a.linked || !a.attention_cap) {
+        if (from == DESK) {
+            a.selected = 0;
+            page(LIST);
+        } else if (from == RESULT)
+            page(TASK_DETAIL);
+        return;
+    }
+    /* Old bridges have only unread-priority sorting. Never assume that row 0
+     * is the oldest answerable question; refresh the ordinary list instead. */
+    if (!a.pending_queue_cap) {
+        if (from == DESK || from == RESULT)
+            companion_work(0, WHALE_GO_ATTENTION);
+        return;
+    }
+    seek_session = 0;
+    seek_to_list = false;
+    a.list_back = false;
+    priority_list = true;
+    page(LIST_LOAD);
+    queue_next = true;
+    queue_from = from;
+    snap(0);
 }
 /* Bond cools by one for each local day with no interaction and no work,
  * never below the threshold of the best accessory already unlocked. */
@@ -700,36 +771,42 @@ static void companion_tick(void) {
             room_unsaved = false;
     }
     if (a.view == HOME && a.now - a.activity_at >= 9000) {
-        static const uint8_t pool[][6] = {{0, 1, 3, 6, 4, 7},
-                                          {2, 2, 2, 7, 7, 6},
-                                          {4, 4, 5, 5, 0, 1},
-                                          {0, 5, 7, 0, 5, 7},
-                                          {3, 4, 1, 3, 4, 1}};
-        uint8_t set = a.night ? 1 : 0;
-        if (a.mood && a.now - a.mood_at < 300000)
-            set = a.mood <= 2 ? 2 : a.mood == 3 ? 3 : 4;
         uint8_t pick;
         esp_fill_random(&pick, sizeof pick);
-        for (unsigned i = 0; i < 6; i++) {
-            unsigned candidate = pool[set][(pick + i) % 6];
-            if (candidate != a.activity) {
-                a.activity = candidate;
-                break;
-            }
-        }
+        a.activity = whale_director_activity(
+            whale_director_activity_set(a.night, a.mood, a.now - a.mood_at), a.activity, pick);
         a.activity_at = a.now;
     }
-    bool idle =
-        !a.linked || (a.ready && a.global_cap && a.global_valid && a.now - a.global_at < 30000 &&
-                      !a.global_running && !a.global_waiting && !a.global_unread);
-    invitation_tick(idle);
-    if ((a.view == HOME || a.view == TASK_DETAIL) && a.now - last_input >= WHALE_DESK_IDLE_MS &&
-        idle && !whale_voice_busy() && !a.companion_action)
+    whale_director_in_t in = director_in();
+    invitation_tick(whale_director_idle(&in));
+    in = director_in(); /* the invitation may have ended a companion reaction */
+    switch (whale_director_desk(&in)) {
+    case WHALE_GO_DESK:
         enter_desk();
-    /* After an offline desk display reconnects to an old bridge, the cached
-     * page cannot prove all sessions are idle. Return to the task home. */
-    if (a.view == DESK && a.linked && a.ready && !a.global_cap)
+        break;
+    case WHALE_GO_HOME:
         page(HOME);
+        break;
+    default:
+        if (whale_director_queue(&in) == WHALE_GO_QUEUE)
+            open_queue();
+        break;
+    }
+    /* Feelings: time how long a question has been waiting, end the cheer. */
+    if (!a.global_valid || !a.global_waiting)
+        a.waiting_timed = false;
+    else if (!a.waiting_timed) {
+        a.waiting_timed = true;
+        a.waiting_at = a.now;
+    }
+    if (a.cheer && a.now - a.cheer_at >= WHALE_CELEBRATE_MS)
+        a.cheer = false;
+    in = director_in();
+    uint8_t feel = (uint8_t)whale_director_feel(&in);
+    if (feel != a.feel) {
+        a.feel = feel;
+        dirty = true;
+    }
     if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
         disconnect_pending = false;
         whale_cues_update(&reminders, reminders.seq + 1, 0, disconnected_at, 4, 4, a.now);
@@ -1011,7 +1088,8 @@ static void key(uint32_t code) {
         return;
     }
     user_input();
-    if (a.view == DESK) {
+    whale_director_in_t in = director_in();
+    if (whale_director_key(&in) == WHALE_GO_HOME) {
         page(HOME);
         return;
     }
@@ -1253,7 +1331,10 @@ static void key(uint32_t code) {
             page(MANAGE);
             break;
         case RESULT:
-            page(TASK_DETAIL);
+            if (whale_director_result_key(&in) == WHALE_GO_QUEUE)
+                open_queue();
+            else
+                page(TASK_DETAIL);
             break;
         default:
             break;
@@ -1392,6 +1473,9 @@ static void apply_message(whale_msg_t msg) {
     const uint8_t *p = msg.bytes;
     size_t n = msg.size;
     if (msg.type == 1 && n == 10) {
+        /* A snapshot requested before this handshake cannot carry an automatic
+         * queue jump into a new capability grant or bridge epoch. */
+        queue_next = false;
         // Protocol 2.3: a bridge offering bit 12 gets minor 3; large frames are granted
         // only when both peers and the ATT MTU allow more than the legacy 20 bytes.
         uint32_t offered = w32(p + 2);
@@ -1400,6 +1484,7 @@ static void apply_message(whale_msg_t msg) {
         uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
         put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION |
                                  WHALE_CAP_RICH_QUESTIONS |
+                                 ((offered & 1024) ? WHALE_CAP_PENDING_QUEUE : 0) |
                                  ((offered & 512) ? WHALE_CAP_VOICE_TASK : 0))) |
                          (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
         rich_questions = (offered & WHALE_CAP_RICH_QUESTIONS) != 0;
@@ -1412,6 +1497,7 @@ static void apply_message(whale_msg_t msg) {
         a.voice_cap = (w32(p + 2) & 512) != 0;
         a.voice_task_cap = a.voice_cap && (offered & WHALE_CAP_VOICE_TASK);
         a.attention_cap = (w32(p + 2) & 1024) != 0;
+        a.pending_queue_cap = a.attention_cap && (offered & WHALE_CAP_PENDING_QUEUE);
         if (a.cache_invalidation && !(offered & WHALE_CAP_CACHE_INVALIDATION)) {
             whale_reply_cache_clear();
             a.cache_sequence = 0;
@@ -1422,6 +1508,7 @@ static void apply_message(whale_msg_t msg) {
             b[10] = 1;
             frame = WHALE_FRAME_LEGACY;
             rich_questions = false;
+            a.pending_queue_cap = false;
             put32(b + 2, offered & 4095);
         }
         put16(b + 6, frame);
@@ -1580,6 +1667,14 @@ static void apply_message(whale_msg_t msg) {
         }
         if (new_epoch && (a.view == REPLY_READ || a.view == REPLY_LOAD || a.view == REPLY_FAILED))
             page(LIST);
+        if (queue_next && a.view == LIST_LOAD) {
+            queue_next = false;
+            if (!new_epoch && a.pending_queue_cap && a.count && a.rows[0].question) {
+                a.selected = 0;
+                open_task();
+            } else if (queue_from == HOME)
+                page(HOME);
+        }
         if (a.view == LIST_LOAD || a.view == LIST_FAILED)
             page(LIST);
         if (new_epoch && question_view()) {
@@ -1703,12 +1798,9 @@ static void apply_message(whale_msg_t msg) {
             invitation_dismiss();
         /* The desk display leaves on any summary that shows work; the
          * companion page only reacts to the first one after (re)connecting. */
-        if (a.view == DESK && a.global_valid) {
-            if (a.global_waiting || a.global_unread)
-                companion_work(0, true);
-            else if (a.global_running)
-                companion_work(a.global_focus, false);
-        }
+        whale_director_in_t in = director_in();
+        whale_go_t go = whale_director_summary(&in);
+        companion_work(go == WHALE_GO_FOCUS ? a.global_focus : 0, go);
         return;
     }
     if (msg.type == 0x51 && a.global_cap && n == 26 && p[24] <= 3 && (p[25] <= 3 || p[25] == 5)) {
@@ -1727,10 +1819,13 @@ static void apply_message(whale_msg_t msg) {
             a.mood = 2;
             a.activity = 5;
             a.mood_at = a.activity_at = a.now;
+            a.cheer = true; /* celebrate the finished session for a moment */
+            a.cheer_at = a.now;
         }
         if (p[25]) {
             invitation_dismiss();
-            companion_work(w32(p + 12), p[25] != 5);
+            whale_director_in_t in = director_in();
+            companion_work(w32(p + 12), whale_director_trigger(&in, p[25]));
         }
         return;
     }
@@ -1873,29 +1968,16 @@ static void apply_message(whale_msg_t msg) {
         page(QUESTION);
     }
 }
-static bool main_view(void) {
-    return a.view == HOME || a.view == TASK_DETAIL || a.view == LIST || a.view == COMPANION ||
-           a.view == WARDROBE || a.view == DESK;
-}
 static void power_step(void) {
-    bool hold = whale_voice_busy() || whale_audio_busy() || reminders.batching || a.view == PAIR ||
-                a.view == UNBINDING;
-    /* Nobody answers an offline page: once the screen would turn off, return
-     * home so the device may sleep. Pairing and unbinding finish on their own. */
-    if (!a.linked && !hold && !main_view() && a.now - last_input >= WHALE_POWER_OFF_MS) {
+    whale_director_in_t in = director_in();
+    bool hold = whale_director_screen(&in).hold;
+    if (whale_director_offline(&in) == WHALE_GO_HOME) {
         if (a.view == VOICE)
             voice_cancel();
         page(HOME);
+        in = director_in();
     }
-    bool busy = !main_view();
-    /* Rows are stale while offline; only a live task keeps the screen lit. */
-    for (int i = 0; a.linked && i < a.count; i++)
-        if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
-            busy = true;
-    /* Background work may keep a task visible, but never keeps these pages lit. */
-    if (a.view == COMPANION || a.view == WARDROBE || a.view == DESK)
-        busy = false;
-    whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
+    whale_power_plan_t plan = whale_power_tick(&power, a.now, whale_director_screen(&in).busy, hold);
     apply_screen(plan.screen);
     whale_ble_set_slow(plan.slow_adv);
     power_flags = (a.linked ? WHALE_BATT_LINKED : 0) |
@@ -2046,6 +2128,7 @@ static void service(whale_event_t e) {
         }
         break;
     case WE_DOWN:
+        queue_next = false;
         invitation_dismiss();
         whale_power_link(&power, a.now, false);
         log_diag("link-down");
@@ -2078,7 +2161,8 @@ static void service(whale_event_t e) {
         unsigned k = e.value & 255, ev = e.value >> 8;
         if (k >= 3)
             break;
-        if (ev == BSP_BTN_PRESS && a.view == DESK) {
+        whale_director_in_t in = director_in();
+        if (ev == BSP_BTN_PRESS && whale_director_key(&in) == WHALE_GO_HOME) {
             /* Even a press that only lights the screen leaves the desk display;
              * its release must not act on the page underneath. */
             armed[k] = false;
@@ -2140,7 +2224,7 @@ void app_main(void) {
     whale_ble_start();
     ESP_LOGI(
         "whale",
-        "v0.17.0-demo / protocol 2.3 large frames + companion cues + power saving + desk clock; "
+        "v0.18.0-dev / protocol 2.3 large frames + pending queue + companion feelings; "
         "minimum free heap: %lu",
         (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST
@@ -2245,7 +2329,8 @@ void app_main(void) {
         if ((stage.active || request_snap) && (int32_t)(a.now - stage.deadline) >= 0 && a.linked) {
             if (a.view == LIST_LOAD) {
                 stage.active = request_snap = false;
-                page(LIST_FAILED);
+                /* A home page that was left alone does not turn into an error. */
+                page(queue_next && queue_from == HOME ? HOME : LIST_FAILED);
             } else
                 snap(requested_cursor);
         }

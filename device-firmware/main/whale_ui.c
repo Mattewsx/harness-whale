@@ -614,9 +614,29 @@ void whale_ui_draw(const whale_app_t *a) {
             }
             panel(sheet, 14, 225, 212, 24, PAPER, 10);
             text_at(20, 228, 200, 20, &lv_font_cn_14, offer, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        } else if (a->feel) {
+            /* Placeholder art: existing poses plus motion until the anxious
+             * and celebrating frames are drawn. */
+            bool cheer = a->feel == WHALE_FEEL_CELEBRATE;
+            bool very = a->feel == WHALE_FEEL_VERY_ANXIOUS;
+            int n = cheer ? ((a->now / 500) % 2 ? 18 : 19) : 10;
+            int dx = 0, dy = 0;
+            if (animate && cheer)
+                dy = (a->now / 250) % 2 ? -5 : 0;
+            else if (animate)
+                dx = (a->now / (very ? 125 : 250)) % 2 ? 2 : -2;
+            dressed(a->worn, n, 29 + dx, 43 + dy, 236);
+            if (cheer)
+                snprintf(value, sizeof value, "任务完成啦！");
+            else if (very)
+                snprintf(value, sizeof value, "还在等你，来看看好不好？");
+            else
+                snprintf(value, sizeof value, "有 %u 个问题在等你", (unsigned)a->global_waiting);
+            panel(sheet, 14, 225, 212, 24, cheer ? PAPER : 0xf6e3c0, 10);
+            text_at(20, 228, 200, 20, &lv_font_cn_14, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
         } else
             dressed(a->worn, life[a->activity % 8], 22, y, 256);
-        if (!offer && a->activity == 1)
+        if (!offer && !a->feel && a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
         static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
         const char *const names[] = {inviting ? "回应邀请" : "互动", "会话", "设置"};
@@ -1031,7 +1051,13 @@ void whale_ui_draw(const whale_app_t *a) {
     } else if (a->view == LIST) {
         parent_icon(ICON_home, a->list_back);
         center(35, "会话", NAV, -1);
-        pose_at(task_pose(r), 52, 54, 178);
+        if (a->feel == WHALE_FEEL_CELEBRATE)
+            pose_at((a->now / 500) % 2 ? 18 : 19, 52,
+                    54 - (animate && (a->now / 250) % 2 ? 4 : 0), 178);
+        else if (a->feel)
+            pose_at(10, 52 + (!animate ? 0 : (a->now / 250) % 2 ? 2 : -2), 54, 178);
+        else
+            pose_at(task_pose(r), 52, 54, 178);
         /* Row -1 is "语音新任务", above the first session of the first window. */
         int first = whale_list_has_new(a) ? -1 : 0;
         int focus = a->list_new ? -1 : a->selected;
@@ -1187,7 +1213,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v0.17.0 Demo";
+            heading = "固件 v0.18.0 Dev";
             detail = "HARNESS-WHALE · BLE 2.3";
             break;
         case LOADING:
@@ -1225,6 +1251,14 @@ void whale_ui_draw(const whale_app_t *a) {
                       : a->result == 2 ? "问题已撤回"
                                        : "答案已过期";
             n = a->result <= 1 ? 12 : 14;
+            /* Pending queue: the next question opens by itself. Count only a
+             * summary newer than the answer, which no longer includes it. */
+            if (a->result == 0 && !a->unsupported && a->global_valid && a->global_waiting &&
+                (int32_t)(a->global_at - a->page_at) >= 0) {
+                snprintf(value, sizeof value, "还有 %u 个待处理，接着打开",
+                         (unsigned)a->global_waiting);
+                detail = value;
+            }
             break;
         default:
             break;

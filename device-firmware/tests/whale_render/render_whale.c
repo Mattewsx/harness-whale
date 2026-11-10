@@ -277,7 +277,30 @@ int main(void) {
             a.companion_invited = false;
         }
     }
+    /* Feelings on the home page and above the list. */
     a.worn = 0;
+    a.view = HOME;
+    a.dock = 1;
+    a.global_waiting = 2;
+    a.feel = WHALE_FEEL_ANXIOUS;
+    whale_ui_draw(&a);
+    save("feel-anxious");
+    a.feel = WHALE_FEEL_VERY_ANXIOUS;
+    whale_ui_draw(&a);
+    save("feel-very-anxious");
+    a.feel = WHALE_FEEL_CELEBRATE;
+    whale_ui_draw(&a);
+    save("feel-celebrate");
+    a.worn = 4;
+    whale_ui_draw(&a);
+    save("feel-celebrate-pajamas");
+    a.worn = 0;
+    a.view = LIST;
+    a.feel = WHALE_FEEL_ANXIOUS;
+    whale_ui_draw(&a);
+    save("feel-anxious-list");
+    a.feel = WHALE_FEEL_CALM;
+    a.global_waiting = 0;
     a.view = WARDROBE;
     whale_ui_draw(&a);
     save("room-wardrobe");

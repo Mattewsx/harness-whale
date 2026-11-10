@@ -1,4 +1,5 @@
 #include "../main/whale_app.c"
+#include <stdlib.h>
 
 static uint8_t sent_type, sent_bytes[64];
 static size_t sent_length;
@@ -1316,6 +1317,13 @@ static void test_large_frame_negotiation(void) {
     assert(w32(hello_reply + 2) == (4095 | WHALE_CAP_RICH_QUESTIONS) && rich_questions);
     hello(4095, 20, 20);
     assert(!rich_questions);
+    // FIFO queue sorting is separate from the existing attention list.
+    hello(4095 | WHALE_CAP_PENDING_QUEUE, 20, 20);
+    assert(a.pending_queue_cap && (w32(hello_reply + 2) & WHALE_CAP_PENDING_QUEUE));
+    hello(63 | WHALE_CAP_PENDING_QUEUE, 20, 20);
+    assert(!a.pending_queue_cap && !(w32(hello_reply + 2) & WHALE_CAP_PENDING_QUEUE));
+    hello(4095, 20, 20);
+    assert(!a.pending_queue_cap);
 
     // A 2.3 bridge at MTU 247 gets minor 3, bit 12 and the largest common frame.
     hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 200);
@@ -1928,6 +1936,328 @@ static void test_rich_questions(void) {
     assert(a.meta && a.question_mode == WHALE_MODE_SINGLE);
     puts("Approval and multi-select questions PASS");
 }
+/* Deliver a two-row priority snapshot; row 0 carries question qid (0: none). */
+static void queue_snapshot_epoch(uint32_t qid, uint64_t epoch) {
+    memset(&stage, 0, sizeof stage);
+    stage.active = true;
+    stage.epoch = epoch;
+    stage.snap = stage.count = stage.taken = stage.total = 2;
+    stage.next = UINT32_MAX;
+    stage.rows[0] = (whale_row_t){.session = 11, .run = 21, .state = 8, .question = qid};
+    stage.rows[1] = (whale_row_t){.session = 10, .run = 20, .state = 2};
+    uint8_t end[17] = {0};
+    put64(end, epoch);
+    put32(end + 8, 2);
+    end[12] = 2;
+    apply_message((whale_msg_t){0x13, end, sizeof end});
+}
+static void queue_snapshot(uint32_t qid) { queue_snapshot_epoch(qid, a.epoch); }
+static void test_pending_queue(void) {
+    /* After an accepted answer, the next waiting question opens by itself. */
+    setup();
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
+    answer_accepted();
+    uint32_t answered_at = a.now;
+    summary(0, 2, 0); /* stale order: arrives with the result, still counts it */
+    a.global_at = answered_at - 1;
+    a.now += WHALE_QUEUE_NEXT_MS;
+    companion_tick();
+    assert(a.view == RESULT);
+    a.now = answered_at + 200;
+    summary(0, 1, 0); /* newer summary: one more question waits */
+    a.now = answered_at + WHALE_QUEUE_NEXT_MS - 1;
+    companion_tick();
+    assert(a.view == RESULT); /* the result shows first */
+    a.now++;
+    companion_tick();
+    assert(a.view == LIST_LOAD && queue_next && sent_type == 0x10 && sent_bytes[13] == 3);
+    queue_snapshot(77);
+    assert(a.view == LOADING && sent_type == 0x24 && a.selected == 0 &&
+           w32(a.identity + 8) == 11 && w32(a.identity + 16) == 77 && !queue_next);
+
+    /* Confirm skips the wait; with nothing answerable left, land on the list. */
+    setup();
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
+    answer_accepted();
+    a.now += 100;
+    summary(0, 1, 0);
+    last_input = a.now;
+    key(BSP_BTN_OK);
+    assert(a.view == LIST_LOAD && queue_next);
+    queue_snapshot(0);
+    assert(a.view == LIST && !queue_next);
+
+    /* Nothing more waiting: confirm goes back to the task as before. */
+    setup();
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
+    answer_accepted();
+    a.now += 100;
+    summary(0, 0, 0);
+    key(BSP_BTN_OK);
+    assert(a.view == TASK_DETAIL);
+    page(RESULT);
+    a.now += WHALE_QUEUE_NEXT_MS;
+    companion_tick();
+    assert(a.view == RESULT); /* nothing waits: the result stays until confirmed */
+
+    /* A question pops up on a home page left alone, but not on one in use. */
+    setup();
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
+    page(HOME);
+    last_input = a.now;
+    a.now += WHALE_QUEUE_IDLE_MS - 1;
+    cue_event(1, 11, 5, 1, 1);
+    assert(a.view == HOME);
+    a.now++;
+    cue_event(2, 11, 6, 1, 1);
+    assert(a.view == LIST_LOAD && queue_next && queue_from == HOME);
+    queue_snapshot(0); /* only questions for the computer: stay home */
+    assert(a.view == HOME && !queue_next);
+    /* Recording and the list in use are never interrupted. */
+    a.now += WHALE_QUEUE_IDLE_MS;
+    fake_voice_busy = true;
+    cue_event(4, 11, 8, 1, 1);
+    assert(a.view == HOME);
+    fake_voice_busy = false;
+    page(LIST);
+    cue_event(5, 11, 9, 1, 1);
+    assert(a.view == LIST && !queue_next);
+    /* The desk display opens the queue too. */
+    page(DESK);
+    cue_event(6, 11, 10, 1, 1);
+    assert(a.view == LIST_LOAD && queue_next && queue_from == DESK);
+    queue_snapshot(0);
+    assert(a.view == LIST);
+    // An old bridge cannot guarantee FIFO sorting. Refresh the ordinary list
+    // without auto-opening a question; an idle home page stays untouched.
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    a.now += WHALE_QUEUE_IDLE_MS;
+    open_queue();
+    assert(a.view == HOME && !queue_next);
+    page(DESK);
+    open_queue();
+    assert(a.view == LIST_LOAD && !queue_next && sent_bytes[13] == 2);
+    queue_snapshot(77);
+    assert(a.view == LIST && !queue_next);
+    page(RESULT);
+    open_queue();
+    assert(a.view == LIST_LOAD && !queue_next && sent_bytes[13] == 2);
+
+    // Disconnect and renegotiation cancel an in-flight automatic jump, even
+    // when an ordinary snapshot has a question in row 0 after capability loss.
+    setup();
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
+    page(HOME);
+    open_queue();
+    assert(queue_next);
+    service((whale_event_t){.kind = WE_DOWN});
+    assert(!queue_next);
+    hello(4095, 20, 20);
+    queue_snapshot(77);
+    assert(a.view == LIST && !queue_next && !a.pending_queue_cap);
+    // A repeated HELLO without a preceding drop is also a new negotiation.
+    a.pending_queue_cap = true;
+    open_queue();
+    assert(queue_next);
+    hello(4095 | WHALE_CAP_PENDING_QUEUE, 20, 20);
+    queue_snapshot_epoch(77, a.epoch + 1);
+    assert(a.view == LIST && !queue_next);
+    // An unexpected epoch in the queue response itself never opens a question.
+    open_queue();
+    assert(queue_next);
+    queue_snapshot_epoch(77, a.epoch + 1);
+    assert(a.view == LIST && !queue_next);
+    puts("Pending queue: next question after an answer, quiet home pop-up, fallbacks PASS");
+}
+
+static void test_feelings(void) {
+    /* Anxious after a question waited two minutes untouched, very anxious
+     * after five; a key press or the answer calms her down. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    last_input = a.now;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && a.waiting_timed && a.waiting_at == a.now);
+    a.now += WHALE_ANXIOUS_MS - 1;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && a.view == HOME);
+    a.now++;
+    dirty = false;
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_ANXIOUS && dirty && a.view == HOME);
+    user_input();
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM);
+    a.now += WHALE_VERY_ANXIOUS_MS;
+    summary(0, 2, 0); /* a second question does not restart the wait */
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_VERY_ANXIOUS);
+    page(LIST);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_VERY_ANXIOUS);
+    page(TASK_DETAIL);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM);
+    page(HOME);
+    summary(0, 0, 0);
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && !a.waiting_timed);
+    /* A new question starts a new wait. */
+    a.now += 1000;
+    summary(0, 1, 0);
+    companion_tick();
+    assert(a.waiting_at == a.now && a.feel == WHALE_FEEL_CALM);
+
+    /* A finished session is celebrated for a few seconds, then it is over. */
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    last_input = a.now;
+    cue_event(1, 10, 30, 3, 3);
+    companion_tick();
+    assert(a.cheer && a.feel == WHALE_FEEL_CELEBRATE && a.view == HOME);
+    a.now += WHALE_CELEBRATE_MS - 1;
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CELEBRATE);
+    a.now++;
+    companion_tick();
+    assert(a.feel == WHALE_FEEL_CALM && !a.cheer);
+    /* Work that merely started, or an error, is not celebrated. */
+    cue_event(2, 10, 31, 0, 5);
+    cue_event(3, 10, 32, 2, 2);
+    companion_tick();
+    assert(!a.cheer && a.feel == WHALE_FEEL_CALM);
+    puts("Feelings: anxious after a long wait, calmed by a key or an answer, brief celebration PASS");
+}
+
+/* Seeded random frames, keys, links and time through the whole application.
+ * Built with ASan/UBSan in validate.sh; it looks for crashes, out-of-range
+ * state and broken screen-director invariants rather than exact behavior.
+ * Reproduce: WHALE_APP_FUZZ_SEED=<seed>. */
+static uint64_t app_rng;
+static uint32_t app_random(void) {
+    app_rng ^= app_rng << 13;
+    app_rng ^= app_rng >> 7;
+    app_rng ^= app_rng << 17;
+    return (uint32_t)(app_rng >> 32);
+}
+static void app_fuzz_check(uint64_t seed, unsigned step, unsigned action) {
+    bool ok = a.view <= STANDBY && a.count <= 8 && (!a.count || a.selected < a.count) &&
+              a.scroll >= 0 && a.options <= 3 && a.focus <= 8 &&
+              /* The queue only waits on its own priority snapshot. */
+              (!queue_next || a.view == LIST_LOAD || a.view == LIST_FAILED) &&
+              a.feel <= WHALE_FEEL_VERY_ANXIOUS &&
+              /* Feelings only where the whale is on show; never anxious over nothing. */
+              (!a.feel || a.view == HOME || a.view == LIST) &&
+              (a.feel < WHALE_FEEL_ANXIOUS || (a.global_valid && a.global_waiting && a.linked));
+    /* The desk display never hides work that needs the user. */
+    if (ok && a.view == DESK && a.linked && a.ready && a.global_cap && a.global_valid &&
+        a.now - a.global_at < WHALE_SUMMARY_FRESH_MS)
+        ok = !a.global_waiting && !a.global_unread;
+    if (!ok) {
+        fprintf(stderr,
+                "app fuzz: bad state seed=%llu step=%u action=%u view=%d count=%u selected=%u "
+                "scroll=%d options=%u focus=%u waiting=%u unread=%u\n"
+                "reproduce: WHALE_APP_FUZZ_SEED=%llu\n",
+                (unsigned long long)seed, step, action, a.view, a.count, a.selected, a.scroll,
+                a.options, a.focus, a.global_waiting, a.global_unread, (unsigned long long)seed);
+        abort();
+    }
+}
+static void app_fuzz_one(uint64_t seed, unsigned steps) {
+    static const uint8_t types[] = {0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x17, 0x18, 0x19,
+                                    0x1a, 0x1b, 0x1c, 0x20, 0x21, 0x23, 0x31, 0x32, 0x41,
+                                    0x47, 0x49, 0x50, 0x51, 0x53, 0x54};
+    static uint8_t p[640];
+    setup();
+    a.global_cap = a.attention_cap = true;
+    app_rng = seed * 0x9e3779b97f4a7c15ull + 7;
+    for (unsigned step = 0; step < steps; step++) {
+        unsigned action = app_random() % 8;
+        switch (action) {
+        case 0:
+        case 1:
+        case 2: {
+            uint8_t type = types[app_random() % sizeof types];
+            size_t n = app_random() % 4 ? app_random() % 48 : app_random() % sizeof p;
+            for (size_t i = 0; i < n; i++)
+                p[i] = (uint8_t)(app_random() % 3 ? app_random() % 6 : app_random());
+            if (n >= 8 && app_random() % 4)
+                put64(p, a.epoch);
+            if (type == 0x50 && app_random() % 2) {
+                /* Well-formed global summary: counts never exceed the total. */
+                n = 25;
+                put64(p, a.epoch);
+                put32(p + 8, a.global_seq + 1);
+                uint16_t total = (uint16_t)(app_random() % 5);
+                put16(p + 12, total);
+                for (unsigned i = 14; i <= 18; i += 2)
+                    put16(p + i, (uint16_t)(total ? app_random() % (total + 1u) : 0));
+                put32(p + 20, app_random() % 3 ? 10 : 11);
+                p[24] = app_random() % 6 != 0;
+            }
+            if (type == 0x51 && app_random() % 2) {
+                /* Well-formed live cue or trigger. */
+                n = 26;
+                put64(p, a.epoch);
+                put32(p + 8, reminders.seq + 1);
+                put32(p + 12, app_random() % 3 ? 10 : 11);
+                put32(p + 16, 20);
+                put32(p + 20, app_random());
+                p[24] = (uint8_t)(app_random() % 4);
+                p[25] = (uint8_t)(app_random() % 6);
+                if (p[25] == 4)
+                    p[25] = 5;
+            }
+            apply_message((whale_msg_t){type, p, n});
+            break;
+        }
+        case 3:
+        case 4: {
+            unsigned k = app_random() % 3;
+            unsigned ev = app_random() % 2 ? BSP_BTN_LONG : BSP_BTN_RELEASE;
+            service((whale_event_t){.kind = WE_KEY, .value = k | (unsigned)BSP_BTN_PRESS << 8});
+            service((whale_event_t){.kind = WE_KEY, .value = k | ev << 8});
+            break;
+        }
+        case 5:
+            a.linked = app_random() % 4 != 0;
+            a.ready = a.linked;
+            if (!a.linked)
+                a.global_valid = false;
+            else if (app_random() % 8 == 0)
+                a.global_cap = !a.global_cap; /* an old bridge reconnects, or a new one */
+            break;
+        case 6:
+            fake_voice_busy = app_random() % 4 == 0;
+            break;
+        default: {
+            static const uint32_t jumps[] = {125, 3000, 30000, WHALE_DESK_IDLE_MS,
+                                             WHALE_POWER_OFF_MS};
+            a.now += jumps[app_random() % 5];
+            break;
+        }
+        }
+        companion_tick();
+        power_step();
+        app_fuzz_check(seed, step, action);
+    }
+}
+static void test_random_app_events(void) {
+    const char *one = getenv("WHALE_APP_FUZZ_SEED");
+    if (one && *one) {
+        app_fuzz_one(strtoull(one, NULL, 10), 3000);
+        return;
+    }
+    for (uint64_t seed = 1; seed <= 200; seed++)
+        app_fuzz_one(seed, 3000);
+}
+
 int main(void) {
     test_random_invitations();
     test_voice_new_task();
@@ -1952,6 +2282,9 @@ int main(void) {
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();
+    test_pending_queue();
+    test_feelings();
+    test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");
     return 0;

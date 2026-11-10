@@ -97,6 +97,32 @@ int main(void) {
         a.view = WARDROBE;
         assert(draw(&a) > 0);
     }
+    /* Feelings change the home and list whale in every outfit, and a
+     * repeated frame redraws nothing. */
+    for (unsigned worn = 0; worn <= 8; worn = worn ? worn << 1 : 2) {
+        a.worn = worn;
+        a.global_waiting = 2;
+        a.view = HOME;
+        a.feel = WHALE_FEEL_CALM;
+        draw(&a);
+        uint32_t calm = pose_checksum(), seen[3];
+        for (unsigned feel = WHALE_FEEL_CELEBRATE; feel <= WHALE_FEEL_VERY_ANXIOUS; feel++) {
+            a.feel = feel;
+            assert(draw(&a) > 0);
+            assert(draw(&a) == 0);
+            seen[feel - 1] = pose_checksum();
+            assert(seen[feel - 1] != calm);
+        }
+        assert(seen[0] != seen[1]);
+        a.view = LIST;
+        a.feel = WHALE_FEEL_CALM;
+        draw(&a);
+        a.feel = WHALE_FEEL_ANXIOUS;
+        assert(draw(&a) > 0);
+        assert(draw(&a) == 0);
+        a.feel = WHALE_FEEL_CALM;
+        a.global_waiting = 0;
+    }
     a.worn = 0;
     a.unlocked = 0;
     a.view = WARDROBE;
