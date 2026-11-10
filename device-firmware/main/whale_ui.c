@@ -1213,7 +1213,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v0.17.0 Demo";
+            heading = "固件 v0.18.0 Dev";
             detail = "HARNESS-WHALE · BLE 2.3";
             break;
         case LOADING:

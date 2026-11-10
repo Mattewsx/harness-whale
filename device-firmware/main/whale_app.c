@@ -411,7 +411,8 @@ static void snap(uint32_t cursor) {
     put64(b, a.epoch);
     put32(b + 8, cursor);
     b[12] = 8;
-    b[13] = !a.cache_invalidation || !a.ready || priority_list ? 2 : 0;
+    b[13] = queue_next && a.pending_queue_cap ? 3
+             : !a.cache_invalidation || !a.ready || priority_list ? 2 : 0;
     whale_send(0x10, b, sizeof b);
     stage.deadline = a.now + 3000;
 }
@@ -548,6 +549,13 @@ static void open_queue(void) {
             page(LIST);
         } else if (from == RESULT)
             page(TASK_DETAIL);
+        return;
+    }
+    /* Old bridges have only unread-priority sorting. Never assume that row 0
+     * is the oldest answerable question; refresh the ordinary list instead. */
+    if (!a.pending_queue_cap) {
+        if (from == DESK || from == RESULT)
+            companion_work(0, WHALE_GO_ATTENTION);
         return;
     }
     seek_session = 0;
@@ -1465,6 +1473,9 @@ static void apply_message(whale_msg_t msg) {
     const uint8_t *p = msg.bytes;
     size_t n = msg.size;
     if (msg.type == 1 && n == 10) {
+        /* A snapshot requested before this handshake cannot carry an automatic
+         * queue jump into a new capability grant or bridge epoch. */
+        queue_next = false;
         // Protocol 2.3: a bridge offering bit 12 gets minor 3; large frames are granted
         // only when both peers and the ATT MTU allow more than the legacy 20 bytes.
         uint32_t offered = w32(p + 2);
@@ -1473,6 +1484,7 @@ static void apply_message(whale_msg_t msg) {
         uint8_t b[11] = {2, offered & WHALE_CAP_LARGE_FRAMES ? 3 : 2};
         put32(b + 2, (offered & (4095 | 8192 | WHALE_CAP_CACHE_INVALIDATION |
                                  WHALE_CAP_RICH_QUESTIONS |
+                                 ((offered & 1024) ? WHALE_CAP_PENDING_QUEUE : 0) |
                                  ((offered & 512) ? WHALE_CAP_VOICE_TASK : 0))) |
                          (frame > WHALE_FRAME_LEGACY ? WHALE_CAP_LARGE_FRAMES : 0));
         rich_questions = (offered & WHALE_CAP_RICH_QUESTIONS) != 0;
@@ -1485,6 +1497,7 @@ static void apply_message(whale_msg_t msg) {
         a.voice_cap = (w32(p + 2) & 512) != 0;
         a.voice_task_cap = a.voice_cap && (offered & WHALE_CAP_VOICE_TASK);
         a.attention_cap = (w32(p + 2) & 1024) != 0;
+        a.pending_queue_cap = a.attention_cap && (offered & WHALE_CAP_PENDING_QUEUE);
         if (a.cache_invalidation && !(offered & WHALE_CAP_CACHE_INVALIDATION)) {
             whale_reply_cache_clear();
             a.cache_sequence = 0;
@@ -1495,6 +1508,7 @@ static void apply_message(whale_msg_t msg) {
             b[10] = 1;
             frame = WHALE_FRAME_LEGACY;
             rich_questions = false;
+            a.pending_queue_cap = false;
             put32(b + 2, offered & 4095);
         }
         put16(b + 6, frame);
@@ -1655,7 +1669,7 @@ static void apply_message(whale_msg_t msg) {
             page(LIST);
         if (queue_next && a.view == LIST_LOAD) {
             queue_next = false;
-            if (a.count && a.rows[0].question) {
+            if (!new_epoch && a.pending_queue_cap && a.count && a.rows[0].question) {
                 a.selected = 0;
                 open_task();
             } else if (queue_from == HOME)
@@ -2114,6 +2128,7 @@ static void service(whale_event_t e) {
         }
         break;
     case WE_DOWN:
+        queue_next = false;
         invitation_dismiss();
         whale_power_link(&power, a.now, false);
         log_diag("link-down");
@@ -2209,7 +2224,7 @@ void app_main(void) {
     whale_ble_start();
     ESP_LOGI(
         "whale",
-        "v0.17.0-demo / protocol 2.3 large frames + companion cues + power saving + desk clock; "
+        "v0.18.0-dev / protocol 2.3 large frames + pending queue + companion feelings; "
         "minimum free heap: %lu",
         (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST

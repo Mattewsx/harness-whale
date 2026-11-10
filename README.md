@@ -2,7 +2,9 @@
 
 把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-本次发布为 **v0.17.0-demo**。完整固件、保留设置的应用镜像和配套电脑组件见 [GitHub Release](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)。升级时请同时更新电脑组件。
+当前公开版为 **v0.17.0-demo**。完整固件、保留设置的应用镜像和配套电脑组件见 [GitHub Release](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)。升级时请同时更新电脑组件。
+
+`main` 正在开发 **v0.18.0-dev**，整合页面调度、连续答题和着急／庆祝情绪，尚未发布。连续答题独立按问题到达顺序取题，不受已读角标和列表分页影响；普通列表保持未读优先。需同步更新电脑端，旧桥接器回退普通列表。情绪暂用现有姿态，详见 [调度说明](docs/DIRECTOR.zh_CN.md)。本分支安装清单对应开发镜像；公开版请使用 Release 的同版电脑包与固件，勿混用清单。
 
 ## 小房间与会话
 

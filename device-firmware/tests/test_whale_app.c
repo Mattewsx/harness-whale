@@ -1317,6 +1317,13 @@ static void test_large_frame_negotiation(void) {
     assert(w32(hello_reply + 2) == (4095 | WHALE_CAP_RICH_QUESTIONS) && rich_questions);
     hello(4095, 20, 20);
     assert(!rich_questions);
+    // FIFO queue sorting is separate from the existing attention list.
+    hello(4095 | WHALE_CAP_PENDING_QUEUE, 20, 20);
+    assert(a.pending_queue_cap && (w32(hello_reply + 2) & WHALE_CAP_PENDING_QUEUE));
+    hello(63 | WHALE_CAP_PENDING_QUEUE, 20, 20);
+    assert(!a.pending_queue_cap && !(w32(hello_reply + 2) & WHALE_CAP_PENDING_QUEUE));
+    hello(4095, 20, 20);
+    assert(!a.pending_queue_cap);
 
     // A 2.3 bridge at MTU 247 gets minor 3, bit 12 and the largest common frame.
     hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 200);
@@ -1930,24 +1937,25 @@ static void test_rich_questions(void) {
     puts("Approval and multi-select questions PASS");
 }
 /* Deliver a two-row priority snapshot; row 0 carries question qid (0: none). */
-static void queue_snapshot(uint32_t qid) {
+static void queue_snapshot_epoch(uint32_t qid, uint64_t epoch) {
     memset(&stage, 0, sizeof stage);
     stage.active = true;
-    stage.epoch = a.epoch;
+    stage.epoch = epoch;
     stage.snap = stage.count = stage.taken = stage.total = 2;
     stage.next = UINT32_MAX;
     stage.rows[0] = (whale_row_t){.session = 11, .run = 21, .state = 8, .question = qid};
     stage.rows[1] = (whale_row_t){.session = 10, .run = 20, .state = 2};
     uint8_t end[17] = {0};
-    put64(end, a.epoch);
+    put64(end, epoch);
     put32(end + 8, 2);
     end[12] = 2;
     apply_message((whale_msg_t){0x13, end, sizeof end});
 }
+static void queue_snapshot(uint32_t qid) { queue_snapshot_epoch(qid, a.epoch); }
 static void test_pending_queue(void) {
     /* After an accepted answer, the next waiting question opens by itself. */
     setup();
-    a.attention_cap = a.global_cap = true;
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
     answer_accepted();
     uint32_t answered_at = a.now;
     summary(0, 2, 0); /* stale order: arrives with the result, still counts it */
@@ -1962,14 +1970,14 @@ static void test_pending_queue(void) {
     assert(a.view == RESULT); /* the result shows first */
     a.now++;
     companion_tick();
-    assert(a.view == LIST_LOAD && queue_next && sent_type == 0x10 && sent_bytes[13] == 2);
+    assert(a.view == LIST_LOAD && queue_next && sent_type == 0x10 && sent_bytes[13] == 3);
     queue_snapshot(77);
     assert(a.view == LOADING && sent_type == 0x24 && a.selected == 0 &&
            w32(a.identity + 8) == 11 && w32(a.identity + 16) == 77 && !queue_next);
 
     /* Confirm skips the wait; with nothing answerable left, land on the list. */
     setup();
-    a.attention_cap = a.global_cap = true;
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
     answer_accepted();
     a.now += 100;
     summary(0, 1, 0);
@@ -1981,7 +1989,7 @@ static void test_pending_queue(void) {
 
     /* Nothing more waiting: confirm goes back to the task as before. */
     setup();
-    a.attention_cap = a.global_cap = true;
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
     answer_accepted();
     a.now += 100;
     summary(0, 0, 0);
@@ -1994,7 +2002,7 @@ static void test_pending_queue(void) {
 
     /* A question pops up on a home page left alone, but not on one in use. */
     setup();
-    a.attention_cap = a.global_cap = true;
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
     page(HOME);
     last_input = a.now;
     a.now += WHALE_QUEUE_IDLE_MS - 1;
@@ -2020,6 +2028,47 @@ static void test_pending_queue(void) {
     assert(a.view == LIST_LOAD && queue_next && queue_from == DESK);
     queue_snapshot(0);
     assert(a.view == LIST);
+    // An old bridge cannot guarantee FIFO sorting. Refresh the ordinary list
+    // without auto-opening a question; an idle home page stays untouched.
+    setup();
+    a.attention_cap = a.global_cap = true;
+    page(HOME);
+    a.now += WHALE_QUEUE_IDLE_MS;
+    open_queue();
+    assert(a.view == HOME && !queue_next);
+    page(DESK);
+    open_queue();
+    assert(a.view == LIST_LOAD && !queue_next && sent_bytes[13] == 2);
+    queue_snapshot(77);
+    assert(a.view == LIST && !queue_next);
+    page(RESULT);
+    open_queue();
+    assert(a.view == LIST_LOAD && !queue_next && sent_bytes[13] == 2);
+
+    // Disconnect and renegotiation cancel an in-flight automatic jump, even
+    // when an ordinary snapshot has a question in row 0 after capability loss.
+    setup();
+    a.attention_cap = a.global_cap = a.pending_queue_cap = true;
+    page(HOME);
+    open_queue();
+    assert(queue_next);
+    service((whale_event_t){.kind = WE_DOWN});
+    assert(!queue_next);
+    hello(4095, 20, 20);
+    queue_snapshot(77);
+    assert(a.view == LIST && !queue_next && !a.pending_queue_cap);
+    // A repeated HELLO without a preceding drop is also a new negotiation.
+    a.pending_queue_cap = true;
+    open_queue();
+    assert(queue_next);
+    hello(4095 | WHALE_CAP_PENDING_QUEUE, 20, 20);
+    queue_snapshot_epoch(77, a.epoch + 1);
+    assert(a.view == LIST && !queue_next);
+    // An unexpected epoch in the queue response itself never opens a question.
+    open_queue();
+    assert(queue_next);
+    queue_snapshot_epoch(77, a.epoch + 1);
+    assert(a.view == LIST && !queue_next);
     puts("Pending queue: next question after an answer, quiet home pop-up, fallbacks PASS");
 }
 

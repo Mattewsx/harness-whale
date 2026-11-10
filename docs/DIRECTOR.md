@@ -50,7 +50,11 @@ Highest first:
 
 Anxiety needs a fresh valid summary from a linked bridge. It counts from the later of the first waiting question and the last key press. Celebration comes first while it lasts. The whale stays calm on every other page and during voice, a companion reaction or an invitation.
 
-"Pending queue" opens a priority snapshot. The bridge lists questions the device can answer first, oldest first, so the device opens row 0 directly. When row 0 has no such question (for example, only questions that must be handled on the computer), the desk display and the result page land on the list and a home page left alone stays home. Other pages are never interrupted: the list badge still shows the count.
+"Pending queue" negotiates capability bit 17 and requests a FIFO snapshot with `0x10` sort byte 3. The bridge puts every answerable question first, oldest first, even when already read or outside the ordinary eight-row attention window. Reading does not become answering and never restores an unread badge. Ordinary list sort 2 keeps unread priority; sort 0 preserves the current order for paging. An old device never requests queue sorting. An old bridge without bit 17 falls back to an ordinary list from the desk/result page and leaves an idle home page alone.
+
+The device opens row 0 directly. If no answerable question remains (for example, only computer-side questions are pending or the last one was archived), the desk display and the result page land on the list and a home page left alone stays home. Other pages are never interrupted: the list badge still shows the count.
+
+Disconnecting or starting a new handshake cancels an in-flight automatic jump. A response with a changed bridge epoch also lands on the list/home without opening a question. Fresh capabilities and the reconnect baseline are never treated as the old queue response.
 
 "Verifiably idle" means offline, or a fresh (under 30 s) valid global summary with no running, waiting or unread sessions.
 

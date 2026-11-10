@@ -37,6 +37,8 @@ static inline void put64(uint8_t *p, uint64_t n) {
 #define WHALE_MODE_APPROVAL 2u
 // Bit 16: the session list entry opens a spoken new task (0x48/0x49).
 #define WHALE_CAP_VOICE_TASK 65536u
+// Bit 17: FIFO answer queue independent of unread sorting (snapshot sort 3).
+#define WHALE_CAP_PENDING_QUEUE 131072u
 #define WHALE_VOICE_LABEL_MAX 48u
 #define WHALE_FRAME_LEGACY 20u
 #define WHALE_FRAME_MAX 244u // ATT MTU 247 minus the 3-byte ATT header
