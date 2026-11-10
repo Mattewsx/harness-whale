@@ -2,7 +2,7 @@
 
 把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-本地开发分支为 **v0.17.0-dev**，基于 v1.4.0。使用本次交付的电脑桥接器和固件体验完整的未读统计。
+本次发布为 **v0.17.0-demo**。完整固件、保留设置的应用镜像和配套电脑组件见 [GitHub Release](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)。升级时请同时更新电脑组件。
 
 ## 小房间与会话
 
@@ -28,7 +28,7 @@
 
 后续版本继续通过 USB 更新固件与素材；BLE OTA 方案已取消（[PR #7](https://github.com/Mattewsx/harness-whale/pull/7) 已关闭，未合入）。保持现有单应用分区，素材随应用一起更新，日常蓝牙同步与语音传输不受影响。相同分区布局下仍可使用下述保留配对升级方式。
 
-解压本地 Demo 的配套电脑组件，在解压目录或本分支根目录执行：
+解压同版配套电脑组件，在解压目录或本分支根目录执行：
 
 ```powershell
 python installer\install_companion.py --non-interactive --skip-key
@@ -36,7 +36,7 @@ python installer\install_companion.py --non-interactive --skip-key
 
 安装器创建独立 `.venv`，安装插件与桥接器，并更新受管 DSH profile 块。安装后完全退出并重启 DSH，输入 `/whale` 查看连接。v1.3.0 的全局空闲判断与工作提醒需要同步更新桥接器；旧桥接器仅保留手动陪伴。
 
-本地电脑组件包只负责安装桥接器。完整固件单独交付。使用下方完整刷写器前，将同一版合并镜像复制至 installer/firmware/Harness-Whale-ESP32C3-8MB.bin 并核对同版 manifest：
+配套电脑组件包只负责安装桥接器。完整固件单独交付。使用下方完整刷写器前，将同一版合并镜像复制至 installer/firmware/Harness-Whale-ESP32C3-8MB.bin 并核对同版 manifest：
 
 ```powershell
 python -m venv .flash-venv
@@ -46,7 +46,7 @@ python -m venv .flash-venv
 
 标准安装器校验 SHA-256 后整片擦除并从 **0x0** 写入。旧固件、NVS、设置与配对会被清除。刷写前确认目标串口与数据影响。
 
-已有相同分区布局的鲸鱼固件时，可按 [升级步骤](docs/UPGRADE.md) 使用 `Harness-Whale-v0.17.0-dev-app-0x10000.bin` 保留配对。应用镜像只写 **0x10000**，不可交给完整镜像安装器，也不可从 0x0 写入。
+已有相同分区布局的鲸鱼固件时，可按 [升级步骤](docs/UPGRADE.md) 使用 `Harness-Whale-v0.17.0-demo-app-0x10000.bin` 保留配对。应用镜像只写 **0x10000**，不可交给完整镜像安装器，也不可从 0x0 写入。
 
 ## 语音输入
 
@@ -92,7 +92,7 @@ UDP 仅绑定本机回环地址。BLE 传输会话标题、状态、问题选项
 
 ## 验证范围与历史版本
 
-本地 v0.17.0-dev 的镜像、调试归档、桥接器和验证记录在本次交付目录内。以下实机记录属于此前版本。
+本地 v0.17.0-demo 的镜像、调试归档、桥接器和验证记录在本次交付目录内。以下实机记录属于此前版本。
 
 R10.1 已通过构建、主机回归及实机启动/BLE/名单同步；用户确认最新回复、连续滚动、收起与重复展开正常。长时间稳定性、新回复实时替换及缓存请求次数仍需进一步实机验证，详见 [验收说明](docs/RELEASE-v1.2.0.zh_CN.md)。这是个人 Demo，硬件兼容范围有限。
 

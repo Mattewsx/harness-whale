@@ -2140,7 +2140,7 @@ void app_main(void) {
     whale_ble_start();
     ESP_LOGI(
         "whale",
-        "v0.17.0-dev / protocol 2.3 large frames + companion cues + power saving + desk clock; "
+        "v0.17.0-demo / protocol 2.3 large frames + companion cues + power saving + desk clock; "
         "minimum free heap: %lu",
         (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST
