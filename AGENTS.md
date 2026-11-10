@@ -1,6 +1,6 @@
 # Harness Whale Companion — AI 操作说明
 
-这是 FoloToy AI Passport 与 DeepSeek Harness 的个人 BLE 陪伴 Demo。当前集成开发版为 v0.17.0-dev，使用协议 2.3（可协商大帧，兼容 2.2）；已发布版本以 GitHub Release 与社区发布回执为准。先读 [README](README.md) 与任务相关说明；修改固件还须读 [固件 AGENTS](device-firmware/AGENTS.md)。
+这是 FoloToy AI Passport 与 DeepSeek Harness 的个人 BLE 陪伴 Demo。当前发布源码为 v0.17.0-demo，使用协议 2.3（可协商大帧，兼容 2.2）；已发布版本以 GitHub Release 与社区发布回执为准。先读 [README](README.md) 与任务相关说明；修改固件还须读 [固件 AGENTS](device-firmware/AGENTS.md)。
 
 ## 安全与授权
 
