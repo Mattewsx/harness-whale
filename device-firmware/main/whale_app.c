@@ -63,8 +63,6 @@ static volatile uint8_t power_flags;
 static volatile uint32_t sleep_timer_ms, sleep_cycles;
 static bool sleep_requested;
 static uint32_t sleep_retry_at, key_guard_until;
-/* Idle this long on the task home (or companion) with no work: desk display. */
-#define WHALE_DESK_IDLE_MS 120000u
 #define WHALE_INVITATION_MS 20000u
 #define WHALE_INVITATION_END_MS 3000u
 static uint32_t rtc_seconds(void);
@@ -453,16 +451,42 @@ static void enter_companion(void) {
     a.companion_at = a.now;
     page(COMPANION);
 }
+/* Snapshot of everything the screen director decides on. */
+static whale_director_in_t director_in(void) {
+    whale_director_in_t in = {
+        .view = a.view,
+        .now = a.now,
+        .last_input = last_input,
+        .linked = a.linked,
+        .ready = a.ready,
+        .global_cap = a.global_cap,
+        .global_valid = a.global_valid,
+        .global_at = a.global_at,
+        .running = a.global_running,
+        .waiting = a.global_waiting,
+        .unread = a.global_unread,
+        .voice_busy = whale_voice_busy(),
+        .audio_busy = whale_audio_busy(),
+        .cues_batching = reminders.batching,
+        .companion_action = a.companion_action != 0,
+    };
+    /* Rows are stale while offline; only a live task keeps the screen lit. */
+    for (int i = 0; a.linked && i < a.count; i++)
+        if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
+            in.live_task = true;
+    return in;
+}
 static void enter_desk(void) {
     ESP_LOGI("whale", "desk display on (clock %s)", a.clock_valid ? "synced" : "unknown");
     page(DESK);
 }
-/* Work started or needs attention while the companion or desk display is up:
- * go back to the task pages. */
-static void companion_work(uint32_t session, bool attention) {
-    if (a.view != DESK)
+/* The director sent the desk display back to work: open the task pages.
+ * WHALE_GO_ATTENTION opens the list at the highest-priority items,
+ * WHALE_GO_FOCUS the session that just started. */
+static void companion_work(uint32_t session, whale_go_t go) {
+    if (go != WHALE_GO_ATTENTION && go != WHALE_GO_FOCUS)
         return;
-    if (attention) {
+    if (go == WHALE_GO_ATTENTION) {
         seek_session = 0;
         seek_to_list = false;
         a.list_back = false;
@@ -700,36 +724,25 @@ static void companion_tick(void) {
             room_unsaved = false;
     }
     if (a.view == HOME && a.now - a.activity_at >= 9000) {
-        static const uint8_t pool[][6] = {{0, 1, 3, 6, 4, 7},
-                                          {2, 2, 2, 7, 7, 6},
-                                          {4, 4, 5, 5, 0, 1},
-                                          {0, 5, 7, 0, 5, 7},
-                                          {3, 4, 1, 3, 4, 1}};
-        uint8_t set = a.night ? 1 : 0;
-        if (a.mood && a.now - a.mood_at < 300000)
-            set = a.mood <= 2 ? 2 : a.mood == 3 ? 3 : 4;
         uint8_t pick;
         esp_fill_random(&pick, sizeof pick);
-        for (unsigned i = 0; i < 6; i++) {
-            unsigned candidate = pool[set][(pick + i) % 6];
-            if (candidate != a.activity) {
-                a.activity = candidate;
-                break;
-            }
-        }
+        a.activity = whale_director_activity(
+            whale_director_activity_set(a.night, a.mood, a.now - a.mood_at), a.activity, pick);
         a.activity_at = a.now;
     }
-    bool idle =
-        !a.linked || (a.ready && a.global_cap && a.global_valid && a.now - a.global_at < 30000 &&
-                      !a.global_running && !a.global_waiting && !a.global_unread);
-    invitation_tick(idle);
-    if ((a.view == HOME || a.view == TASK_DETAIL) && a.now - last_input >= WHALE_DESK_IDLE_MS &&
-        idle && !whale_voice_busy() && !a.companion_action)
+    whale_director_in_t in = director_in();
+    invitation_tick(whale_director_idle(&in));
+    in = director_in(); /* the invitation may have ended a companion reaction */
+    switch (whale_director_desk(&in)) {
+    case WHALE_GO_DESK:
         enter_desk();
-    /* After an offline desk display reconnects to an old bridge, the cached
-     * page cannot prove all sessions are idle. Return to the task home. */
-    if (a.view == DESK && a.linked && a.ready && !a.global_cap)
+        break;
+    case WHALE_GO_HOME:
         page(HOME);
+        break;
+    default:
+        break;
+    }
     if (disconnect_pending && !a.linked && a.now - disconnected_at >= 5000) {
         disconnect_pending = false;
         whale_cues_update(&reminders, reminders.seq + 1, 0, disconnected_at, 4, 4, a.now);
@@ -1011,7 +1024,8 @@ static void key(uint32_t code) {
         return;
     }
     user_input();
-    if (a.view == DESK) {
+    whale_director_in_t in = director_in();
+    if (whale_director_key(&in) == WHALE_GO_HOME) {
         page(HOME);
         return;
     }
@@ -1703,12 +1717,9 @@ static void apply_message(whale_msg_t msg) {
             invitation_dismiss();
         /* The desk display leaves on any summary that shows work; the
          * companion page only reacts to the first one after (re)connecting. */
-        if (a.view == DESK && a.global_valid) {
-            if (a.global_waiting || a.global_unread)
-                companion_work(0, true);
-            else if (a.global_running)
-                companion_work(a.global_focus, false);
-        }
+        whale_director_in_t in = director_in();
+        whale_go_t go = whale_director_summary(&in);
+        companion_work(go == WHALE_GO_FOCUS ? a.global_focus : 0, go);
         return;
     }
     if (msg.type == 0x51 && a.global_cap && n == 26 && p[24] <= 3 && (p[25] <= 3 || p[25] == 5)) {
@@ -1730,7 +1741,8 @@ static void apply_message(whale_msg_t msg) {
         }
         if (p[25]) {
             invitation_dismiss();
-            companion_work(w32(p + 12), p[25] != 5);
+            whale_director_in_t in = director_in();
+            companion_work(w32(p + 12), whale_director_trigger(&in, p[25]));
         }
         return;
     }
@@ -1873,29 +1885,16 @@ static void apply_message(whale_msg_t msg) {
         page(QUESTION);
     }
 }
-static bool main_view(void) {
-    return a.view == HOME || a.view == TASK_DETAIL || a.view == LIST || a.view == COMPANION ||
-           a.view == WARDROBE || a.view == DESK;
-}
 static void power_step(void) {
-    bool hold = whale_voice_busy() || whale_audio_busy() || reminders.batching || a.view == PAIR ||
-                a.view == UNBINDING;
-    /* Nobody answers an offline page: once the screen would turn off, return
-     * home so the device may sleep. Pairing and unbinding finish on their own. */
-    if (!a.linked && !hold && !main_view() && a.now - last_input >= WHALE_POWER_OFF_MS) {
+    whale_director_in_t in = director_in();
+    bool hold = whale_director_screen(&in).hold;
+    if (whale_director_offline(&in) == WHALE_GO_HOME) {
         if (a.view == VOICE)
             voice_cancel();
         page(HOME);
+        in = director_in();
     }
-    bool busy = !main_view();
-    /* Rows are stale while offline; only a live task keeps the screen lit. */
-    for (int i = 0; a.linked && i < a.count; i++)
-        if ((a.rows[i].state >= 2 && a.rows[i].state <= 4) || a.rows[i].question)
-            busy = true;
-    /* Background work may keep a task visible, but never keeps these pages lit. */
-    if (a.view == COMPANION || a.view == WARDROBE || a.view == DESK)
-        busy = false;
-    whale_power_plan_t plan = whale_power_tick(&power, a.now, busy, hold);
+    whale_power_plan_t plan = whale_power_tick(&power, a.now, whale_director_screen(&in).busy, hold);
     apply_screen(plan.screen);
     whale_ble_set_slow(plan.slow_adv);
     power_flags = (a.linked ? WHALE_BATT_LINKED : 0) |
@@ -2078,7 +2077,8 @@ static void service(whale_event_t e) {
         unsigned k = e.value & 255, ev = e.value >> 8;
         if (k >= 3)
             break;
-        if (ev == BSP_BTN_PRESS && a.view == DESK) {
+        whale_director_in_t in = director_in();
+        if (ev == BSP_BTN_PRESS && whale_director_key(&in) == WHALE_GO_HOME) {
             /* Even a press that only lights the screen leaves the desk display;
              * its release must not act on the page underneath. */
             armed[k] = false;

@@ -1,4 +1,5 @@
 #include "../main/whale_app.c"
+#include <stdlib.h>
 
 static uint8_t sent_type, sent_bytes[64];
 static size_t sent_length;
@@ -1928,6 +1929,123 @@ static void test_rich_questions(void) {
     assert(a.meta && a.question_mode == WHALE_MODE_SINGLE);
     puts("Approval and multi-select questions PASS");
 }
+/* Seeded random frames, keys, links and time through the whole application.
+ * Built with ASan/UBSan in validate.sh; it looks for crashes, out-of-range
+ * state and broken screen-director invariants rather than exact behavior.
+ * Reproduce: WHALE_APP_FUZZ_SEED=<seed>. */
+static uint64_t app_rng;
+static uint32_t app_random(void) {
+    app_rng ^= app_rng << 13;
+    app_rng ^= app_rng >> 7;
+    app_rng ^= app_rng << 17;
+    return (uint32_t)(app_rng >> 32);
+}
+static void app_fuzz_check(uint64_t seed, unsigned step, unsigned action) {
+    bool ok = a.view <= STANDBY && a.count <= 8 && (!a.count || a.selected < a.count) &&
+              a.scroll >= 0 && a.options <= 3 && a.focus <= 8;
+    /* The desk display never hides work that needs the user. */
+    if (ok && a.view == DESK && a.linked && a.ready && a.global_cap && a.global_valid &&
+        a.now - a.global_at < WHALE_SUMMARY_FRESH_MS)
+        ok = !a.global_waiting && !a.global_unread;
+    if (!ok) {
+        fprintf(stderr,
+                "app fuzz: bad state seed=%llu step=%u action=%u view=%d count=%u selected=%u "
+                "scroll=%d options=%u focus=%u waiting=%u unread=%u\n"
+                "reproduce: WHALE_APP_FUZZ_SEED=%llu\n",
+                (unsigned long long)seed, step, action, a.view, a.count, a.selected, a.scroll,
+                a.options, a.focus, a.global_waiting, a.global_unread, (unsigned long long)seed);
+        abort();
+    }
+}
+static void app_fuzz_one(uint64_t seed, unsigned steps) {
+    static const uint8_t types[] = {0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x17, 0x18, 0x19,
+                                    0x1a, 0x1b, 0x1c, 0x20, 0x21, 0x23, 0x31, 0x32, 0x41,
+                                    0x47, 0x49, 0x50, 0x51, 0x53, 0x54};
+    static uint8_t p[640];
+    setup();
+    a.global_cap = a.attention_cap = true;
+    app_rng = seed * 0x9e3779b97f4a7c15ull + 7;
+    for (unsigned step = 0; step < steps; step++) {
+        unsigned action = app_random() % 8;
+        switch (action) {
+        case 0:
+        case 1:
+        case 2: {
+            uint8_t type = types[app_random() % sizeof types];
+            size_t n = app_random() % 4 ? app_random() % 48 : app_random() % sizeof p;
+            for (size_t i = 0; i < n; i++)
+                p[i] = (uint8_t)(app_random() % 3 ? app_random() % 6 : app_random());
+            if (n >= 8 && app_random() % 4)
+                put64(p, a.epoch);
+            if (type == 0x50 && app_random() % 2) {
+                /* Well-formed global summary: counts never exceed the total. */
+                n = 25;
+                put64(p, a.epoch);
+                put32(p + 8, a.global_seq + 1);
+                uint16_t total = (uint16_t)(app_random() % 5);
+                put16(p + 12, total);
+                for (unsigned i = 14; i <= 18; i += 2)
+                    put16(p + i, (uint16_t)(total ? app_random() % (total + 1u) : 0));
+                put32(p + 20, app_random() % 3 ? 10 : 11);
+                p[24] = app_random() % 6 != 0;
+            }
+            if (type == 0x51 && app_random() % 2) {
+                /* Well-formed live cue or trigger. */
+                n = 26;
+                put64(p, a.epoch);
+                put32(p + 8, reminders.seq + 1);
+                put32(p + 12, app_random() % 3 ? 10 : 11);
+                put32(p + 16, 20);
+                put32(p + 20, app_random());
+                p[24] = (uint8_t)(app_random() % 4);
+                p[25] = (uint8_t)(app_random() % 6);
+                if (p[25] == 4)
+                    p[25] = 5;
+            }
+            apply_message((whale_msg_t){type, p, n});
+            break;
+        }
+        case 3:
+        case 4: {
+            unsigned k = app_random() % 3;
+            unsigned ev = app_random() % 2 ? BSP_BTN_LONG : BSP_BTN_RELEASE;
+            service((whale_event_t){.kind = WE_KEY, .value = k | (unsigned)BSP_BTN_PRESS << 8});
+            service((whale_event_t){.kind = WE_KEY, .value = k | ev << 8});
+            break;
+        }
+        case 5:
+            a.linked = app_random() % 4 != 0;
+            a.ready = a.linked;
+            if (!a.linked)
+                a.global_valid = false;
+            else if (app_random() % 8 == 0)
+                a.global_cap = !a.global_cap; /* an old bridge reconnects, or a new one */
+            break;
+        case 6:
+            fake_voice_busy = app_random() % 4 == 0;
+            break;
+        default: {
+            static const uint32_t jumps[] = {125, 3000, 30000, WHALE_DESK_IDLE_MS,
+                                             WHALE_POWER_OFF_MS};
+            a.now += jumps[app_random() % 5];
+            break;
+        }
+        }
+        companion_tick();
+        power_step();
+        app_fuzz_check(seed, step, action);
+    }
+}
+static void test_random_app_events(void) {
+    const char *one = getenv("WHALE_APP_FUZZ_SEED");
+    if (one && *one) {
+        app_fuzz_one(strtoull(one, NULL, 10), 3000);
+        return;
+    }
+    for (uint64_t seed = 1; seed <= 200; seed++)
+        app_fuzz_one(seed, 3000);
+}
+
 int main(void) {
     test_random_invitations();
     test_voice_new_task();
@@ -1952,6 +2070,7 @@ int main(void) {
     test_completion_cues();
     test_voice_and_attention();
     test_voice_direct_entry();
+    test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");
     return 0;

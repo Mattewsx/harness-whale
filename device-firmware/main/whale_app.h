@@ -1,43 +1,12 @@
 #pragma once
 #include "whale_ble.h"
 #include "whale_clock.h"
+#include "whale_director.h"
 #include "whale_voice.h"
 
 /* Display slots map to persistent skin IDs. This permutation is its own inverse. */
 static const uint8_t whale_wardrobe_order[] = {0, 2, 1, 3};
 
-typedef enum {
-    TASK_DETAIL,
-    LIST,
-    PAIR,
-    MANAGE,
-    KEEP,
-    REVOKE,
-    UNBINDING,
-    UNBIND_FAILED,
-    LOADING,
-    LOAD_FAILED,
-    QUESTION,
-    PROMPT,
-    OPTION,
-    SENDING,
-    CHECKING,
-    UNSURE,
-    RESULT,
-    VERSION,
-    LIST_LOAD,
-    LIST_FAILED,
-    REPLY_LOAD,
-    REPLY_READ,
-    REPLY_FAILED,
-    VOICE,
-    COMPANION,
-    SOUND,
-    HOME,
-    WARDROBE,
-    DESK, /* desk display: clock, whale and today's summary, entered when idle */
-    STANDBY /* settings: choose the desk display (summary or plain clock) */
-} whale_page_t;
 typedef struct {
     whale_row_t rows[8];
     struct {
