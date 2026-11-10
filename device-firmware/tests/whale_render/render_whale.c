@@ -483,6 +483,33 @@ int main(void) {
     strcpy(a.labels[2], "图片");
     whale_ui_draw(&a);
     save("question-list-entry");
+    /* Multi-select: picks marked, submit row after the last option. */
+    a.question_mode = WHALE_MODE_MULTI;
+    a.option_ids[0] = 0, a.option_ids[1] = 1, a.option_ids[2] = 2;
+    a.picked = 5;
+    a.focus = 3;
+    strcpy(a.prompt, "要导出哪些部分？");
+    strcpy(a.labels[0], "摘要");
+    strcpy(a.labels[1], "日志");
+    strcpy(a.labels[2], "图片");
+    whale_ui_draw(&a);
+    save("question-multi");
+    /* Approval: rests on deny; allow opens the full request first. */
+    a.question_mode = WHALE_MODE_APPROVAL;
+    a.options = a.all_options = 2;
+    a.picked = 0;
+    a.focus = 1;
+    strcpy(a.prompt, "允许运行命令？ npm test -- --watch=false");
+    strcpy(a.labels[0], "允许");
+    strcpy(a.labels[1], "拒绝");
+    whale_ui_draw(&a);
+    save("question-approval");
+    a.view = OPTION;
+    a.focus = 0;
+    a.scroll = 0;
+    whale_ui_draw(&a);
+    save("question-approval-confirm");
+    a.question_mode = WHALE_MODE_SINGLE;
     a.view = COMPANION;
     a.worn = 2;
     a.action_at = a.now;

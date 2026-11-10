@@ -266,6 +266,8 @@ class StatusModel:
         options = data.get("options")
         if not request_id or not isinstance(options, list) or len(options) < 2:
             return
+        if data.get("mode", "single") != "single":  # legacy v1 firmware answers single choice only
+            return
         labels = [str(item) for item in options]
         self.question = {"requestId": request_id, "options": labels}
         self.question_addr = addr

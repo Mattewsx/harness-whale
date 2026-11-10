@@ -1310,7 +1310,12 @@ static void test_large_frame_negotiation(void) {
     assert(hello_reply[0] == 2 && hello_reply[1] == 2 && !hello_reply[10]);
     assert(w32(hello_reply + 2) == 4095 && w16(hello_reply + 6) == 20 &&
            w16(hello_reply + 8) == 20);
-    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0);
+    assert(tx_frame == WHALE_FRAME_LEGACY && rx.frame == 0 && !rich_questions);
+    // Bit 15 (approval and multi-select) is echoed only when offered.
+    hello(4095 | WHALE_CAP_RICH_QUESTIONS, 20, 20);
+    assert(w32(hello_reply + 2) == (4095 | WHALE_CAP_RICH_QUESTIONS) && rich_questions);
+    hello(4095, 20, 20);
+    assert(!rich_questions);
 
     // A 2.3 bridge at MTU 247 gets minor 3, bit 12 and the largest common frame.
     hello(4095 | WHALE_CAP_LARGE_FRAMES, 244, 200);
@@ -1818,6 +1823,111 @@ static void test_voice_new_task(void) {
     assert(a.view == VOICE && a.voice_new && sent_type == 0x48 && w32(sent_bytes + 8) == 0);
     puts("Voice new task: list entry, folder label, retake, compatibility PASS");
 }
+static void question_meta(uint8_t count, const char *prompt, int mode) {
+    uint8_t p[600];
+    memcpy(p, a.identity, 20);
+    p[20] = count;
+    p[21] = (count + 2) / 3;
+    put16(p + 22, strlen(prompt));
+    memcpy(p + 24, prompt, strlen(prompt));
+    size_t n = 24 + strlen(prompt);
+    if (mode >= 0)
+        p[n++] = mode;
+    apply_message((whale_msg_t){0x20, p, n});
+}
+static void question_page(uint8_t page_index, uint8_t first, uint8_t count, const char *const *names) {
+    uint8_t p[200];
+    memcpy(p, a.identity, 20);
+    p[20] = page_index;
+    p[21] = count;
+    size_t n = 22;
+    for (uint8_t j = 0; j < count; j++) {
+        put16(p + n, first + j);
+        put16(p + n + 2, strlen(names[j]));
+        memcpy(p + n + 4, names[j], strlen(names[j]));
+        n += 4 + strlen(names[j]);
+    }
+    apply_message((whale_msg_t){0x21, p, n});
+}
+static void test_rich_questions(void) {
+    static const char *const first[] = {"alpha", "beta", "gamma"}, *const last[] = {"delta"};
+    static const char *const verdict[] = {"allow", "deny"};
+    /* Multi-select: toggle across pages, submit row only on the last page. */
+    setup();
+    rich_questions = true;
+    a.rows[0].question = 50;
+    page(TASK_DETAIL);
+    open_task();
+    assert(a.view == LOADING && sent_type == 0x24);
+    question_meta(4, "pick", WHALE_MODE_MULTI);
+    assert(a.meta && a.question_mode == WHALE_MODE_MULTI && a.view == LOADING);
+    question_page(0, 0, 3, first);
+    assert(a.view == QUESTION && a.options == 3 && !a.picked);
+    key(BSP_BTN_OK);
+    assert(a.picked == 1 && a.view == QUESTION && answers == 0);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.picked == 5);
+    key(BSP_BTN_OK);
+    assert(a.picked == 1);
+    key(BSP_BTN_DOWN);
+    assert(a.view == LOADING && a.page == 1);
+    question_page(1, 3, 1, last);
+    key(BSP_BTN_OK);
+    assert(a.picked == 9);
+    key(BSP_BTN_DOWN);
+    assert(a.focus == 1 && submit_row());
+    key(BSP_BTN_OK);
+    assert(a.view == SENDING && sent_type == 0x26 && sent_length == 28 &&
+           w64(sent_bytes + 20) == 9 && answers == 0);
+    /* A nothing-picked submit row stays put. */
+    a.picked = 0;
+    page(QUESTION);
+    sends = 0;
+    key(BSP_BTN_OK);
+    assert(a.view == QUESTION && !sends);
+
+    /* Approval: rests on deny; allow re-reads the full request first. */
+    setup();
+    rich_questions = true;
+    a.rows[0].question = 51;
+    open_task();
+    question_meta(2, "run npm test", WHALE_MODE_APPROVAL);
+    assert(a.question_mode == WHALE_MODE_APPROVAL && a.focus == 1);
+    question_page(0, 0, 2, verdict);
+    assert(a.view == QUESTION && a.focus == 1);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
+    assert(a.view == OPTION && answers == 0);
+    key(BSP_BTN_OK);
+    assert(a.view == SENDING && sent_type == 0x22 && w16(sent_bytes + 20) == 0 && answers == 1);
+    setup();
+    rich_questions = true;
+    a.rows[0].question = 52;
+    open_task();
+    question_meta(2, "rm -rf build", WHALE_MODE_APPROVAL);
+    question_page(0, 0, 2, verdict);
+    key(BSP_BTN_OK);
+    assert(a.view == SENDING && w16(sent_bytes + 20) == 1);
+    /* Approval with three options, or a mode byte without the capability, is rejected. */
+    setup();
+    rich_questions = true;
+    a.rows[0].question = 53;
+    open_task();
+    question_meta(3, "bad", WHALE_MODE_APPROVAL);
+    assert(a.view == LOAD_FAILED);
+    setup();
+    rich_questions = false;
+    a.rows[0].question = 54;
+    open_task();
+    question_meta(2, "old", WHALE_MODE_MULTI);
+    assert(a.view == LOAD_FAILED);
+    open_task();
+    question_meta(2, "old", -1);
+    assert(a.meta && a.question_mode == WHALE_MODE_SINGLE);
+    puts("Approval and multi-select questions PASS");
+}
 int main(void) {
     test_random_invitations();
     test_voice_new_task();
@@ -1834,6 +1944,7 @@ int main(void) {
     test_desk_display();
     test_detail_and_reading();
     test_navigation_and_questions();
+    test_rich_questions();
     test_new_reply_and_lifecycle();
     test_failure_empty_battery_and_key_release();
     test_continuous_cache_and_offline();

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 import shutil
@@ -172,6 +173,67 @@ class Wire(unittest.TestCase):
         self.assertEqual(w.receive(0x22, p + b"\0\0")[0][1][20], 2)
 
 
+    def rich_link(self, m, caps):
+        w = v.Link(m)
+        w.receive(2, v.pack("BBIHHB", 2, 2, caps, 20, 20, 0))
+        self.assertTrue(w.ready)
+        return w
+
+    def test_rich_questions_are_hidden_from_old_firmware(self):
+        m = v.Workspace()
+        ev = dict(sessionId="a", runId="1", state="waiting", hint=2)
+        m.update(ev)
+        m.question({**ev, "options": ["允许", "拒绝"], "question": "允许运行命令？ ls",
+                    "requestId": "ap", "mode": "approval"}, ("127.0.0.1", 1))
+        p = next(iter(m.questions))
+        sid = m.keys["a"]
+        old = self.rich_link(m, 4095)
+        self.assertEqual(v.ROW.unpack_from(m.row(sid, rich=old.rich))[8], 0)
+        self.assertNotEqual(v.ROW.unpack_from(m.row(sid, rich=True))[8], 0)
+        self.assertEqual(old.receive(0x24, p + b"\xff")[0][1][20], 3)
+        new = self.rich_link(m, 4095 | v.RICH_QUESTIONS)
+        meta = new.receive(0x24, p + b"\xff")[0][1]
+        self.assertEqual(meta[-1], 2)
+        self.assertEqual(v.struct.unpack_from("<H", meta, 22)[0], len(meta) - 25)
+
+    def test_approval_needs_two_labels_and_known_mode(self):
+        m = v.Workspace()
+        ev = dict(sessionId="a", runId="1", state="waiting")
+        m.update(ev)
+        m.question({**ev, "options": ["a", "b", "c"], "question": "q", "requestId": "x", "mode": "approval"}, None)
+        m.question({**ev, "options": ["a", "b"], "question": "q", "requestId": "y", "mode": "other"}, None)
+        self.assertFalse(m.questions)
+
+    def test_multi_select_mask_submit_and_query(self):
+        m = v.Workspace()
+        sent = []
+
+        class T:
+            def sendto(self, data, addr):
+                sent.append(json.loads(data))
+
+        m.transport = T()
+        ev = dict(sessionId="a", runId="1", state="question")
+        m.update(ev)
+        m.question({**ev, "options": ["a", "b", "c", "d"], "question": "多选",
+                    "requestId": "mq", "mode": "multi"}, ("127.0.0.1", 1))
+        p = next(iter(m.questions))
+        w = self.rich_link(m, 4095 | v.RICH_QUESTIONS)
+        self.assertEqual(w.receive(0x24, p + b"\xff")[0][1][-1], 1)
+        # Single submit, an empty mask and out-of-range bits are all ignored.
+        w.receive(0x22, p + b"\0\0")
+        w.receive(0x26, p + v.pack("Q", 0))
+        w.receive(0x26, p + v.pack("Q", 1 << 4))
+        self.assertEqual(sent, [])
+        self.assertEqual(w.receive(0x26, p + v.pack("Q", 0b101))[0][1][20], 4)
+        self.assertEqual(sent[-1]["selectedList"], [0, 2])
+        w.receive(0x26, p + v.pack("Q", 0b1))
+        self.assertEqual(len(sent), 1)
+        w.receive(0x25, p)
+        self.assertEqual(sent[-1]["selectedList"], [0, 2])
+        self.assertIn(0x26, v.CONTROL)
+
+
 class Integration(unittest.IsolatedAsyncioTestCase):
     async def test_two_concurrent_sessions_real_plugin_udp(self):
         model = StatusModel()
@@ -227,6 +289,61 @@ class Integration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(link.receive(0x25, p)[0][1][20:], bytes([0, 4, 0]))
             other = next(q for key, q in m.questions.items() if key != p)
             self.assertEqual(other.status, 1)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            transport.close()
+
+    async def test_approval_and_multi_select_real_plugin_udp(self):
+        model = StatusModel()
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: HarnessDatagram(model), local_addr=("127.0.0.1", 0)
+        )
+        telemetry, _ = await loop.create_datagram_endpoint(
+            asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0)
+        )
+        port = telemetry.get_extra_info("sockname")[1]
+        telemetry.close()
+        env = {
+            **os.environ,
+            "HARNESS_WHALE_UDP_PORT": str(transport.get_extra_info("sockname")[1]),
+            "HARNESS_WHALE_TELEMETRY_PORT": str(port),
+            "HARNESS_WHALE_BRIDGE_SCRIPT": "missing-replay-fixture",
+        }
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node with TypeScript stripping required")
+        proc = await asyncio.create_subprocess_exec(
+            node,
+            Path(__file__).with_name("replay_approval.mjs"),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            m = model.workspace
+            for _ in range(100):
+                if len(m.questions) == 2:
+                    break
+                await asyncio.sleep(0.03)
+            self.assertEqual(len(m.questions), 2)
+            link = v.Link(m)
+            link.receive(2, v.pack("BBIHHB", 2, 2, 127 | v.RICH_QUESTIONS, 20, 20, 0))
+            link.receive(0x10, v.pack("QIBB", 0, 0, 8, 0))
+            ap = next(p for p, q in m.questions.items() if q.mode == 2)
+            mq = next(p for p, q in m.questions.items() if q.mode == 1)
+            self.assertIn("npm test", m.questions[ap].prompt.decode())
+            self.assertEqual(m.questions[ap].labels, ["允许", "拒绝"])
+            link.receive(0x22, ap + b"\0\0")
+            link.receive(0x26, mq + v.pack("Q", 0b101))
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), 8)
+            self.assertEqual(
+                proc.returncode, 0, (stdout + stderr).decode(errors="replace")
+            )
+            self.assertEqual(link.receive(0x25, ap)[0][1][20:], bytes([0, 0, 0]))
+            self.assertEqual(m.questions[mq].status, 0)
         finally:
             if proc.returncode is None:
                 proc.kill()

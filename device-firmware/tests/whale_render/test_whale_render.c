@@ -329,6 +329,32 @@ int main(void) {
         a.now += 125;
         draw(&a);
     }
+    /* Approval and multi-select reuse the label pool: no new LVGL objects. */
+    a.view = QUESTION;
+    a.pages = 1;
+    a.options = a.all_options = 3;
+    a.option_ids[0] = 0, a.option_ids[1] = 1, a.option_ids[2] = 2;
+    a.question_mode = WHALE_MODE_MULTI;
+    a.picked = 3;
+    a.focus = 3;
+    strcpy(a.prompt, "pick parts");
+    strcpy(a.labels[0], "summary");
+    strcpy(a.labels[1], "log");
+    strcpy(a.labels[2], "images");
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.question_mode = WHALE_MODE_APPROVAL;
+    a.options = 2;
+    a.focus = 1;
+    strcpy(a.prompt, "run npm test");
+    strcpy(a.labels[0], "allow");
+    strcpy(a.labels[1], "deny");
+    draw(&a);
+    assert(draw(&a) == 0);
+    a.view = OPTION;
+    a.focus = 0;
+    assert(draw(&a) > 0);
+    assert(draw(&a) == 0);
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     assert(memory.free_size > 4096 && lv_mem_test() == LV_RESULT_OK);

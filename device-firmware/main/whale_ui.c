@@ -1092,23 +1092,53 @@ void whale_ui_draw(const whale_app_t *a) {
             label(12, 74, 166, a->prompt, NAV, PAPER, LV_TEXT_ALIGN_LEFT);
         } else
             center(74, a->prompt, NAV, PAPER);
-        snprintf(text, sizeof text, "第 %u/%u 页", a->page + 1, a->pages);
+        bool multi = a->question_mode == WHALE_MODE_MULTI;
+        unsigned picks = 0;
+        for (uint64_t m = a->picked; m; m &= m - 1)
+            picks++;
+        if (multi)
+            snprintf(text, sizeof text, "多选 · 已选 %u 项 · 第 %u/%u 页", picks, a->page + 1,
+                     a->pages);
+        else if (a->question_mode == WHALE_MODE_APPROVAL)
+            snprintf(text, sizeof text, "请审批");
+        else
+            snprintf(text, sizeof text, "第 %u/%u 页", a->page + 1, a->pages);
         center(109, text, TEAL, PAPER);
-        for (int j = 0; j < a->options; j++)
-            label(12, 144 + 42 * j, 216, a->labels[j],
+        for (int j = 0; j < a->options; j++) {
+            char row[264];
+            bool on = multi && a->option_ids[j] < 64 && (a->picked >> a->option_ids[j] & 1);
+            snprintf(row, sizeof row, "%s%s", !multi ? "" : on ? "● " : "· ", a->labels[j]);
+            label(12, 144 + 42 * j, 216, row,
                   !a->defer_question && j == a->focus ? PAPER : NAV,
                   !a->defer_question && j == a->focus ? NAV : 0xe5f0e9, LV_TEXT_ALIGN_LEFT);
+        }
+        bool submit_row = multi && a->page + 1 >= a->pages;
+        if (submit_row) {
+            bool focused = !a->defer_question && a->focus == a->options;
+            int y = 144 + 42 * a->options;
+            snprintf(text, sizeof text, picks ? "提交 %u 项" : "先选中一项", picks);
+            center(y > 266 ? 266 : y, text, focused ? PAPER : TEAL, focused ? TEAL : PAPER);
+        }
         if (a->defer_question)
             parent_icon(ICON_chat, true);
         foot = a->defer_question                      ? "确认 暂不回答"
+               : submit_row && a->focus == a->options ? (picks ? "确认提交" : "先选中一项")
+               : a->question_mode == WHALE_MODE_APPROVAL && a->option_ids[a->focus] == 0
+                   ? "确认 读全文再提交"
+               : multi && whale_text_wide(a->labels[a->focus]) ? "确认展开全文"
+               : multi                                ? "确认选中  选完下翻提交"
                : long_prompt && whale_text_wide(a->labels[a->focus]) ? "长按↓读题  确认展开全文"
                : long_prompt                          ? "长按↓读题  确认提交"
                : whale_text_wide(a->labels[a->focus]) ? "确认展开全文"
                                                       : "上下选择  确认提交";
     } else if (a->view == OPTION || a->view == PROMPT) {
-        fulltext(a->view == PROMPT ? "问题全文" : "选项全文",
-                 a->view == PROMPT ? a->prompt : a->labels[a->focus], a->scroll);
-        foot = a->view == OPTION ? "上下滚动  确认提交" : "上下滚动  确认读选项";
+        /* Approving an action re-reads the whole request, never just the label. */
+        bool approve = a->view == OPTION && a->question_mode == WHALE_MODE_APPROVAL;
+        fulltext(approve ? "审批全文" : a->view == PROMPT ? "问题全文" : "选项全文",
+                 approve || a->view == PROMPT ? a->prompt : a->labels[a->focus], a->scroll);
+        foot = a->view == PROMPT ? "上下滚动  确认读选项"
+               : a->question_mode == WHALE_MODE_MULTI ? "上下滚动  确认选中或取消"
+                                                      : "上下滚动  确认提交";
     } else {
         const char *heading = "", *detail = "";
         int n = 10;
@@ -1189,6 +1219,7 @@ void whale_ui_draw(const whale_app_t *a) {
             break;
         case RESULT:
             heading = a->unsupported   ? "请在电脑处理"
+                      : a->result == 0 && a->question_mode == WHALE_MODE_APPROVAL ? "审批已提交"
                       : a->result == 0 ? "回答已接受"
                       : a->result == 1 ? "已在电脑处理"
                       : a->result == 2 ? "问题已撤回"
