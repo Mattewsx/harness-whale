@@ -209,13 +209,48 @@ async function askOnHardware(questions: HardwareQuestion[], signal: AbortSignal,
 
 export const APPROVAL_OPTIONS = ['允许', '拒绝']
 
+// displayReason is LocalizedText: alternate translations of the same reason,
+// not additional permission scopes. Keep the canonical reason in full and
+// select one complete display translation instead of sending every language.
+function approvalReasons(req: any): Record<string, string> | null {
+  const result: Record<string, string> = {}
+  if (req?.reason != null) {
+    if (typeof req.reason !== 'string' || !req.reason.trim()) return null
+    result.reason = req.reason
+  }
+  const display = req?.displayReason
+  if (display != null) {
+    if (typeof display === 'string') {
+      if (!display.trim()) return null
+      result.displayReason = display
+    } else {
+      if (typeof display !== 'object' || Array.isArray(display)) return null
+      const keys = Object.keys(display)
+      if (!keys.length || Reflect.ownKeys(display).length !== keys.length ||
+          keys.some(key => !/^[a-z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$/.test(key) ||
+            typeof Object.getOwnPropertyDescriptor(display, key)?.value !== 'string')) return null
+      const locale = ['zh-CN', 'zh-Hans', 'zh', 'en'].find(key =>
+        Object.hasOwn(display, key) && display[key].trim())
+      if (!locale) return null
+      result.displayReason = display[locale]
+    }
+  }
+  return Object.keys(result).length ? result : null
+}
+
 function callArguments(session: any, callId: unknown): any {
   if (!callId) return undefined
   const events = session?.ownEvents?.() || []
   for (let i = events.length - 1; i >= 0; i--) {
     const body = eventBody(events[i])
     if (eventType(events[i]) === 'tool/call' && [body?.id, body?.callId, body?.call?.id].includes(callId)) {
-      return body?.arguments ?? body?.args ?? body?.input ?? body?.call?.arguments
+      const args = body?.arguments ?? body?.args ?? body?.input ?? body?.call?.arguments
+      // DSH's durable tool/call event stores arguments as a JSON string.
+      // Decode the complete input rather than double-encoding it for display.
+      if (typeof args === 'string') {
+        try { return JSON.parse(args) } catch { return undefined }
+      }
+      return args
     }
   }
   return undefined
@@ -548,16 +583,16 @@ export function apply(ctx: any) {
 
   // Permission prompts ("allow this command / file change?") answered on the device.
   // Allow maps to the only grant, allowed-once; deny maps to rejected.
+  // Prepend to wrap an existing computer answerer instead of waiting behind it.
   ctx.on('approval/request', async (req: any, next: () => Promise<string>) => {
     const session = req?.agent?.session
     if (!observeSession(session) || req?.signal?.aborted) return next()
     const key = sessionKey(session)
     const row = states.get(key)
     if (key === 'default' || !row?.runId) return next()
-    const reasons = Object.fromEntries(['reason', 'displayReason']
-      .filter(field => req?.[field] != null).map(field => [field, req[field]]))
+    const reasons = approvalReasons(req)
     const prompt = approvalPrompt(String(req?.toolName || ''), callArguments(session, req?.callId),
-      Object.keys(reasons).length ? reasons : undefined)
+      reasons ?? undefined)
     if (!prompt) {
       emit(key, {state:'waiting', hint:5})
       return next()
@@ -569,7 +604,7 @@ export function apply(ctx: any) {
         return choice === 0 ? 'allowed-once' : 'rejected'
       },
       outcome => outcome === 'allowed-once' ? 0 : 1, key, false)
-  }, { global: true })
+  }, { global: true, prepend: true })
 
   ctx.commands.register({
     name: 'whale',

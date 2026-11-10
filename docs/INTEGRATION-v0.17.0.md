@@ -9,14 +9,15 @@ This is an unreleased development integration. It combines the reviewed random i
 - Summary totals persist before the first BLE connection and after merges, remain cumulative beyond the bounded deduplication cache, and are invalidated when the bridge epoch changes. Wide totals wrap into two lines.
 - Spoken tasks require a resolved workspace and successful attachment before the first message. Uncertain creation keeps its nonce receipt; retries cannot create a second session. New receipts are refused at capacity instead of evicting old identities.
 - Device approvals carry the complete tool, arguments and permission reasons within the 512-byte prompt. Incomplete or oversized requests stay on the computer. Line separators remain faithfully JSON-escaped. Cancellation or lost session visibility during cleanup prevents acceptance.
+- DSH compatibility: the device approval listener wraps existing computer answerers, selects one complete display translation while retaining the canonical reason, and decodes complete JSON-string arguments. Loopback diagnostics expose only request counts. Oversized complete requests still stay on the computer.
 - Combined capability bits and control messages retain both rich questions and spoken tasks. Existing skins, affection quotas, read-on-view badges and invitation rules remain intact.
 
 ## Validation
 
 - Build: PASS — ESP-IDF 5.5.3 complete gate, single factory partition, merged image and matching debug archive verified.
-- Host tests: PASS — 127 Python tests, plugin bundle, voice/approval safety replays, native application tests, 11 cross-language replay scenarios and production LVGL regression.
-- Device tests: PASS only for invitation triggering, response actions/captions and retained settings on the earlier `f9227d9c20f40dcc90f882fa9f1825ec11155bb8c83815bcd828fe9d3748abf0` image, confirmed by the user on 2026-11-10.
-- Unverified: the integrated image below has not been flashed; real DSH approval races, new-session creation, summary behavior, invitation ignore/interruption paths and long-duration operation need device acceptance. The installed bridge is unchanged.
+- Host tests: PASS — 129 Python tests, plugin bundle, voice/approval safety replays, native application tests, 11 cross-language replay scenarios and production LVGL regression.
+- Device tests: the user confirmed retained settings, one visible spoken new task without duplicate delivery, intact original sessions, accurate cross-page multi-select, daily-summary display/return and real short-request approval denial/allow-once on the integrated image below with the updated PC components (2026-11-10). Invitations were previously confirmed on image `f9227d9c20f40dcc90f882fa9f1825ec11155bb8c83815bcd828fe9d3748abf0`.
+- Unverified: simultaneous desktop/device cancellation races on hardware, daily rollover, every outfit/action combination, invitation ignore/interruption paths and long-duration operation. The 512-byte limit applies to the complete request; a real oversized request was observed falling back to the computer as designed.
 
 ## Integrated build identity
 

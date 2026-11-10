@@ -211,6 +211,8 @@ class StatusModel:
         self.link_cycle = asyncio.Event()
         self.link_hold = 0.0
         self.packets_sent = 0
+        self.question_received = 0
+        self.approval_received = 0
 
     def link_report(self) -> dict[str, Any]:
         """Loopback-only status for the stress script: counters, no session data."""
@@ -373,7 +375,13 @@ class HarnessDatagram(asyncio.DatagramProtocol):
             if kind == "whale-roster-check":
                 # Local read-only diagnostic, with no session IDs, titles or reply text.
                 report = {"kind":"whale-roster-check","projected":len(self.model.workspace.sessions),
-                          "lastGattSnapshot":self.model.workspace.delivered}
+                          "lastGattSnapshot":self.model.workspace.delivered,
+                          "questionDiagnostics": {
+                              "received": self.model.question_received,
+                              "approvalReceived": self.model.approval_received,
+                              "pending": sum(q.status == 4 for q in self.model.workspace.questions.values()),
+                              "pendingApproval": sum(q.status == 4 and q.mode == 2
+                                                     for q in self.model.workspace.questions.values())}}
                 if self.model.datagram_transport:
                     self.model.datagram_transport.sendto(json.dumps(report).encode(), addr)
             elif kind == "whale-link-status":
@@ -409,6 +417,8 @@ class HarnessDatagram(asyncio.DatagramProtocol):
             elif kind == "whale-result":
                 self.model.workspace.resolve(document.get("requestId"), document.get("status"), document.get("option",65535))
             elif kind == "harness-question":
+                self.model.question_received += 1
+                self.model.approval_received += document.get("mode") == "approval"
                 self.model.workspace.question(document, addr)
                 if not self.model.workspace.is_hidden(document.get("sessionId")):
                     self.model.set_question(document, addr)

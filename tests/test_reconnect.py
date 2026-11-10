@@ -94,6 +94,21 @@ class BackoffTests(unittest.TestCase):
 
 
 class LoopbackHooks(unittest.TestCase):
+    def test_question_diagnostics_expose_counts_only(self):
+        model = bridge.StatusModel()
+        sent = []
+        model.datagram_transport = SimpleNamespace(sendto=lambda data, addr: sent.append(json.loads(data)))
+        model.workspace.update({"sessionId": "synthetic-private-id", "runId": "r", "state": "waiting"})
+        protocol = bridge.HarnessDatagram(model)
+        protocol.datagram_received(json.dumps({"kind": "harness-question", "sessionId": "synthetic-private-id",
+            "runId": "r", "requestId": "synthetic-request", "mode": "approval", "question": "private prompt",
+            "options": ["allow", "deny"]}).encode(), ("127.0.0.1", 5000))
+        protocol.datagram_received(b'{"kind":"whale-roster-check"}', ("127.0.0.1", 5000))
+        report = sent[-1]
+        self.assertEqual(report["questionDiagnostics"],
+                         {"received": 1, "approvalReceived": 1, "pending": 1, "pendingApproval": 1})
+        self.assertNotIn("private", json.dumps(report))
+
     def test_status_report_has_counters_only(self):
         model = bridge.StatusModel()
         sent = []

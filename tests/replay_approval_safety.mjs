@@ -71,8 +71,12 @@ try {
     {args:{command:'echo hi',scope:'privileged network '.repeat(40)}},
     {missingCall:true}, {args:undefined,missingCall:true},
     {tool:'edit_file',args:{path:'/tmp/a'}},
+    {tool:'edit_file',args:JSON.stringify({path:'/tmp/a'})},
+    {args:'{"command":'},
     {tool:'edit_file',args:{path:'/tmp/a',content:'x'.repeat(510)}},
     {args:{command:'echo \x1b[2J'}},
+    {reason:null},
+    {reason:17,displayReason:{zh:'显示理由'}},
     {reason:undefined,displayReason:'permission scope '.repeat(40)},
   ]) {
     const fallback=await approve(scenario)
@@ -86,10 +90,28 @@ try {
   const file=await approve({tool:'edit_file',args:change,reason:'replace full contents'})
   assert.equal(file.value,'allowed-once')
   assert.deepEqual(JSON.parse(file.offered[0].question.split('允许？ ')[1]).arguments,change)
+  const durableFile=await approve({tool:'edit_file',args:JSON.stringify(change),reason:'replace full contents'})
+  assert.equal(durableFile.value,'allowed-once')
+  assert.deepEqual(JSON.parse(durableFile.offered[0].question.split('允许？ ')[1]).arguments,change)
   const scoped=await approve({reason:'permission: network',displayReason:{en:'Contact example.com'}})
   assert.equal(scoped.value,'allowed-once')
   assert.deepEqual(JSON.parse(scoped.offered[0].question.split('允许？ ')[1]).reason,
-    {reason:'permission: network',displayReason:{en:'Contact example.com'}})
+    {reason:'permission: network',displayReason:'Contact example.com'})
+  const localized=await approve({reason:'escalate sandbox to danger-full-access: test',
+    displayReason:{en:'Allow this test once',zh:'允许这次测试',ja:'Test '.repeat(100),
+      es:'Test '.repeat(100),fr:'Test '.repeat(100),de:'Test '.repeat(100),
+      ru:'Test '.repeat(100),pt:'Test '.repeat(100)}})
+  assert.equal(localized.value,'allowed-once')
+  assert.deepEqual(JSON.parse(localized.offered[0].question.split('允许？ ')[1]).reason,
+    {reason:'escalate sandbox to danger-full-access: test',displayReason:'允许这次测试'})
+  for(const displayReason of [
+    {zh:'valid',permission:'hidden scope'}, {zh:'valid',en:{scope:'not a translation'}},
+    {get zh(){return 'mutable'}}, {zh:'scope '.repeat(100)},
+  ]) {
+    const invalid=await approve({displayReason})
+    assert.equal(invalid.offered.length,0)
+    assert.equal(invalid.value,'rejected')
+  }
   for(const duringCleanup of ['cancel','hide']) {
     const cancelled=await approve({duringCleanup})
     assert(cancelled.error,`${duringCleanup} must not grant permission`)
