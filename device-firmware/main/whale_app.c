@@ -2224,7 +2224,7 @@ void app_main(void) {
     whale_ble_start();
     ESP_LOGI(
         "whale",
-        "v0.18.0-dev / protocol 2.3 large frames + pending queue + companion feelings; "
+        "v0.18.0-dev2 / protocol 2.3 large frames + pending queue + companion feelings; "
         "minimum free heap: %lu",
         (unsigned long)esp_get_minimum_free_heap_size());
 #ifdef WHALE_POWER_TEST

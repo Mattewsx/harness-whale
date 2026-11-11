@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
+# Questions arrive at runtime, so scanning fixed UI strings cannot discover
+# their arrows and arithmetic operators. Keep these in every body-sized font.
+QUESTION_SYMBOLS = "←→↔×÷±≤≥≠−"
+
 
 def build(otf, folder, size):
     # BASIC layout gives whole-pixel advances, matching the committed fonts
@@ -18,6 +22,7 @@ def build(otf, folder, size):
             except UnicodeDecodeError:
                 pass
     chars.update("，。？！（）《》、：；“”‘’—…￥¥≈")
+    chars.update(QUESTION_SYMBOLS)
     for f in folder.glob("whale_*.c"):
         if not f.name.startswith("lv_font_cn_"):
             chars.update(c for c in f.read_text("utf8") if ord(c) > 127)

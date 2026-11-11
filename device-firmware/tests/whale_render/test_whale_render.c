@@ -45,6 +45,54 @@ static void summary_stays_inside_card(const whale_app_t *a) {
             assert(screen[y * 240 + 239 - x] == background);
         }
 }
+static void dynamic_question_glyphs(void) {
+    LV_FONT_DECLARE(lv_font_cn_12);
+    LV_FONT_DECLARE(lv_font_cn_14);
+    LV_FONT_DECLARE(lv_font_cn_16);
+    LV_FONT_DECLARE(lv_font_cn_18);
+    const lv_font_t *fonts[] = {&lv_font_cn_12, &lv_font_cn_14, &lv_font_cn_16, &lv_font_cn_18};
+    const uint32_t symbols[] = {0x2190, 0x2192, 0x2194, 0x00d7, 0x00f7,
+                               0x00b1, 0x2264, 0x2265, 0x2260, 0x2212};
+    for (unsigned f = 0; f < sizeof fonts / sizeof *fonts; f++)
+        for (unsigned c = 0; c < sizeof symbols / sizeof *symbols; c++) {
+            lv_font_glyph_dsc_t glyph;
+            assert(lv_font_get_glyph_dsc(fonts[f], &glyph, symbols[c], 0));
+            assert(!glyph.is_placeholder && glyph.adv_w && glyph.box_w && glyph.box_h);
+        }
+    assert(whale_displayable("暴击率 20% → 25%（暴击伤害 2.5 倍），平均单发伤害提升约多少？"));
+    assert(whale_displayable("0.25 × 2.0 + 0.75 × 1.0"));
+    assert(!whale_displayable("😀")); /* Unsupported text still falls back safely. */
+}
+static void question_back_button_stays_visible(whale_app_t *a) {
+    const char *titles[] = {"选择题测试", "A very long session title that fills the heading"};
+    a->view = QUESTION;
+    a->page = a->focus = 0;
+    a->pages = 2;
+    a->options = a->all_options = 3;
+    strcpy(a->prompt, "先选一个选项");
+    strcpy(a->labels[0], "A");
+    strcpy(a->labels[1], "B");
+    strcpy(a->labels[2], "C");
+    for (unsigned mode = WHALE_MODE_SINGLE; mode <= WHALE_MODE_APPROVAL; mode++) {
+        a->question_mode = mode;
+        if (mode == WHALE_MODE_APPROVAL)
+            a->options = a->all_options = 2;
+        for (unsigned title = 0; title < sizeof titles / sizeof *titles; title++) {
+            strcpy(a->rows[0].title, titles[title]);
+            for (unsigned focused = 0; focused < 2; focused++) {
+                a->defer_question = focused;
+                draw(a);
+                /* Both lower and right portions of the return chip must stay
+                 * visibly above the page background, even under a long title. */
+                uint16_t paper = screen[60 * 240 + 43];
+                assert(screen[55 * 240 + 27] != paper);
+                assert(screen[44 * 240 + 43] != paper);
+                assert(draw(a) == 0);
+            }
+        }
+    }
+    a->defer_question = false;
+}
 int main(void) {
     FILE *file = fopen(WHALE_POSES_PATH, "rb");
     assert(file && fread(poses, 1, sizeof poses, file) == sizeof poses);
@@ -60,6 +108,7 @@ int main(void) {
                             sizeof landscape_pixels);
     fclose(landscape);
     lv_init();
+    dynamic_question_glyphs();
     lv_display_t *display = lv_display_create(240, 320);
     lv_display_set_buffers(display, buffer, NULL, sizeof buffer, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, flush);
@@ -381,6 +430,7 @@ int main(void) {
     a.focus = 0;
     assert(draw(&a) > 0);
     assert(draw(&a) == 0);
+    question_back_button_stays_visible(&a);
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     assert(memory.free_size > 4096 && lv_mem_test() == LV_RESULT_OK);

@@ -14,6 +14,15 @@ def inventory(size):
 
 
 class WhaleFonts(unittest.TestCase):
+    def test_dynamic_question_arrows_and_math_symbols(self):
+        symbols = set(map(ord, "←→↔×÷±≤≥≠−"))
+        question = set(map(ord, "暴击率 20% → 25%（暴击伤害 2.5 倍），平均单发伤害提升约多少？"))
+        labels = set(map(ord, "A.约 5.0% B.约 5.8% C.7.5% D.25% 0.25 × 2.0 + 0.75 × 1.0"))
+        for size in (12, 14, 16, 18):
+            self.assertFalse(symbols - inventory(size), f"size {size} missing dynamic math glyphs")
+        for size in (14, 16, 18):
+            self.assertFalse((question | labels) - inventory(size))
+
     def test_interface_and_title_sizes_cover_supported_characters(self):
         fixed = set()
         for path in (ROOT / "main").glob("whale_*.c"):

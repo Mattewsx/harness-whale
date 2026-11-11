@@ -1106,7 +1106,16 @@ void whale_ui_draw(const whale_app_t *a) {
             panel(hold_fill, 230, 203 + (108 - h) * first / (a->total - visible), 3, h, TEAL, 2);
         }
     } else if (a->view == QUESTION) {
-        center(41, r->title[0] ? r->title : "当前会话", NAV, PAPER);
+        parent_icon(ICON_chat, a->defer_question);
+        const char *title = r->title[0] ? r->title : "当前会话";
+        char heading[80];
+        if (text_width(&lv_font_cn_16, title) > 132) {
+            title_line(title, heading, sizeof heading, &lv_font_cn_16,
+                       132 - text_width(&lv_font_cn_16, "…"));
+            strcat(heading, "…");
+            title = heading;
+        }
+        text_at(54, 35, 132, 20, &lv_font_cn_16, title, NAV, -1, LV_TEXT_ALIGN_CENTER);
         bool long_prompt = whale_text_wide(a->prompt);
         if (long_prompt) {
             char brief[80];
@@ -1145,8 +1154,6 @@ void whale_ui_draw(const whale_app_t *a) {
             snprintf(text, sizeof text, picks ? "提交 %u 项" : "先选中一项", picks);
             center(y > 266 ? 266 : y, text, focused ? PAPER : TEAL, focused ? TEAL : PAPER);
         }
-        if (a->defer_question)
-            parent_icon(ICON_chat, true);
         foot = a->defer_question                      ? "确认 暂不回答"
                : submit_row && a->focus == a->options ? (picks ? "确认提交" : "先选中一项")
                : a->question_mode == WHALE_MODE_APPROVAL && a->option_ids[a->focus] == 0
@@ -1213,7 +1220,7 @@ void whale_ui_draw(const whale_app_t *a) {
             n = 13;
             break;
         case VERSION:
-            heading = "固件 v0.18.0 Dev";
+            heading = "固件 v0.18.0 Dev2";
             detail = "HARNESS-WHALE · BLE 2.3";
             break;
         case LOADING:
