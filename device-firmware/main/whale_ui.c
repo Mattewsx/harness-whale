@@ -258,6 +258,17 @@ static void dressed(uint8_t worn, int pose_id, int x, int y, unsigned scale) {
             }
     pose_at(pose_id, x, y, scale);
 }
+static const char *desk_line(const whale_app_t *a, bool idle_day) {
+    if (idle_day)
+        return a->clock_valid && a->clock.hour < 12 ? "新的一天，慢慢来" : "今天还没开工";
+    if (a->summary_seconds >= 7200)
+        return "忙了好一会儿，歇一下吧";
+    if (a->summary_done >= 5)
+        return "今天完成了好多事呀";
+    if (a->summary_done <= 1 && a->summary_seconds < 1800)
+        return "今天开了个好头";
+    return "陪你一起慢慢忙";
+}
 static const char *invitation_line(const whale_app_t *a) {
     static const char *const offers[][3] = {
         {"嗨，看看我呀。", "歇一下，打个招呼？", "想跟你挥挥手。"},
@@ -871,20 +882,24 @@ void whale_ui_draw(const whale_app_t *a) {
                     LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
             int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
+            const char *note = desk_line(a, idle_day);
             if (idle_day) {
-                pose_at(n, 45, 92, 196);
-                panel(sheet, 64, 254, 112, 30, CARD, 15);
-                text_at(64, 260, 112, 18, &lv_font_cn_14, "今天还没开工", MUT, -1,
+                int w = text_width(&lv_font_cn_14, note) + 28;
+                dressed(a->worn, n, 45, 92, 196);
+                panel(sheet, 120 - w / 2, 254, w, 30, CARD, 15);
+                text_at(120 - w / 2, 260, w, 18, &lv_font_cn_14, note, MUT, -1,
                         LV_TEXT_ALIGN_CENTER);
             } else {
-                pose_at(n, 50, 92, 183);
+                dressed(a->worn, n, 54, 88, 172);
+                text_at(16, 226, 208, 20, &lv_font_cn_14, note, MUT, PAPER,
+                        LV_TEXT_ALIGN_CENTER);
                 summary_card(a, 250, CARD, 0xddd3c2, NAV, MUT);
             }
         } else {
             text_at(0, 8, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
             int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
-            pose_at(n, 22, 82, 256);
+            dressed(a->worn, n, 22, 82, 256);
             text_at(8, 290, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
         }

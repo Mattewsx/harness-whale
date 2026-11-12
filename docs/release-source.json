@@ -1,8 +1,8 @@
 {
   "release": "v0.18.0-dev2",
   "firmware_version": "whale-v0.18.0-dev2",
-  "source_base_commit": "fc7d7a65837c221113bff2d5deb75407317a356b",
-  "description": "Unreleased dev2 question-page fixes: add real glyphs for dynamic question arrows and arithmetic operators while preserving existing glyphs; reserve a bounded transparent session heading beside an always-visible defer/back chip. Host rendering checks and on-device question display, defer navigation, answer submission, next-question progression and retained settings verified.",
+  "source_base_commit": "393dd44e6750b6dfec68d42de980e5b93542a130",
+  "description": "Standby outfits and workload captions on v0.18.0-dev2; build, host tests and scoped device acceptance passed on 2026-11-12. Long-duration and cross-day checks remain unverified. No new release image is published by this source change.",
   "sha256": {
     "CMakeLists.txt": "f9c872f43b72ea48f658c96574974f21e8432a93c8a04df0176a598715a6bb94",
     "assets/README.md": "c1a67bd70c695bc02e982ae70d7d4503f637e6117756047ed472631a09cc1b02",
@@ -123,7 +123,7 @@
     "main/whale_settings.h": "03c6bb5ab2d3d4ee0e36090d6c457040bb872802c5cebb9af90512595c33e9dc",
     "main/whale_sleep.c": "69e97d3007b828c822d54a18d899e61f62997dbd965c50fd9e3765c9e3934815",
     "main/whale_sleep.h": "d8d1f6f45e210895c9c96eb693e01e627015941a8deef928d03ad8001d4021c2",
-    "main/whale_ui.c": "02f92451953e5a3a5570e5b8d58719783de8009c73394392a5d1d87e83290953",
+    "main/whale_ui.c": "104570fc020af7ad9a9991bd15d5f80ebd4a8cc8de5d4ee9d8d141d0ef913588",
     "main/whale_voice.c": "740c5b24abb75c5b570c31a05a43636c8524de95662dd95a42870282a4c91dd7",
     "main/whale_voice.h": "6dd271b977261320553e54c30c2be0a5dd3a3a0e19de681c62e4cb763f0f2262",
     "main/whale_voice_window.c": "af51efa521b1d9f3d989899519e304790dbe61a451276e10345f75b11d546ad0",
@@ -139,7 +139,7 @@
     "tests/test_whale_voice_window.c": "1ea824b70be19b8ba800aee5a2096905f0579368ea46f089e8f16f1a7ca81bd3",
     "tests/whale_render/CMakeLists.txt": "348e72a524f41e90805dee1d4850a1efdab33dc48baf8c8060a33734df8a212d",
     "tests/whale_render/render_whale.c": "b2a09545e38324a41589842c0ec254d32d5b3f8536a040571ad014c4b7941246",
-    "tests/whale_render/test_whale_render.c": "33317548638c3a9301fc538cb48f78b69c30ecbb5d8f2e03d2b52d599732e18c",
+    "tests/whale_render/test_whale_render.c": "2bfd6f7cc208fcf25fa766401d8b38af578d5675962d3418ce8fbb762f1a81d3",
     "tests/whale_stubs/bsp_pins.h": "fb805b1e37820a214f7245e3e08fdbfde061d09e36d445a666bf844d3241f14b",
     "tests/whale_stubs/esp_random.h": "682e484ee15b47427c8566c28e2b065aced8e81f095bf106f0d5d788b0a4d9e8",
     "tools/make_whale_companion.py": "77c80ba85d3b3f86df243dbb92b8c1aa00e17d09893f444f1c26a0b22e13d847",

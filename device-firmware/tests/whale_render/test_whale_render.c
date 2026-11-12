@@ -45,6 +45,45 @@ static void summary_stays_inside_card(const whale_app_t *a) {
             assert(screen[y * 240 + 239 - x] == background);
         }
 }
+/* Check the real visible label, not a duplicate of the caption-selection logic. */
+static void desk_caption(const char *expected) {
+    lv_obj_t *root = lv_screen_active(), *caption = NULL;
+    for (unsigned i = 0; i < lv_obj_get_child_count(root); i++) {
+        lv_obj_t *obj = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(obj, &lv_label_class) &&
+            !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) &&
+            !strcmp(lv_label_get_text(obj), expected)) {
+            assert(!caption);
+            caption = obj;
+        }
+    }
+    assert(caption && "Expected standby caption is missing or stale");
+    lv_point_t size;
+    lv_text_get_size(&size, expected, lv_obj_get_style_text_font(caption, 0), 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    assert(size.x <= lv_obj_get_width(caption) && size.y <= lv_obj_get_height(caption));
+    assert(lv_obj_get_x(caption) >= 0 &&
+           lv_obj_get_x(caption) + lv_obj_get_width(caption) <= 240);
+}
+static void desk_pose_fits(int top, int bottom) {
+    lv_obj_t *root = lv_screen_active();
+    unsigned found = 0;
+    for (unsigned i = 0; i < lv_obj_get_child_count(root); i++) {
+        lv_obj_t *obj = lv_obj_get_child(root, i);
+        if (!lv_obj_check_type(obj, &lv_image_class) ||
+            lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN))
+            continue;
+        const lv_image_dsc_t *src = lv_image_get_src(obj);
+        if (!src || src->header.w < 100)
+            continue;
+        found++;
+        assert(lv_obj_get_x(obj) >= 0);
+        assert(lv_obj_get_x(obj) + (src->header.w * lv_image_get_scale_x(obj) + 255) / 256 <= 240);
+        assert(lv_obj_get_y(obj) >= top);
+        assert(lv_obj_get_y(obj) + (src->header.h * lv_image_get_scale_y(obj) + 255) / 256 <= bottom);
+    }
+    assert(found == 1);
+}
 static void dynamic_question_glyphs(void) {
     LV_FONT_DECLARE(lv_font_cn_12);
     LV_FONT_DECLARE(lv_font_cn_14);
@@ -385,18 +424,75 @@ int main(void) {
     a.view = DESK;
     a.clock_valid = a.summary_valid = true;
     a.standby_mode = 0;
-    static const uint16_t done_cases[] = {1, 5, 100, 65535};
-    static const uint32_t time_cases[] = {60, 7800, 46740, 3599940};
+    static const uint16_t done_cases[] = {0, 1, 2, 5, 5, 100, 65535};
+    static const uint32_t time_cases[] = {0, 60, 2400, 600, 7800, 46740, 3599940};
     for (unsigned night = 0; night < 2; night++) {
         a.night = night;
         for (unsigned i = 0; i < sizeof done_cases / sizeof done_cases[0]; i++) {
             a.summary_done = done_cases[i];
             a.summary_seconds = time_cases[i];
+            a.clock.hour = i == 0 ? 9 : 14;
             draw(&a);
-            summary_stays_inside_card(&a);
+            if (done_cases[i] || time_cases[i])
+                summary_stays_inside_card(&a);
             assert(draw(&a) == 0);
         }
     }
+    /* Exercise noon, workload thresholds, stale totals and updates on the same
+     * page. A changed caption must replace the previous visible text in full. */
+    static const struct {
+        uint16_t done;
+        uint32_t seconds;
+        uint8_t hour;
+        bool stale;
+        const char *caption;
+    } captions[] = {
+        {0, 0, 11, false, "新的一天，慢慢来"},
+        {0, 0, 12, false, "今天还没开工"},
+        {1, 1799, 14, false, "今天开了个好头"},
+        {1, 1800, 14, false, "陪你一起慢慢忙"},
+        {4, 7199, 14, false, "陪你一起慢慢忙"},
+        {5, 7199, 14, false, "今天完成了好多事呀"},
+        {5, 7200, 14, false, "忙了好一会儿，歇一下吧"},
+        {0, 7200, 14, false, "忙了好一会儿，歇一下吧"},
+        {5, 7200, 9, true, "新的一天，慢慢来"},
+        {5, 7200, 14, true, "今天还没开工"},
+    };
+    a.night = false;
+    for (unsigned i = 0; i < sizeof captions / sizeof captions[0]; i++) {
+        a.summary_done = captions[i].done;
+        a.summary_seconds = captions[i].seconds;
+        a.summary_stale = captions[i].stale;
+        a.clock.hour = captions[i].hour;
+        draw(&a);
+        desk_caption(captions[i].caption);
+        assert(draw(&a) == 0);
+    }
+    a.summary_stale = false;
+    /* Desk display honors every outfit and blink/yawn pose across summary,
+     * idle and plain clock; no sprite may overlap the caption or statistics. */
+    static const uint32_t desk_frames[] = {1000, 4875, 21000};
+    a.page_at = 0;
+    for (unsigned mode = 0; mode < 3; mode++) {
+        a.standby_mode = mode == 2 ? 1 : 0;
+        a.summary_done = mode == 1 ? 3 : 0;
+        a.summary_seconds = mode == 1 ? 3600 : 0;
+        for (unsigned frame = 0; frame < sizeof desk_frames / sizeof desk_frames[0]; frame++) {
+            a.now = desk_frames[frame];
+            uint32_t desk_poses[4];
+            for (unsigned s = 0; s < sizeof invitation_skins; s++) {
+                a.worn = invitation_skins[s];
+                draw(&a);
+                assert(draw(&a) == 0);
+                desk_pose_fits(mode == 2 ? 75 : 86, mode == 1 ? 226 : mode == 2 ? 290 : 254);
+                desk_poses[s] = pose_checksum();
+                for (unsigned j = 0; j < s; j++)
+                    assert(desk_poses[s] != desk_poses[j]);
+            }
+        }
+    }
+    a.worn = 0;
+    a.standby_mode = 0;
     a.summary_valid = false;
     for (unsigned i = 0; i < 100; i++) {
         a.view = i % 3 == 0 ? DESK : i % 3 == 1 ? TASK_DETAIL : COMPANION;
