@@ -21,6 +21,12 @@ def verify(build):
                        result.stdout, re.M)
     if len(pools) != 1 or int(pools[0], 16) != 32768:
         raise ValueError('linked LVGL pool does not match the 32768-byte budget')
+    for addr_hex, sym in re.findall(
+        r'^\s*([0-9a-fA-F]+)\s+(?:[0-9a-fA-F]+\s+)?[rRdD]\s+(_binary_\w+_(?:rgb|pcm)_start)\s*$',
+        result.stdout, re.M,
+    ):
+        if int(addr_hex, 16) & 1:
+            raise ValueError(f'unaligned 16-bit asset symbol {sym} at 0x{addr_hex}')
     print('Whale LVGL pool: PASS (32768 bytes in resolved config and ELF)')
 
 

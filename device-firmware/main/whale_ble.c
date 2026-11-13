@@ -87,11 +87,13 @@ static const struct ble_gatt_chr_def chars[] = {
      .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_AUTHEN},
     {.uuid = &notify.u,
      .access_cb = access_cb,
-     .flags = BLE_GATT_CHR_F_NOTIFY,
+     /* Restore bonded security before enabling CCCDs, not on the first command
+      * after subscribing: security restoration can reload the saved CCCDs. */
+     .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN,
      .val_handle = &notify_attr},
     {.uuid = &audio.u,
      .access_cb = access_cb,
-     .flags = BLE_GATT_CHR_F_NOTIFY,
+     .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN,
      .val_handle = &audio_attr},
     {0}};
 static const struct ble_gatt_svc_def services[] = {

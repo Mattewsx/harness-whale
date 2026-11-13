@@ -2,6 +2,7 @@
 #include "whale_app.h"
 #include "whale_assets.h"
 #include "whale_outfits.h"
+#include "whale_accessories.h"
 #include "room_icons.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -23,21 +24,25 @@ extern const uint8_t whale_poses[] asm("_binary_poses_rgb_start");
 extern const uint8_t companion_poses[] asm("_binary_companion_rgb_start");
 /* All skins include every pose used by the room and interactions. */
 extern const uint8_t outfit_poses[] asm("_binary_outfits_rgb_start");
+extern const uint8_t accessory_patches[] asm("_binary_accessories_rgb_start");
 static const uint8_t outfit_pose_ids[] = {1, 3, 10, 15, 16, 17, 18, 19, 20, 21};
 enum { OUTFIT_SETS = WHALE_OUTFIT_SETS, OUTFIT_POSES = sizeof outfit_pose_ids, OUTFIT_BASE = 22 };
 _Static_assert(OUTFIT_POSES == WHALE_OUTFIT_POSES, "Skin sheet pose order must match the UI");
 static lv_image_dsc_t sprites[OUTFIT_BASE + OUTFIT_SETS * OUTFIT_POSES], props[2];
+static const lv_image_dsc_t acc_sprites[WHALE_ACC_PATCH_COUNT] =
+    WHALE_ACC_SPRITES_INIT(accessory_patches);
+static uint8_t acc_skin, acc_wear, acc_pose, next_acc_skin, next_acc_wear, next_acc_pose;
+static unsigned acc_scale = 256;
 static lv_obj_t *coffee_cup, *coffee_steam, *title_clip, *title_text;
 static uint32_t title_started, title_session;
 static uint64_t title_epoch;
 static char shown_title[513];
 static bool title_visible;
-enum { LABEL_COUNT = 22 };
+enum { LABEL_COUNT = 14 };
 static lv_obj_t *labels[LABEL_COUNT], *image;
-static lv_obj_t *sea, *sheet, *top_bar, *action_bar, *status_box;
-static lv_obj_t *menu_box, *hold_box, *hold_track, *hold_fill;
-static lv_obj_t **const panels[] = {&sea,      &sheet,    &top_bar,    &action_bar, &status_box,
-                                    &menu_box, &hold_box, &hold_track, &hold_fill};
+static char label_bufs[LABEL_COUNT][264];
+static lv_obj_t *sea, *sheet, *top_bar, *action_bar, *status_box, *menu_box;
+static lv_obj_t **const panels[] = {&sea, &sheet, &top_bar, &action_bar, &status_box, &menu_box};
 static unsigned visible_panels;
 static unsigned used;
 static bool painted_pose;
@@ -84,9 +89,15 @@ bool whale_displayable(const char *s) {
 }
 static void text_at(int x, int y, int w, int h, const lv_font_t *font, const char *s, int fg,
                     int bg, lv_text_align_t align) {
-    if (used >= LABEL_COUNT)
+    if (used >= LABEL_COUNT) {
+#ifdef WHALE_ROOM_PATH
+        fprintf(stderr, "whale_ui label pool exhausted (%u/%u)\n", used, (unsigned)LABEL_COUNT);
+        __builtin_trap();
+#endif
         return;
-    lv_obj_t *o = labels[used++];
+    }
+    unsigned idx = used++;
+    lv_obj_t *o = labels[idx];
     lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
     if (lv_obj_get_style_text_font(o, 0) != font)
         lv_obj_set_style_text_font(o, font, 0);
@@ -102,8 +113,10 @@ static void text_at(int x, int y, int w, int h, const lv_font_t *font, const cha
     lv_opa_t opacity = bg < 0 ? LV_OPA_TRANSP : LV_OPA_COVER;
     if (lv_obj_get_style_bg_opa(o, 0) != opacity)
         lv_obj_set_style_bg_opa(o, opacity, 0);
-    if (strcmp(lv_label_get_text(o), s))
-        lv_label_set_text(o, s);
+    if (strcmp(label_bufs[idx], s)) {
+        snprintf(label_bufs[idx], sizeof label_bufs[idx], "%s", s);
+        lv_label_set_text_static(o, label_bufs[idx]);
+    }
 }
 static void label(int x, int y, int w, const char *s, int fg, int bg, lv_text_align_t align) {
     const lv_font_t *font = (y == 3 || y == 292 || y == 30) ? &lv_font_cn_14 : &lv_font_cn_16;
@@ -144,6 +157,20 @@ static void pose_at(int index, int x, int y, unsigned scale) {
     if (previous_pose != index) {
         lv_image_set_src(image, sprites + index);
         previous_pose = index;
+    }
+    uint8_t ns = next_acc_skin, nw = next_acc_wear, np = next_acc_pose;
+    next_acc_skin = next_acc_wear = next_acc_pose = 0;
+    if (acc_skin != ns || acc_wear != nw || acc_pose != np || (nw && acc_scale != scale)) {
+        if (acc_wear)
+            lv_obj_invalidate(image);
+        acc_skin = ns;
+        acc_wear = nw;
+        acc_pose = np;
+        acc_scale = scale;
+        lv_obj_refresh_ext_draw_size(image);
+        lv_obj_invalidate(image);
+    } else {
+        acc_scale = scale;
     }
 }
 static void pose(int index, int y) { pose_at(index, 64, y, 146); }
@@ -220,7 +247,7 @@ static void summary_card(const whale_app_t *a, int y, int card, int rule, int st
         int x = 120 - (lw + gap + rw) / 2, base = y + 34;
         panel(sheet, 6, y, 228, 50, card, 14);
         run_at(left, 3, x, base, strong, weak);
-        panel(hold_box, x + lw + gap / 2, y + 14, 1, 22, rule, 0);
+        panel(status_box, x + lw + gap / 2, y + 14, 1, 22, rule, 0);
         run_at(time, time_count, x + lw + gap, base, strong, weak);
     } else {
         /* Preserve readable digits and units instead of clipping wide totals.
@@ -232,7 +259,7 @@ static void summary_card(const whale_app_t *a, int y, int card, int rule, int st
 }
 static void strip(const enum room_icon *icons, const char *const *names, int count, int selected,
                   int active, unsigned locked, bool home) {
-    int step = home ? 66 : count == 5 ? 43 : 55;
+    int step = home ? 66 : count == 6 ? 38 : count == 5 ? 43 : 55;
     panel(action_bar, 0, 252, 240, 68, home && room_night ? BAR_DUSK : BAR, 0);
     for (int i = 0; i < count; ++i) {
         int x = 120 + (2 * i - count + 1) * step / 2;
@@ -248,14 +275,21 @@ static void strip(const enum room_icon *icons, const char *const *names, int cou
                     LV_TEXT_ALIGN_CENTER);
     }
 }
-static void dressed(uint8_t worn, int pose_id, int x, int y, unsigned scale) {
+static void dressed_acc(uint8_t worn, uint8_t acc, int pose_id, int x, int y, unsigned scale) {
     int set = worn & 8 ? 3 : worn & 4 ? 2 : worn & 2 ? 1 : 0;
-    if (set)
-        for (unsigned i = 0; i < OUTFIT_POSES; i++)
-            if (outfit_pose_ids[i] == pose_id) {
-                pose_id = OUTFIT_BASE + (set - 1) * OUTFIT_POSES + i;
-                break;
-            }
+    int slot = -1;
+    for (unsigned i = 0; i < OUTFIT_POSES; i++)
+        if (outfit_pose_ids[i] == pose_id) {
+            slot = (int)i;
+            break;
+        }
+    if (acc > WHALE_ACC_SETS || slot < 0)
+        acc = 0;
+    next_acc_skin = acc ? (uint8_t)set : 0;
+    next_acc_wear = acc;
+    next_acc_pose = acc ? (uint8_t)slot : 0;
+    if (set && slot >= 0)
+        pose_id = OUTFIT_BASE + (set - 1) * OUTFIT_POSES + slot;
     pose_at(pose_id, x, y, scale);
 }
 static const char *desk_line(const whale_app_t *a, bool idle_day) {
@@ -312,6 +346,45 @@ static void draw_landscape(lv_event_t *event) {
     lv_area_t bounds = {0, 24, 239, 251};
     lv_draw_image(lv_event_get_layer(event), &draw, &bounds);
 }
+static void accessory_event(lv_event_t *event) {
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_REFR_EXT_DRAW_SIZE) {
+        if (acc_wear)
+            /* The floor plush can extend left of a tightly cropped skin. */
+            lv_event_set_ext_draw_size(event, acc_wear == 4 ? 24 : 12);
+        return;
+    }
+    if (code != LV_EVENT_DRAW_MAIN_END || !acc_wear || acc_wear > WHALE_ACC_SETS ||
+        acc_skin >= WHALE_ACC_SKINS || acc_pose >= WHALE_ACC_POSES || previous_pose < 0)
+        return;
+    int base_x = 0, base_y = 0;
+    if (previous_pose >= OUTFIT_BASE) {
+        const whale_outfit_frame_t *frame = &whale_outfit_frames[previous_pose - OUTFIT_BASE];
+        base_x = frame->x;
+        base_y = frame->y;
+    }
+    lv_area_t img_coords;
+    lv_obj_get_coords(image, &img_coords);
+    const whale_acc_entry_t *entry = &whale_acc_map[acc_skin][acc_wear - 1][acc_pose];
+    lv_layer_t *layer = lv_event_get_layer(event);
+    for (unsigned i = 0; i < entry->count; i++) {
+        const whale_acc_draw_t *d = &whale_acc_draws[entry->first + i];
+        const whale_acc_patch_t *p = &whale_acc_patches[d->patch];
+        int rel_x = (int)d->x - base_x;
+        int rel_y = (int)d->y - base_y;
+        lv_draw_image_dsc_t draw;
+        lv_draw_image_dsc_init(&draw);
+        draw.src = &acc_sprites[d->patch];
+        draw.scale_x = acc_scale;
+        draw.scale_y = acc_scale;
+        draw.pivot.x = -rel_x;
+        draw.pivot.y = -rel_y;
+        lv_area_t coords = {img_coords.x1 + rel_x, img_coords.y1 + rel_y,
+                            img_coords.x1 + rel_x + (int)p->width - 1,
+                            img_coords.y1 + rel_y + (int)p->height - 1};
+        lv_draw_image(layer, &draw, &coords);
+    }
+}
 void whale_ui_init(void) {
     lv_obj_t *screen = lv_screen_active();
     lv_obj_set_style_bg_color(screen, lv_color_hex(PAPER), 0);
@@ -367,6 +440,7 @@ void whale_ui_init(void) {
             props[i - 6] = d;
     }
     image = lv_image_create(screen);
+    lv_obj_add_event_cb(image, accessory_event, LV_EVENT_ALL, NULL);
     coffee_cup = lv_image_create(screen);
     lv_image_set_src(coffee_cup, &props[0]);
     coffee_steam = lv_image_create(screen);
@@ -393,9 +467,7 @@ void whale_ui_init(void) {
     lv_obj_set_style_text_font(title_text, &lv_font_cn_16, 0);
     lv_obj_set_style_text_color(title_text, lv_color_hex(NAV), 0);
     lv_label_set_long_mode(title_text, LV_LABEL_LONG_CLIP);
-    lv_obj_move_foreground(hold_box);
-    lv_obj_move_foreground(hold_track);
-    lv_obj_move_foreground(hold_fill);
+    lv_label_set_text_static(title_text, shown_title);
 
     for (int i = 0; i < LABEL_COUNT; i++) {
         labels[i] = lv_label_create(screen);
@@ -403,8 +475,17 @@ void whale_ui_init(void) {
         lv_obj_set_height(labels[i], 20);
         lv_obj_set_style_text_font(labels[i], &lv_font_cn_16, 0);
         lv_obj_set_style_bg_opa(labels[i], LV_OPA_COVER, 0);
-        lv_label_set_text(labels[i], "");
+        label_bufs[i][0] = 0;
+        lv_label_set_text_static(labels[i], label_bufs[i]);
     }
+    battery_box = lv_obj_create(screen);
+    lv_obj_remove_style_all(battery_box);
+    lv_obj_set_size(battery_box, 17, 9);
+    lv_obj_set_style_border_width(battery_box, 1, 0);
+    battery_fill = lv_obj_create(battery_box);
+    lv_obj_remove_style_all(battery_fill);
+    lv_obj_set_pos(battery_fill, 1, 1);
+    lv_obj_set_style_bg_opa(battery_fill, LV_OPA_COVER, 0);
 }
 static void home_title(const whale_app_t *a, const char *text) {
     if (!title_visible || title_session != a->rows[a->selected].session ||
@@ -413,7 +494,7 @@ static void home_title(const whale_app_t *a, const char *text) {
         title_started = a->now;
         title_session = a->rows[a->selected].session;
         title_epoch = a->epoch;
-        lv_label_set_text(title_text, text);
+        lv_label_set_text_static(title_text, shown_title);
     }
     title_visible = true;
     lv_obj_remove_flag(title_clip, LV_OBJ_FLAG_HIDDEN);
@@ -538,6 +619,14 @@ static void list_state_icon(const whale_row_t *row, int y) {
     if (row->flags & (8 | 16 | 32 | 64))
         icon_at(ICON_unread, 16, y + 3, TEAL);
 }
+static const char *const badge_names[WHALE_BADGE_COUNT] = {
+    "初航破浪", "果断拍板", "传声海螺", "日理万机",
+    "深海潜航", "挑灯夜航", "摸鱼大师", "心意相通"};
+static const char *const wear_names[WHALE_ACC_SETS + 1] = {
+    "", "金丝眼镜", "珍珠耳麦", "星光提灯", "小鲸玩偶"};
+static const enum room_icon badge_icons[WHALE_BADGE_COUNT] = {
+    ICON_whale, ICON_glasses,   ICON_mic,  ICON_completed,
+    ICON_clock, ICON_executing, ICON_fish, ICON_flower};
 void whale_ui_draw(const whale_app_t *a) {
     char text[160], value[64];
     used = icon_count = 0;
@@ -573,16 +662,6 @@ void whale_ui_draw(const whale_app_t *a) {
                                 : a->battery_level == 1 ? (dark_sky ? 0xffdf9b : 0x815719)
                                                         : (dark_sky ? 0xffc1b8 : RED);
         text_at(value_x, 6, text_size.x, 18, &lv_font_cn_12, value, level_color, -1, LV_TEXT_ALIGN_RIGHT);
-        if (!battery_box) {
-            battery_box = lv_obj_create(lv_screen_active());
-            lv_obj_remove_style_all(battery_box);
-            lv_obj_set_size(battery_box, icon_width, 9);
-            lv_obj_set_style_border_width(battery_box, 1, 0);
-            battery_fill = lv_obj_create(battery_box);
-            lv_obj_remove_style_all(battery_fill);
-            lv_obj_set_pos(battery_fill, 1, 1);
-            lv_obj_set_style_bg_opa(battery_fill, LV_OPA_COVER, 0);
-        }
         lv_color_t outline = lv_color_hex(dark_sky ? 0xe7f1f2 : MUT);
         if (!lv_color_eq(lv_obj_get_style_border_color(battery_box, 0), outline))
             lv_obj_set_style_border_color(battery_box, outline, 0);
@@ -618,7 +697,7 @@ void whale_ui_draw(const whale_app_t *a) {
             if (n == 16 && animate && a->now % 5000 > 4750)
                 n = 17;
             int pose_y = 43 + (animate && (a->now / 900) % 2);
-            dressed(a->worn, n, 29, pose_y, 236);
+            dressed_acc(a->worn, a->worn_acc, n, 29, pose_y, 236);
             if (a->invitation == 4) {
                 painted_coffee = true;
                 show_coffee(29, pose_y, 236, a->now - a->invitation_at, animate);
@@ -636,8 +715,13 @@ void whale_ui_draw(const whale_app_t *a) {
                 dy = (a->now / 250) % 2 ? -5 : 0;
             else if (animate)
                 dx = (a->now / (very ? 125 : 250)) % 2 ? 2 : -2;
-            dressed(a->worn, n, 29 + dx, 43 + dy, 236);
-            if (cheer)
+            dressed_acc(a->worn, a->worn_acc, n, 29 + dx, 43 + dy, 236);
+            if (cheer && (a->badge_cheer & 0x80u))
+                snprintf(value, sizeof value, "解锁 %u 枚新徽章",
+                         (unsigned)(a->badge_cheer & 0x7fu));
+            else if (cheer && a->badge_cheer >= 1 && a->badge_cheer <= WHALE_BADGE_COUNT)
+                snprintf(value, sizeof value, "解锁徽章 · %s", badge_names[a->badge_cheer - 1]);
+            else if (cheer)
                 snprintf(value, sizeof value, "任务完成啦！");
             else if (very)
                 snprintf(value, sizeof value, "还在等你，来看看好不好？");
@@ -646,12 +730,12 @@ void whale_ui_draw(const whale_app_t *a) {
             panel(sheet, 14, 225, 212, 24, cheer ? PAPER : 0xf6e3c0, 10);
             text_at(20, 228, 200, 20, &lv_font_cn_14, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
         } else
-            dressed(a->worn, life[a->activity % 8], 22, y, 256);
+            dressed_acc(a->worn, a->worn_acc, life[a->activity % 8], 22, y, 256);
         if (!offer && !a->feel && a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
         static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
         const char *const names[] = {inviting ? "回应邀请" : "互动", "会话", "设置"};
-        strip(icons, names, 3, a->dock, inviting ? 0 : -1, 0, true);
+        strip(icons, names, 3, a->dock, inviting || a->badge_unread ? 0 : -1, 0, true);
         if (a->global_unread) {
             snprintf(value, sizeof value, "%u", a->global_unread);
             panel(menu_box, 130, 250, 29, 16, 0xeac58c, 8);
@@ -767,7 +851,7 @@ void whale_ui_draw(const whale_app_t *a) {
                 panel(menu_box, 210, 296, 5, 5, TEAL, 3);
         }
     } else if (a->view == COMPANION) {
-        static const char *choices[] = {"打招呼", "摸摸", "喂小鱼", "喝咖啡", "服饰"};
+        static const char *choices[] = {"打招呼", "摸摸", "喂小鱼", "喝咖啡", "服饰", "徽章"};
         static const char *lines[] = {"我在呢，慢慢来。", "嗨，我在这里呀。", "嘿嘿，再摸摸嘛。",
                                       "啊呜，谢谢你的小鱼。", "喝咖啡"};
         unsigned action = a->companion_action <= 4 ? a->companion_action : 0;
@@ -775,7 +859,7 @@ void whale_ui_draw(const whale_app_t *a) {
         /* Leave a clear line for action feedback above the dock. */
         const char *pending_offer = a->invitation == a->companion_choice + 1 && !a->back_focus
                                         ? invitation_line(a) : NULL;
-        bool feedback = action || pending_offer || a->unlock_new;
+        bool feedback = action || pending_offer || a->unlock_new || a->badge_unread;
         unsigned scale = feedback ? 236 : 256;
         int n = 16, x = feedback ? 29 : 22, y = 44;
         const char *line = lines[action];
@@ -786,7 +870,9 @@ void whale_ui_draw(const whale_app_t *a) {
         }
         if (!action) {
             unsigned phase = (a->now - a->companion_at) % 24000;
-            n = phase > 20000 && phase < 22000 ? 21 : a->now % 5000 > 4750 ? 17 : 16;
+            n = phase > 20000 && phase < 22000      ? 21
+                : animate && a->now % 5000 > 4750   ? 17
+                                                    : 16;
             if (animate)
                 y -= (a->now / 750) % 2 ? 2 : 0;
             static const char *idle[] = {"我在呢，慢慢来。", "陪你歇一小会儿。",
@@ -810,7 +896,7 @@ void whale_ui_draw(const whale_app_t *a) {
                 }
             }
         }
-        dressed(a->worn, n, x, y, scale);
+        dressed_acc(a->worn, a->worn_acc, n, x, y, scale);
         parent_icon(ICON_home, a->back_focus);
         text_at(54, 35, 132, 18, &lv_font_cn_14, "互动", NAV, -1, LV_TEXT_ALIGN_CENTER);
         if (action)
@@ -822,13 +908,18 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 232, 224, 21, &lv_font_cn_14,
                     "新服饰已解锁，去服饰试试",
                     NAV, -1, LV_TEXT_ALIGN_CENTER);
-        static const enum room_icon icons[] = {ICON_wave, ICON_pat, ICON_fish, ICON_coffee,
-                                               ICON_hanger};
-        strip(icons, choices, 5, a->back_focus ? -1 : a->companion_choice, -1, 0, false);
+        else if (a->badge_unread)
+            text_at(8, 232, 224, 21, &lv_font_cn_14,
+                    "新徽章已解锁，去徽章看看",
+                    NAV, -1, LV_TEXT_ALIGN_CENTER);
+        static const enum room_icon icons[] = {ICON_wave,   ICON_pat,    ICON_fish,
+                                               ICON_coffee, ICON_hanger, ICON_flower};
+        int comp_active = a->unlock_new ? 4 : a->badge_unread ? 5 : -1;
+        strip(icons, choices, 6, a->back_focus ? -1 : a->companion_choice, comp_active, 0, false);
     } else if (a->view == WARDROBE) {
         uint8_t skin = whale_wardrobe_order[a->outfit_choice];
         uint8_t preview = a->back_focus ? a->worn : (1u << skin) & 14;
-        dressed(preview, 16, 22, 44, 256);
+        dressed_acc(preview, a->worn_acc, 16, 22, 44, 256);
         parent_icon(ICON_heart, a->back_focus);
         center(35, "服饰", NAV, -1);
         static const enum room_icon icons[] = {ICON_skin_maid, ICON_skin_pajamas,
@@ -845,6 +936,92 @@ void whale_ui_draw(const whale_app_t *a) {
         if (a->locked_notice)
             center(232, skin == 1 ? "亲密度20解锁"
                         : skin == 2 ? "亲密度40解锁" : "亲密度60解锁", MUT, -1);
+    } else if (a->view == BADGES) {
+        unsigned idx = a->badge_choice < WHALE_BADGE_COUNT ? a->badge_choice : 0;
+        uint8_t preview_acc = a->back_focus ? a->worn_acc : whale_badge_wear[idx];
+        int n = animate && a->now % 5000 > 4750 ? 17 : 16;
+        dressed_acc(a->worn, preview_acc, n, 36, 56, 220);
+        parent_icon(ICON_heart, a->back_focus);
+        unsigned owned = 0;
+        for (uint8_t m = a->badges; m; m &= m - 1)
+            owned++;
+        snprintf(value, sizeof value, "徽章 %u/%u", owned, (unsigned)WHALE_BADGE_COUNT);
+        center(33, value, NAV, -1);
+        int win = idx <= 1 ? 0 : idx >= WHALE_BADGE_COUNT - 2 ? WHALE_BADGE_COUNT - 4 : (int)idx - 1;
+        enum room_icon icons[4];
+        const char *names[4];
+        unsigned locked = 0;
+        int active = -1;
+        for (int i = 0; i < 4; i++) {
+            int b = win + i;
+            icons[i] = badge_icons[b];
+            names[i] = badge_names[b];
+            if (!(a->badges & (1u << b)))
+                locked |= 1u << i;
+            if (a->badge_equipped == b + 1)
+                active = i;
+        }
+        strip(icons, names, 4, a->back_focus ? -1 : (int)idx - win, active, locked, false);
+        if (win > 0)
+            text_at(2, 264, 12, 18, &lv_font_cn_14, "‹",
+                    (a->badge_unread & ((1u << win) - 1u)) ? TEAL : MUT, -1, LV_TEXT_ALIGN_CENTER);
+        if (win + 4 < WHALE_BADGE_COUNT)
+            text_at(226, 264, 12, 18, &lv_font_cn_14, "›",
+                    (a->badge_unread >> (win + 4)) ? TEAL : MUT, -1, LV_TEXT_ALIGN_CENTER);
+        int hint_color = MUT;
+        text[0] = 0;
+        if (a->back_focus) {
+            if (a->worn_acc >= 1 && a->worn_acc <= WHALE_ACC_SETS) {
+                snprintf(text, sizeof text, "佩戴中 · %s", wear_names[a->worn_acc]);
+                hint_color = TEAL;
+            }
+        } else if (a->badges & (1u << idx)) {
+            uint8_t w = whale_badge_wear[idx];
+            if (a->badge_equipped == idx + 1) {
+                snprintf(text, sizeof text, "佩戴中 · %s · 确认卸下", wear_names[w]);
+                hint_color = TEAL;
+            } else {
+                snprintf(text, sizeof text, "可装扮 · %s", wear_names[w]);
+                hint_color = NAV;
+            }
+        } else {
+            unsigned today_done =
+                !a->summary_stale && a->summary_valid ? (a->summary_done > 5 ? 5u : a->summary_done) : 0u;
+            unsigned today_min = !a->summary_stale && a->summary_valid
+                                     ? (a->summary_seconds / 60 > 120 ? 120u : a->summary_seconds / 60)
+                                     : 0u;
+            const char *prefix = a->locked_notice ? "未解锁 · " : "";
+            hint_color = a->locked_notice ? 0x8c6b32 : MUT;
+            switch (idx) {
+            case 0:
+                snprintf(text, sizeof text, "%s完成 1 个任务解锁", prefix);
+                break;
+            case 1:
+                snprintf(text, sizeof text, "%s设备作答 %u/10 解锁", prefix, (unsigned)a->badge_answers);
+                break;
+            case 2:
+                snprintf(text, sizeof text, "%s语音发送 %u/5 解锁", prefix, (unsigned)a->badge_voices);
+                break;
+            case 3:
+                snprintf(text, sizeof text, "%s单日完成 %u/5 个解锁", prefix, today_done);
+                break;
+            case 4:
+                snprintf(text, sizeof text, "%s单日工作 %u/120m 解锁", prefix, today_min);
+                break;
+            case 5:
+                snprintf(text, sizeof text, "%s夜间完成任务解锁", prefix);
+                break;
+            case 6:
+                snprintf(text, sizeof text, "%s房间互动 %u/15 解锁", prefix, (unsigned)a->badge_taps);
+                break;
+            default:
+                snprintf(text, sizeof text, "%s亲密度 %u/60 解锁", prefix,
+                         a->bond > 60 ? 60u : (unsigned)a->bond);
+                break;
+            }
+        }
+        if (text[0])
+            text_at(8, 231, 224, 19, &lv_font_cn_14, text, hint_color, -1, LV_TEXT_ALIGN_CENTER);
     } else if (desk) {
         static const char *week[] = {"日", "一", "二", "三", "四", "五", "六"};
         const whale_local_time_t *t = &a->clock;
@@ -881,16 +1058,18 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 66, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
-            int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
+            int n = phase > 20000 && phase < 22000    ? 21
+                    : animate && a->now % 5000 > 4750 ? 17
+                                                      : 16;
             const char *note = desk_line(a, idle_day);
             if (idle_day) {
                 int w = text_width(&lv_font_cn_14, note) + 28;
-                dressed(a->worn, n, 45, 92, 196);
+                dressed_acc(a->worn, a->worn_acc, n, 45, 92, 196);
                 panel(sheet, 120 - w / 2, 254, w, 30, CARD, 15);
                 text_at(120 - w / 2, 260, w, 18, &lv_font_cn_14, note, MUT, -1,
                         LV_TEXT_ALIGN_CENTER);
             } else {
-                dressed(a->worn, n, 54, 88, 172);
+                dressed_acc(a->worn, a->worn_acc, n, 54, 88, 172);
                 text_at(16, 226, 208, 20, &lv_font_cn_14, note, MUT, PAPER,
                         LV_TEXT_ALIGN_CENTER);
                 summary_card(a, 250, CARD, 0xddd3c2, NAV, MUT);
@@ -898,8 +1077,10 @@ void whale_ui_draw(const whale_app_t *a) {
         } else {
             text_at(0, 8, 240, 67, &lv_font_cn_64, clock, NAV, PAPER, LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
-            int n = phase > 20000 && phase < 22000 ? 21 : animate && a->now % 5000 > 4750 ? 17 : 16;
-            dressed(a->worn, n, 22, 82, 256);
+            int n = phase > 20000 && phase < 22000    ? 21
+                    : animate && a->now % 5000 > 4750 ? 17
+                                                      : 16;
+            dressed_acc(a->worn, a->worn_acc, n, 22, 82, 256);
             text_at(8, 290, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
         }
@@ -1117,8 +1298,8 @@ void whale_ui_draw(const whale_app_t *a) {
             unsigned first = a->cursor + start;
             if (first > (unsigned)a->total - visible)
                 first = a->total - visible;
-            panel(hold_track, 230, 203, 3, 108, 0xe1e7de, 2);
-            panel(hold_fill, 230, 203 + (108 - h) * first / (a->total - visible), 3, h, TEAL, 2);
+            panel(sheet, 230, 203, 3, 108, 0xe1e7de, 2);
+            panel(action_bar, 230, 203 + (108 - h) * first / (a->total - visible), 3, h, TEAL, 2);
         }
     } else if (a->view == QUESTION) {
         parent_icon(ICON_chat, a->defer_question);
@@ -1297,9 +1478,9 @@ void whale_ui_draw(const whale_app_t *a) {
     }
     if (!painted_pose)
         lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
-    if (a->view != HOME && a->view != WARDROBE && a->view != LIST && a->view != MANAGE &&
-        a->view != SOUND && a->view != STANDBY && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
-        !desk && foot) {
+    if (a->view != HOME && a->view != WARDROBE && a->view != BADGES && a->view != LIST &&
+        a->view != MANAGE && a->view != SOUND && a->view != STANDBY && a->view != COMPANION &&
+        a->view != TASK_DETAIL && !inline_reply && !desk && foot) {
         panel(action_bar, 0, 292, 240, 28, BAR, 0);
         text_at(8, 297, 224, 19, &lv_font_cn_12, foot, NAV, -1, LV_TEXT_ALIGN_CENTER);
     }

@@ -49,8 +49,8 @@ static void test_desk(void) {
     assert(whale_director_desk(&in) == WHALE_GO_DESK);
     in.view = TASK_DETAIL;
     assert(whale_director_desk(&in) == WHALE_GO_DESK);
-    static const whale_page_t not_from[] = {LIST, COMPANION, WARDROBE, QUESTION, VOICE, PAIR,
-                                            REPLY_READ, STANDBY, DESK};
+    static const whale_page_t not_from[] = {LIST, COMPANION, WARDROBE, BADGES, QUESTION, VOICE,
+                                            PAIR, REPLY_READ, STANDBY, DESK};
     for (unsigned i = 0; i < sizeof not_from / sizeof *not_from; i++) {
         in.view = not_from[i];
         assert(whale_director_desk(&in) == WHALE_GO_STAY);
@@ -215,7 +215,7 @@ static void test_feel(void) {
     assert(whale_director_feel(&in) == WHALE_FEEL_VERY_ANXIOUS);
     /* Calm wherever the whale is not on show, and while she is occupied. */
     static const whale_page_t elsewhere[] = {TASK_DETAIL, QUESTION, REPLY_READ, VOICE, COMPANION,
-                                             WARDROBE, DESK, RESULT, PAIR};
+                                             WARDROBE, BADGES, DESK, RESULT, PAIR};
     for (unsigned i = 0; i < sizeof elsewhere / sizeof *elsewhere; i++) {
         in.view = elsewhere[i];
         assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
@@ -245,6 +245,34 @@ static void test_feel(void) {
     in.cheer = true;
     in.cheer_at = in.now - 1000;
     assert(whale_director_feel(&in) == WHALE_FEEL_CELEBRATE);
+
+    /* Badge unlock celebration waits for a quiet home page, then runs 4 s. */
+    in = base();
+    in.badge_pending = true;
+    in.view = QUESTION;
+    assert(!whale_director_badge_start(&in));
+    in.view = LIST;
+    assert(!whale_director_badge_start(&in));
+    in.view = HOME;
+    in.voice_busy = true;
+    assert(!whale_director_badge_start(&in));
+    in.voice_busy = false;
+    in.companion_action = true;
+    assert(!whale_director_badge_start(&in));
+    in.companion_action = false;
+    in.invitation = true;
+    assert(!whale_director_badge_start(&in));
+    in.invitation = false;
+    assert(whale_director_badge_start(&in));
+    assert(whale_director_desk(&in) == WHALE_GO_STAY);
+    in.badge_pending = false;
+    in.badge_cheer = true;
+    in.badge_cheer_at = in.now;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CELEBRATE);
+    assert(whale_director_desk(&in) == WHALE_GO_STAY);
+    in.badge_cheer_at = in.now - WHALE_CELEBRATE_MS;
+    assert(whale_director_feel(&in) == WHALE_FEEL_CALM);
+    assert(whale_director_desk(&in) == WHALE_GO_DESK);
 }
 
 static void test_offline_and_screen(void) {
@@ -290,7 +318,7 @@ static void test_offline_and_screen(void) {
     in.live_task = true;
     for (whale_page_t v = COMPANION; v <= DESK; v++) {
         in.view = v;
-        if (v == COMPANION || v == WARDROBE || v == DESK)
+        if (v == COMPANION || v == WARDROBE || v == BADGES || v == DESK)
             assert(!whale_director_screen(&in).busy);
     }
     in = base();
@@ -343,12 +371,13 @@ enum {
     EV_ROWS,
     EV_OLD_BRIDGE,
     EV_CHEER,
+    EV_BADGE,
     EV_INVITE,
     EV_COUNT
 };
 static const char *const event_names[EV_COUNT] = {
-    "time", "key", "navigate", "link", "drop", "summary", "trigger",
-    "voice", "audio", "batch", "companion", "rows", "old-bridge", "cheer", "invite"};
+    "time",  "key",   "navigate",  "link", "drop",       "summary", "trigger", "voice",
+    "audio", "batch", "companion", "rows", "old-bridge", "cheer",   "badge",   "invite"};
 
 #define TRACE 48u
 static struct {
@@ -423,6 +452,10 @@ static void loop_pass(whale_director_in_t *in) {
         CHECK(!before.voice_busy, "desk display interrupted voice", &before);
         CHECK(!before.companion_action, "desk display interrupted a companion reaction",
               &before);
+        CHECK(!(before.view == HOME &&
+                (before.badge_pending ||
+                 (before.badge_cheer && before.now - before.badge_cheer_at < WHALE_CELEBRATE_MS))),
+              "desk display interrupted a badge celebration", &before);
     }
     if (desk == WHALE_GO_STAY) {
         whale_go_t next = whale_director_queue(in);
@@ -455,7 +488,7 @@ static void loop_pass(whale_director_in_t *in) {
     }
     carry_out(in, off);
     whale_director_screen_t s = whale_director_screen(in);
-    if (in->view == DESK || in->view == COMPANION || in->view == WARDROBE)
+    if (in->view == DESK || in->view == COMPANION || in->view == WARDROBE || in->view == BADGES)
         CHECK(!s.busy, "background work keeps a resting page lit", in);
     if (in->view == PAIR || in->view == UNBINDING || in->voice_busy)
         CHECK(s.hold, "sleep may interrupt pairing, unbinding or voice", in);
@@ -465,9 +498,18 @@ static void loop_pass(whale_director_in_t *in) {
     if (!in->linked && !s.hold && in->now - in->last_input >= WHALE_POWER_OFF_MS)
         CHECK(whale_director_main_view(in->view), "offline page outlives the screen-off time",
               in);
-    /* Feelings. The app drops an ended cheer on every pass. */
+    /* Feelings. The app drops an ended cheer and starts queued badge cheers on quiet home. */
     if (in->cheer && in->now - in->cheer_at >= WHALE_CELEBRATE_MS)
         in->cheer = false;
+    if (in->badge_cheer && in->now - in->badge_cheer_at >= WHALE_CELEBRATE_MS)
+        in->badge_cheer = false;
+    if (whale_director_badge_start(in)) {
+        CHECK(in->view == HOME && !in->voice_busy && !in->companion_action && !in->invitation,
+              "badge celebration started outside a quiet home page", in);
+        in->badge_pending = false;
+        in->badge_cheer = true;
+        in->badge_cheer_at = in->now;
+    }
     whale_feel_t feel = whale_director_feel(in);
     CHECK(feel == whale_director_feel(in), "feeling is not deterministic", in);
     if (feel != WHALE_FEEL_CALM) {
@@ -477,7 +519,8 @@ static void loop_pass(whale_director_in_t *in) {
               "a feeling interrupts voice, a reaction or an invitation", in);
     }
     if (feel == WHALE_FEEL_CELEBRATE)
-        CHECK(in->cheer && in->now - in->cheer_at < WHALE_CELEBRATE_MS,
+        CHECK((in->cheer && in->now - in->cheer_at < WHALE_CELEBRATE_MS) ||
+                  (in->badge_cheer && in->now - in->badge_cheer_at < WHALE_CELEBRATE_MS),
               "a celebration with nothing finished, or one that does not end", in);
     if (feel == WHALE_FEEL_ANXIOUS || feel == WHALE_FEEL_VERY_ANXIOUS) {
         uint32_t limit = feel == WHALE_FEEL_ANXIOUS ? WHALE_ANXIOUS_MS : WHALE_VERY_ANXIOUS_MS;
@@ -496,7 +539,7 @@ static const whale_page_t pages[] = {
     TASK_DETAIL, LIST,     PAIR,      MANAGE,    KEEP,       REVOKE,     UNBINDING,    UNBIND_FAILED,
     LOADING,     LOAD_FAILED, QUESTION, PROMPT,  OPTION,     SENDING,    CHECKING,     UNSURE,
     RESULT,      VERSION,  LIST_LOAD, LIST_FAILED, REPLY_LOAD, REPLY_READ, REPLY_FAILED, VOICE,
-    COMPANION,   SOUND,    HOME,      WARDROBE,  STANDBY};
+    COMPANION,   SOUND,    HOME,      WARDROBE,  BADGES,     STANDBY};
 
 static void fuzz_one(uint64_t seed, unsigned steps) {
     current_seed = seed;
@@ -627,6 +670,9 @@ static void fuzz_one(uint64_t seed, unsigned steps) {
         case EV_CHEER:
             in.cheer = true;
             in.cheer_at = in.now;
+            break;
+        case EV_BADGE:
+            in.badge_pending = true;
             break;
         case EV_INVITE:
             in.invitation = !in.invitation;

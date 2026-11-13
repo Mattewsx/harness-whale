@@ -2,6 +2,7 @@
 #include "whale_app.h"
 #include "whale_assets.h"
 #include "whale_outfits.h"
+#include "whale_accessories.h"
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
@@ -11,9 +12,26 @@ uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t poses[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
 uint8_t outfits[WHALE_OUTFIT_BYTES] __asm__("_binary_outfits_rgb_start");
+uint8_t accessories[WHALE_ACC_BYTES] __asm__("_binary_accessories_rgb_start");
 static uint16_t buffer[240 * 40];
 static unsigned flushed_pixels;
 static uint16_t screen[240 * 320];
+static size_t min_free_observed = ~(size_t)0, min_largest_observed = ~(size_t)0;
+static uint8_t max_frag_observed;
+static unsigned redraw_checks;
+
+static void record_pool(void) {
+    lv_mem_monitor_t m;
+    lv_mem_monitor(&m);
+    if (m.free_size < min_free_observed)
+        min_free_observed = m.free_size;
+    if (m.free_biggest_size < min_largest_observed)
+        min_largest_observed = m.free_biggest_size;
+    if (m.frag_pct > max_frag_observed)
+        max_frag_observed = m.frag_pct;
+    assert(m.free_size >= 4096 && m.free_biggest_size >= 4096 &&
+           m.total_size - m.max_used >= 4096);
+}
 
 static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *data) {
     const uint16_t *pixel = (const uint16_t *)data;
@@ -27,7 +45,23 @@ static unsigned draw(whale_app_t *a) {
     flushed_pixels = 0;
     whale_ui_draw(a);
     lv_refr_now(NULL);
+    record_pool();
     return flushed_pixels;
+}
+/* Verify incremental dirty-rect partial redraw produces the exact same 240x320
+ * framebuffer as a fresh full-screen invalidation, and a repeat draw flushes 0. */
+static void draw_and_verify_redraw(whale_app_t *a) {
+    static uint16_t incremental[240 * 320];
+    draw(a);
+    assert(draw(a) == 0);
+    memcpy(incremental, screen, sizeof incremental);
+    memset(screen, 0xa5, sizeof screen);
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(NULL);
+    record_pool();
+    assert(memcmp(incremental, screen, sizeof screen) == 0);
+    assert(draw(a) == 0);
+    redraw_checks++;
 }
 static uint32_t pose_checksum(void) {
     uint32_t value = 2166136261u;
@@ -100,6 +134,7 @@ static void dynamic_question_glyphs(void) {
         }
     assert(whale_displayable("暴击率 20% → 25%（暴击伤害 2.5 倍），平均单发伤害提升约多少？"));
     assert(whale_displayable("0.25 × 2.0 + 0.75 × 1.0"));
+    assert(whale_displayable("解锁 2 枚新徽章"));
     assert(!whale_displayable("😀")); /* Unsupported text still falls back safely. */
 }
 static void question_back_button_stays_visible(whale_app_t *a) {
@@ -142,6 +177,9 @@ int main(void) {
     file = fopen(WHALE_OUTFITS_PATH, "rb");
     assert(file && fread(outfits, 1, sizeof outfits, file) == sizeof outfits);
     fclose(file);
+    file = fopen(WHALE_ACCESSORIES_PATH, "rb");
+    assert(file && fread(accessories, 1, sizeof accessories, file) == sizeof accessories);
+    fclose(file);
     FILE *landscape = fopen(WHALE_ROOM_PATH, "rb");
     assert(landscape && fread(landscape_pixels, 1, sizeof landscape_pixels, landscape) ==
                             sizeof landscape_pixels);
@@ -165,7 +203,7 @@ int main(void) {
     a.replies[0].revision = 1;
     a.read_revision = a.read_count = 1;
     strcpy(a.answer, "Reply line one\nReply line two");
-    const whale_page_t pages[] = {HOME, TASK_DETAIL, LIST, REPLY_READ, WARDROBE};
+    const whale_page_t pages[] = {HOME, TASK_DETAIL, LIST, REPLY_READ, WARDROBE, BADGES};
     unsigned errors = 0;
     for (unsigned i = 0; i < sizeof pages / sizeof pages[0]; i++) {
         a.view = pages[i];
@@ -527,9 +565,224 @@ int main(void) {
     assert(draw(&a) > 0);
     assert(draw(&a) == 0);
     question_back_button_stays_visible(&a);
+    /* Achievement badges & 4x4x10 orthogonal cross-skin wearables:
+     * 1. Partial redraw == full-screen redraw (0 pixel diff) across skin switches,
+     *    accessory switches, unequip, interactions, day/night, and page transitions.
+     * 2. Blink (17) and yawn (21) remain distinct from open-eye (16) even with W1/W2.
+     * 3. All 8 HOME life[] activities, HOME feelings, COMPANION actions 1..4, and DESK
+     *    scales (172/196/256) follow the 4x4x10 wearable occlusion & sleeping/hand rules.
+     * 4. Night clock and work pages (TASK_DETAIL/LIST) have 0 stray accessory pixels. */
+    a.badges = 0x57;
+    a.badge_unread = 0x40;
+    a.view = COMPANION;
+    a.companion_choice = 5;
+    a.companion_action = 0;
+    draw_and_verify_redraw(&a);
+    a.badge_unread = 0;
+    for (unsigned s = 0; s < sizeof invitation_skins; s++) {
+        a.worn = invitation_skins[s];
+        a.worn_acc = 0;
+        a.badge_equipped = 0;
+        a.view = BADGES;
+        a.now = 1000; /* pose 16 */
+        a.back_focus = true;
+        draw_and_verify_redraw(&a);
+        uint32_t base_pose = pose_checksum();
+        a.back_focus = false;
+        static const uint8_t wear_slots[4] = {1, 2, 4, 0}; /* wear 1, 2, 3, 4 */
+        uint32_t wear_sums[4];
+        for (unsigned w = 0; w < 4; w++) {
+            a.badge_choice = wear_slots[w];
+            a.now = 1000; /* open-eye 16 */
+            draw_and_verify_redraw(&a);
+            wear_sums[w] = pose_checksum();
+            assert(wear_sums[w] != base_pose);
+            for (unsigned prev = 0; prev < w; prev++)
+                assert(wear_sums[w] != wear_sums[prev]);
+            /* Blink (17) must visibly close eyes even through hollow W1 glasses & W2! */
+            a.now = 4875; /* blink 17 */
+            draw_and_verify_redraw(&a);
+            assert(pose_checksum() != wear_sums[w]);
+        }
+        /* Slide across all 8 badge slots including locked notices & unread arrows. */
+        a.now = 1000;
+        a.badge_unread = 0x81;
+        for (unsigned b = 0; b < WHALE_BADGE_COUNT; b++) {
+            a.badge_choice = b;
+            a.locked_notice = !(a.badges & (1u << b));
+            draw_and_verify_redraw(&a);
+        }
+        a.locked_notice = false;
+        a.badge_unread = 0;
+    }
+    /* Equipping a wearable stays visible across skin switches in WARDROBE, HOME, COMPANION, DESK. */
+    a.unlocked = 14;
+    a.badges = 0xff;
+    a.badge_equipped = 5;
+    a.worn_acc = 3;
+    uint32_t wardrobe_acc[4];
+    a.view = WARDROBE;
+    a.now = 1000;
+    for (unsigned i = 0; i < 4; i++) {
+        a.outfit_choice = i;
+        draw_and_verify_redraw(&a);
+        wardrobe_acc[i] = pose_checksum();
+        assert(wardrobe_acc[i] != preview[i]);
+        for (unsigned j = 0; j < i; j++)
+            assert(wardrobe_acc[i] != wardrobe_acc[j]);
+    }
+    /* Full 4 skins x (0..4 wearables) across HOME life[] (poses 20,19,15,3,18,19,10,1),
+     * COMPANION idle/blink/yawn + actions 1..4, and DESK scales 172/196/256 + night. */
+    static const int home_life[8] = {20, 19, 15, 3, 18, 19, 10, 1};
+    for (unsigned s = 0; s < sizeof invitation_skins; s++) {
+        a.worn = invitation_skins[s];
+        /* 1. HOME life[] activities 0..7 */
+        a.view = HOME;
+        a.feel = WHALE_FEEL_CALM;
+        a.invitation = 0;
+        a.now = 1000;
+        for (unsigned act = 0; act < 8; act++) {
+            a.activity = act;
+            a.night = (act == 2);
+            a.worn_acc = 0;
+            draw_and_verify_redraw(&a);
+            uint32_t plain_act = pose_checksum();
+            int pid = home_life[act];
+            for (unsigned w = 1; w <= 4; w++) {
+                a.worn_acc = w;
+                draw_and_verify_redraw(&a);
+                uint32_t acc_act = pose_checksum();
+                bool expect_visible = true;
+                if (w == 1 && (pid == 15 || (pid == 1 && s == 0)))
+                    expect_visible = false; /* W1 glasses taken off when resting/sleeping */
+                if (expect_visible)
+                    assert(acc_act != plain_act);
+                else
+                    assert(acc_act == plain_act);
+            }
+            /* Unequip back to 0: partial redraw must cleanly erase accessory! */
+            a.worn_acc = 0;
+            draw_and_verify_redraw(&a);
+            assert(pose_checksum() == plain_act);
+        }
+        a.night = false;
+
+        /* 2. COMPANION idle (16), blink (17), yawn (21), and interactions 1..4 */
+        a.view = COMPANION;
+        a.companion_at = 0;
+        static const uint32_t comp_times[3] = {1000, 4875, 21000}; /* 16, 17, 21 */
+        for (unsigned ti = 0; ti < 3; ti++) {
+            a.companion_action = 0;
+            a.now = comp_times[ti];
+            a.worn_acc = 0;
+            draw_and_verify_redraw(&a);
+            uint32_t plain_comp = pose_checksum();
+            for (unsigned w = 1; w <= 4; w++) {
+                a.worn_acc = w;
+                draw_and_verify_redraw(&a);
+                assert(pose_checksum() != plain_comp);
+            }
+        }
+        /* Interaction round-trip (action 1..4 and back to idle) */
+        for (unsigned action = 1; action <= 4; action++) {
+            a.companion_action = action;
+            a.action_at = 1000;
+            a.now = 1500;
+            a.worn_acc = 0;
+            draw_and_verify_redraw(&a);
+            uint32_t plain_act = pose_checksum();
+            for (unsigned w = 1; w <= 3; w++) {
+                a.worn_acc = w;
+                draw_and_verify_redraw(&a);
+                assert(pose_checksum() != plain_act);
+            }
+            a.worn_acc = 4;
+            draw_and_verify_redraw(&a);
+            assert(pose_checksum() != plain_act); /* hands busy -> plush rests beside character */
+            a.companion_action = 0;
+            a.now = 1000;
+            draw_and_verify_redraw(&a);
+        }
+
+        /* 3. DESK scales 172 (summary), 196 (idle summary), 256 (plain clock) + yawn 21 + night */
+        a.view = DESK;
+        a.clock_valid = true;
+        a.page_at = 0;
+        for (unsigned mode = 0; mode < 3; mode++) {
+            a.night = false;
+            a.summary_valid = mode < 2;
+            a.standby_mode = mode == 2 ? 1 : 0;
+            a.summary_done = mode == 0 ? 3 : 0;
+            a.summary_seconds = mode == 0 ? 3600 : 0;
+            a.now = 21000; /* yawn 21! */
+            a.worn_acc = 0;
+            draw_and_verify_redraw(&a);
+            uint32_t plain_yawn = pose_checksum();
+            a.worn_acc = 2;
+            draw_and_verify_redraw(&a);
+            assert(pose_checksum() != plain_yawn);
+            a.now = 1000; /* pose 16 */
+            a.worn_acc = 0;
+            draw_and_verify_redraw(&a);
+            uint32_t plain_desk = pose_checksum();
+            a.worn_acc = 4;
+            draw_and_verify_redraw(&a);
+            assert(pose_checksum() != plain_desk);
+        }
+        /* Night DESK has no whale/accessory regardless of worn_acc */
+        a.night = true;
+        a.worn_acc = 0;
+        draw_and_verify_redraw(&a);
+        static uint16_t night_plain[240 * 320];
+        memcpy(night_plain, screen, sizeof night_plain);
+        a.worn_acc = 3;
+        draw_and_verify_redraw(&a);
+        assert(memcmp(night_plain, screen, sizeof night_plain) == 0);
+        a.night = false;
+    }
+    /* HOME feelings (anxious, single badge, merged "解锁 2 枚新徽章") wear accessories cleanly. */
+    a.view = HOME;
+    a.worn = 2;
+    a.global_waiting = 2;
+    a.feel = WHALE_FEEL_ANXIOUS;
+    a.worn_acc = 0;
+    draw_and_verify_redraw(&a);
+    uint32_t anx_plain = pose_checksum();
+    a.worn_acc = 1;
+    draw_and_verify_redraw(&a);
+    assert(pose_checksum() != anx_plain);
+    a.feel = WHALE_FEEL_CELEBRATE;
+    a.badge_cheer = 7;
+    draw_and_verify_redraw(&a);
+    a.badge_cheer = (uint8_t)(0x80u | 2u);
+    draw_and_verify_redraw(&a);
+    a.feel = WHALE_FEEL_CALM;
+    a.badge_cheer = 0;
+    a.global_waiting = 0;
+
+    /* Transition from HOME/BADGES with wearable to TASK_DETAIL & LIST leaves 0 stray pixels. */
+    a.view = TASK_DETAIL;
+    a.rows[0].state = 5;
+    a.worn = 0;
+    a.worn_acc = 0;
+    draw_and_verify_redraw(&a);
+    static uint16_t td_plain_screen[240 * 320];
+    memcpy(td_plain_screen, screen, sizeof td_plain_screen);
+    a.worn = 8;
+    a.worn_acc = 1;
+    assert(draw(&a) == 0);
+    assert(memcmp(td_plain_screen, screen, sizeof td_plain_screen) == 0);
+
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
-    assert(memory.free_size > 4096 && lv_mem_test() == LV_RESULT_OK);
+    printf("pool summary: total=%lu max_used=%lu peak_headroom=%lu min_free=%lu "
+           "min_largest=%lu max_frag=%u%% redraw_checks=%u\n",
+           (unsigned long)memory.total_size, (unsigned long)memory.max_used,
+           (unsigned long)(memory.total_size - memory.max_used),
+           (unsigned long)min_free_observed, (unsigned long)min_largest_observed,
+           (unsigned)max_frag_observed, redraw_checks);
+    assert(min_free_observed >= 4096 && min_largest_observed >= 4096 &&
+           memory.total_size - memory.max_used >= 4096 && lv_mem_test() == LV_RESULT_OK);
     printf("render regression: %s, peak pool %lu bytes\n", errors ? "FAIL" : "PASS",
            (unsigned long)memory.max_used);
     return errors ? 1 : 0;

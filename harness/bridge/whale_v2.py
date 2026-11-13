@@ -212,6 +212,12 @@ class Receiver:
             or len(frame) != 8 + min(capacity, size - index * capacity)
         ):
             return None
+        if version == 2 and kind == 1 and size == 10 and count == 1:
+            major, minor, caps, rx, tx = struct.unpack_from("<BBIHH", frame, 8)
+            if (major, minor) == (2, 2) and caps & 63 == 63 and min(rx, tx) >= LEGACY_FRAME:
+                self.active.clear()
+                self.last.clear()
+                self.frame = 0
         now = time.monotonic()
         if lane in self.active and now - self.active[lane][5][0] >= 2:
             del self.active[lane]
@@ -989,6 +995,21 @@ class Link:
 
 
 HELLO_TIMEOUT_SECONDS = 8.0
+HELLO_RETRY_SECONDS = 1.0
+
+
+async def _stop_notifications(client, subscriptions):
+    """Clear peer CCCDs before closing WinRT service objects on a live link."""
+    for characteristic in reversed(subscriptions):
+        if not client.is_connected:
+            break
+        try:
+            await asyncio.wait_for(client.stop_notify(characteristic), timeout=2.0)
+        except Exception:
+            # A vanished link may reject the descriptor write. Keep the original
+            # transport error/cancellation; the client context still closes its
+            # native handles. Never unpair to recover a notification subscription.
+            pass
 
 
 async def serve(client, model, on_write=None):
@@ -1018,13 +1039,22 @@ async def serve(client, model, on_write=None):
         else:
             inbox.put_nowait(bytes(data))
 
-    await client.start_notify(NOTIFY, notify)
+    subscriptions = []
     try:
-        audio_char = client.services.get_characteristic(AUDIO)
-        if audio_char is not None:
-            await client.start_notify(AUDIO, lambda _, data: voice.feed(bytes(data)))
-            voice.audio_supported = True
-    except (AttributeError, KeyError): pass
+        await client.start_notify(NOTIFY, notify)
+        subscriptions.append(NOTIFY)
+        try:
+            audio_char = client.services.get_characteristic(AUDIO)
+            if audio_char is not None:
+                await client.start_notify(AUDIO, lambda _, data: voice.feed(bytes(data)))
+                subscriptions.append(AUDIO)
+                voice.audio_supported = True
+        except (AttributeError, KeyError):
+            pass
+    except BaseException:
+        voice.disconnected()
+        await _stop_notifications(client, subscriptions)
+        raise
     queues = [[], []]
     serial = [0, 0]
     inflight = [None, None]
@@ -1040,6 +1070,7 @@ async def serve(client, model, on_write=None):
     bulk_type = None
     refresh_after_page = False
     hello_deadline = time.monotonic() + HELLO_TIMEOUT_SECONDS
+    hello_retry_at = time.monotonic() + HELLO_RETRY_SECONDS
     try:
         while client.is_connected:
             if not wire.ready and inbox.empty() and time.monotonic() >= hello_deadline:
@@ -1068,6 +1099,10 @@ async def serve(client, model, on_write=None):
                         queues[1][0:0] = replies
                     else:
                         queue(replies)
+            if not wire.ready and time.monotonic() >= hello_retry_at:
+                if not queues[0] and inflight[0] is None:
+                    queue([hello(wire.offered)])
+                    hello_retry_at = time.monotonic() + HELLO_RETRY_SECONDS
             queue(wire.notices())
             if wire.ready: queue(voice.poll())
             if refresh_after_page and not queues[1] and inflight[1] is None:
@@ -1104,3 +1139,4 @@ async def serve(client, model, on_write=None):
     finally:
         model.frame = None
         voice.disconnected()
+        await _stop_notifications(client, subscriptions)

@@ -6,6 +6,9 @@
 
 /* Display slots map to persistent skin IDs. This permutation is its own inverse. */
 static const uint8_t whale_wardrobe_order[] = {0, 2, 1, 3};
+#define WHALE_BADGE_COUNT 8
+/* Wearable set (1..4) unlocked by each of the 8 achievement badges. */
+static const uint8_t whale_badge_wear[WHALE_BADGE_COUNT] = {4, 1, 2, 1, 3, 3, 4, 2};
 
 typedef struct {
     whale_row_t rows[8];
@@ -56,6 +59,12 @@ typedef struct {
     uint32_t invitation_at, invitation_due, invitation_next;
     bool back_focus, defer_question, locked_notice;
     uint8_t unlock_new; /* skins just unlocked, shown once on the companion pages */
+    /* Achievement badges (8 bits) and orthogonal cross-skin wearable (0..4). */
+    uint8_t badges, badge_unread, badge_choice, badge_equipped, worn_acc;
+    uint8_t badge_answers, badge_voices, badge_taps;
+    uint8_t badge_pending; /* queued unlock bits waiting for a quiet home page */
+    uint8_t badge_cheer;   /* 0 none, 1..8 single badge, 0x80|N merged celebration */
+    uint32_t badge_cheer_at;
     uint32_t activity_at, mood_at;
     uint8_t bond_today; /* bond gained on bond_day, capped by WHALE_BOND_DAILY_MAX */
     uint8_t bond_undated; /* part of bond_today earned without a valid clock */

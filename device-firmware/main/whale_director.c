@@ -3,7 +3,7 @@
 
 bool whale_director_main_view(whale_page_t view) {
     return view == HOME || view == TASK_DETAIL || view == LIST || view == COMPANION ||
-           view == WARDROBE || view == DESK;
+           view == WARDROBE || view == BADGES || view == DESK;
 }
 
 bool whale_director_idle(const whale_director_in_t *in) {
@@ -14,9 +14,12 @@ bool whale_director_idle(const whale_director_in_t *in) {
 }
 
 whale_go_t whale_director_desk(const whale_director_in_t *in) {
+    bool badge_busy = in->view == HOME &&
+                      (in->badge_pending ||
+                       (in->badge_cheer && in->now - in->badge_cheer_at < WHALE_CELEBRATE_MS));
     if ((in->view == HOME || in->view == TASK_DETAIL) &&
         in->now - in->last_input >= WHALE_DESK_IDLE_MS && whale_director_idle(in) &&
-        !in->voice_busy && !in->companion_action)
+        !in->voice_busy && !in->companion_action && !badge_busy)
         return WHALE_GO_DESK;
     /* After an offline desk display reconnects to an old bridge, the cached
      * page cannot prove all sessions are idle. Return to the task home. */
@@ -32,7 +35,7 @@ whale_director_screen_t whale_director_screen(const whale_director_in_t *in) {
     /* Rows are stale while offline; only a live task keeps the screen lit. */
     s.busy = !whale_director_main_view(in->view) || (in->linked && in->live_task);
     /* Background work may keep a task visible, but never keeps these pages lit. */
-    if (in->view == COMPANION || in->view == WARDROBE || in->view == DESK)
+    if (in->view == COMPANION || in->view == WARDROBE || in->view == BADGES || in->view == DESK)
         s.busy = false;
     return s;
 }
@@ -92,11 +95,17 @@ whale_go_t whale_director_result_key(const whale_director_in_t *in) {
     return whale_director_more_waiting(in) ? WHALE_GO_QUEUE : WHALE_GO_STAY;
 }
 
+bool whale_director_badge_start(const whale_director_in_t *in) {
+    return in->badge_pending && in->view == HOME && !in->voice_busy && !in->companion_action &&
+           !in->invitation;
+}
+
 whale_feel_t whale_director_feel(const whale_director_in_t *in) {
     if ((in->view != HOME && in->view != LIST) || in->voice_busy || in->companion_action ||
         in->invitation)
         return WHALE_FEEL_CALM;
-    if (in->cheer && in->now - in->cheer_at < WHALE_CELEBRATE_MS)
+    if ((in->cheer && in->now - in->cheer_at < WHALE_CELEBRATE_MS) ||
+        (in->badge_cheer && in->now - in->badge_cheer_at < WHALE_CELEBRATE_MS))
         return WHALE_FEEL_CELEBRATE;
     if (!in->linked || !in->ready || !in->global_cap || !in->global_valid || !in->waiting ||
         in->now - in->global_at >= WHALE_SUMMARY_FRESH_MS)

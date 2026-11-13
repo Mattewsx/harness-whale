@@ -22,8 +22,12 @@ class MemoryBudgetTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'linked LVGL'):
                         memory.verify(tmp)
             with patch.object(memory.subprocess, 'run', return_value=subprocess.CompletedProcess(
-                    [], 0, '3fca1110 00008000 b work_mem_int.0\n')):
+                    [], 0, '3fca1110 00008000 b work_mem_int.0\n3c4c42bc D _binary_accessories_rgb_start\n')):
                 memory.verify(tmp)
+            with patch.object(memory.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                    [], 0, '3fca1110 00008000 b work_mem_int.0\n3c765035 D _binary_accessories_rgb_start\n')):
+                with self.assertRaisesRegex(ValueError, 'unaligned 16-bit asset'):
+                    memory.verify(tmp)
 
     def test_rejects_old_kilobyte_configuration_and_64k_default(self):
         with tempfile.TemporaryDirectory() as tmp:

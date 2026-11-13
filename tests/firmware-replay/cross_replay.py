@@ -103,7 +103,7 @@ for kind,body in link.snapshot()+link.changes():send(kind,body)
 lines+=['view 26','cues 0','advance 119000']
 link.global_at=0
 for kind,body in link.changes():send(kind,body)
-lines+=['advance 1001','view 28']
+lines+=['advance 1001','view 29']
 sid=m.keys['g11'];m.update(dict(sessionId='g11',runId='run',state='thinking',title='Outside window'))
 for kind,body in link.changes():send(kind,body)
 lines+=['view 18']
@@ -134,7 +134,7 @@ for kind,body in clock:send(kind,body)
 lines+=['clock 22 30','view 26','advance 119000','view 26']
 link.global_at=0  # the bridge's 10 s heartbeat summary keeps the idle state fresh
 for kind,body in link.changes():send(kind,body)
-lines+=['advance 1001','view 28']
+lines+=['advance 1001','view 29']
 m.update(dict(sessionId='d1',runId='run2',state='thinking',title='Desk 1'))
 for kind,body in link.changes():send(kind,body)
 lines+=['view 0','assert 0 2 1']
@@ -253,7 +253,7 @@ send_large(link.clock(now=1793975400,tz_minutes=480))
 lines+=['clock 22 30','advance 119000']
 link.global_at=0
 send_large(link.changes())
-lines+=['advance 1001','view 28']
+lines+=['advance 1001','view 29']
 m.update(dict(sessionId=off_key,runId='new',state='thinking',title='Off-page task'))
 send_large(link.changes())
 lines+=['view 18']

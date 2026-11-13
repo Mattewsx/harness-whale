@@ -161,9 +161,19 @@ class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not r['connected'] for _, r in waiting))
         self.assertNotIn('retryIn', reports[-1][1])  # Next scan is no longer in backoff.
 
-    async def test_stress_cycle_drops_and_reconnects(self):
+    async def cycle_reconnect(self, paired):
         model = bridge.StatusModel()
         connects = []
+        device = object()
+        scans = []
+        targets = []
+
+        async def lookup(*_):
+            return device if paired else None
+
+        async def scan(*_, **__):
+            scans.append(True)
+            return device if len(scans) == 1 else None
 
         class Client:
             mtu_size = 23
@@ -171,6 +181,7 @@ class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
 
             def __init__(self):
                 self.is_connected = True
+                self.stopped = []
 
             async def __aenter__(self):
                 connects.append(self)
@@ -181,6 +192,9 @@ class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
 
             async def start_notify(self, _, callback):
                 self.notify = callback
+
+            async def stop_notify(self, uuid):
+                self.stopped.append(uuid)
 
             async def write_gatt_char(self, _, data, response):
                 if data[1] == 1 and data[4] == 0:
@@ -197,19 +211,27 @@ class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
             def sendto(self, data, addr):
                 reports.append(json.loads(data))
 
-        fake = SimpleNamespace(BleakScanner=None, BleakClient=lambda _: Client())
+        def client(target, **options):
+            targets.append(target)
+            if sys.platform == "win32":
+                self.assertEqual(options, {"winrt": {"use_cached_services": False}})
+            return Client()
 
-        async def paired(_):
+        fake = SimpleNamespace(BleakScanner=SimpleNamespace(find_device_by_name=scan),
+                               BleakClient=client)
+
+        async def pair_client(_):
             pass
 
         async def until(predicate):
             while not predicate():
                 await asyncio.sleep(0.01)
 
-        with patch.dict(sys.modules, bleak=fake), patch.object(bridge, "pair_passport", paired), \
+        with patch.dict(sys.modules, bleak=fake), patch.object(bridge, "pair_passport", pair_client), \
+                patch.object(bridge, "paired_passport_device", lookup), \
                 patch.object(bridge, "RECONNECT_BASE_SECONDS", 0.05):
             task = asyncio.create_task(
-                bridge.ble_loop(model, "fixture", "fixture", 0.01, Telemetry(), 0))
+                bridge.ble_loop(model, "fixture", None, 0.01, Telemetry(), 0))
             try:
                 await asyncio.wait_for(until(lambda: model.link.state == "v2.2"), 4)
                 model.link_cycle.set()
@@ -218,11 +240,43 @@ class LinkCycleLoop(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         self.assertFalse(connects[0].is_connected)
+        self.assertEqual(connects[0].stopped, [v.NOTIFY])
         report = model.link_report()
         self.assertEqual(report["disconnects"], 1)
         self.assertEqual(report["lastDisconnect"], "stress-test")
         self.assertIn("lastReconnectMs", report)
         self.assertTrue(any(r.get("disconnects") == 1 and r["state"] == "v2.2" for r in reports))
+        self.assertEqual(len(scans), 0 if paired else 1)
+        self.assertTrue(all(target is device for target in targets))
+
+    async def test_stress_cycle_reuses_discovered_peer_without_second_advertisement(self):
+        await self.cycle_reconnect(paired=False)
+
+    async def test_paired_peer_connects_and_reconnects_without_advertising(self):
+        await self.cycle_reconnect(paired=True)
+
+    async def test_failed_audio_subscription_releases_control_subscription(self):
+        model = v.Workspace()
+        model.marks_path = Path("synthetic-marks")
+        disconnected = []
+        model.voice = SimpleNamespace(disconnected=lambda: disconnected.append(True), feed=lambda _: None)
+        stopped = []
+
+        class Client:
+            is_connected = True
+            services = SimpleNamespace(get_characteristic=lambda _: object())
+
+            async def start_notify(self, uuid, _):
+                if uuid != v.NOTIFY:
+                    raise RuntimeError("synthetic audio subscription failure")
+
+            async def stop_notify(self, uuid):
+                stopped.append(uuid)
+
+        with self.assertRaisesRegex(RuntimeError, "synthetic audio"):
+            await v.serve(Client(), model)
+        self.assertEqual(stopped, [v.NOTIFY])
+        self.assertEqual(disconnected, [True])
 
 
 if __name__ == "__main__":

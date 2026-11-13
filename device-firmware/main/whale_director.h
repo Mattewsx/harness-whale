@@ -45,7 +45,8 @@ typedef enum {
     SOUND,
     HOME,
     WARDROBE,
-    DESK, /* desk display: clock, whale and today's summary, entered when idle */
+    BADGES, /* achievement badges and wearable accessories */
+    DESK,   /* desk display: clock, whale and today's summary, entered when idle */
     STANDBY /* settings: choose the desk display (summary or plain clock) */
 } whale_page_t;
 
@@ -101,6 +102,9 @@ typedef struct {
     bool invitation;       /* the whale is inviting the user to interact */
     bool cheer;            /* a session finished at cheer_at */
     uint32_t cheer_at;
+    bool badge_pending;    /* a newly unlocked badge waits for a quiet home page */
+    bool badge_cheer;      /* a badge celebration started at badge_cheer_at */
+    uint32_t badge_cheer_at;
     uint32_t waiting_at;   /* when the waiting count last rose from zero */
 } whale_director_in_t;
 
@@ -139,6 +143,8 @@ whale_director_screen_t whale_director_screen(const whale_director_in_t *in);
  * arriving and the last key press, so it never nags someone who is busy
  * with the device. Calm on every other page and during voice, a companion
  * reaction or an invitation. */
+/* Start a queued badge celebration once the user returns to a quiet home page. */
+bool whale_director_badge_start(const whale_director_in_t *in);
 whale_feel_t whale_director_feel(const whale_director_in_t *in);
 
 /* Idle animation on the home page. mood: 0 none, 1..2 happy, 3 calm, 4+ shy. */

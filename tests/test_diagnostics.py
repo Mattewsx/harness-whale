@@ -57,14 +57,17 @@ class LinkDiagnostics(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(client.writes, 1)
                 seen.set()
 
-        fake = SimpleNamespace(BleakScanner=None, BleakClient=lambda _: client)
+        fake = SimpleNamespace(BleakScanner=None, BleakClient=lambda _, **options: client)
 
         async def paired(_):
             pass
 
+        async def cached_peer(*_):
+            return None
+
         with patch.dict(sys.modules, bleak=fake), patch.object(
             bridge, "pair_passport", paired
-        ):
+        ), patch.object(bridge, "paired_passport_device", cached_peer):
             t = asyncio.create_task(
                 bridge.ble_loop(model, "fixture", "fixture", 0.01, Telemetry(), 0)
             )
@@ -75,6 +78,45 @@ class LinkDiagnostics(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(t, return_exceptions=True)
 
 class HandshakeDeadline(unittest.IsolatedAsyncioTestCase):
+    async def test_lost_first_hello_ack_retries_then_stops_when_ready(self):
+        ready = asyncio.Event()
+        sequences = []
+
+        class Client:
+            is_connected = True
+            services = SimpleNamespace(get_characteristic=lambda _: None)
+
+            async def start_notify(self, _, callback):
+                self.callback = callback
+
+            async def stop_notify(self, _):
+                pass
+
+            async def write_gatt_char(self, _, frame, response):
+                if frame[1] != 1:
+                    return
+                sequences.append(int.from_bytes(frame[2:4], "little"))
+                if len(sequences) == 1:
+                    return  # peer accepted the HELLO, but its first ACK was lost
+                for kind, body, serial in [(2, v.pack("BBIHHB", 2, 2, 63, 20, 20, 0), 1),
+                                           (0x10, v.pack("QIBB", 0, 0, 8, 0), 2)]:
+                    for packet in v.fragments(kind, serial, body):
+                        self.callback(None, packet)
+
+        def written(is_ready):
+            if is_ready:
+                ready.set()
+
+        with patch.object(v, "HELLO_RETRY_SECONDS", 0.05), patch.object(v, "HELLO_TIMEOUT_SECONDS", 0.5):
+            task = asyncio.create_task(v.serve(Client(), v.Workspace(), written))
+            try:
+                await asyncio.wait_for(ready.wait(), 1)
+                await asyncio.sleep(0.15)
+                self.assertEqual(sequences, [1, 2])
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_connected_without_hello_yields_to_reconnect(self):
         class SilentClient:
             is_connected = True

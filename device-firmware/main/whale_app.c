@@ -40,6 +40,7 @@ static char title_prefix[73];
 #define WHALE_CMD_SLEEP 7
 #define WHALE_CMD_ROOM_SAVE 8
 #define WHALE_CMD_STANDBY_SAVE 9
+#define WHALE_CMD_BADGE_SAVE 10
 /* Bond earned per local day from all sources. Without a synced clock the
  * day never rolls over, so the count keeps limiting until the next sync.
  * Companion taps add at most WHALE_BOND_TAP_MAX of it;
@@ -54,8 +55,18 @@ static char title_prefix[73];
 #define WHALE_UNLOCK_WITCH 20
 #define WHALE_UNLOCK_PAJAMAS 40
 #define WHALE_UNLOCK_LOUNGE 60
-static bool room_unsaved, previous_window;
-static uint32_t save_retry_at;
+static bool room_unsaved, badge_unsaved, previous_window;
+static uint32_t save_retry_at, badge_retry_at;
+#define WHALE_BADGE_SEEN_MAX 10
+#define WHALE_BADGE_ID_LEN 20
+#define WHALE_BADGE_BLOB_V1_LEGACY 6
+#define WHALE_BADGE_BLOB_V1_ID12 (WHALE_BADGE_BLOB_V1_LEGACY + WHALE_BADGE_SEEN_MAX * 12)
+#define WHALE_BADGE_BLOB_SIZE (WHALE_BADGE_BLOB_V1_LEGACY + WHALE_BADGE_SEEN_MAX * WHALE_BADGE_ID_LEN)
+#define WHALE_BADGE_SNAP_SLOTS 9
+static uint8_t badge_seen_q[WHALE_BADGE_SEEN_MAX][WHALE_BADGE_ID_LEN];
+static uint8_t badge_save_snaps[WHALE_BADGE_SNAP_SLOTS][WHALE_BADGE_BLOB_SIZE];
+static uint8_t badge_save_head;
+static void badge_on_completion(void);
 /* Serial-only health line for the hardware stress script. No session data. */
 #define WHALE_DIAG_MS 30000
 static volatile unsigned periph_stack_min;
@@ -173,6 +184,7 @@ static void completion_cue(const whale_row_t *before, const whale_row_t *after) 
     for (unsigned i = 0; i < 16; i++)
         if (sounded[i].session == after->session && sounded[i].run == after->run)
             return;
+    badge_on_completion();
     if (!queue_cue(3)) {
         ESP_LOGW("whale", "Completion cue queue unavailable");
         return;
@@ -480,6 +492,9 @@ static whale_director_in_t director_in(void) {
         .invitation = a.invitation != 0,
         .cheer = a.cheer,
         .cheer_at = a.cheer_at,
+        .badge_pending = a.badge_pending != 0,
+        .badge_cheer = a.badge_cheer != 0,
+        .badge_cheer_at = a.badge_cheer_at,
         .waiting_at = a.waiting_at,
     };
     /* Rows are stale while offline; only a live task keeps the screen lit. */
@@ -614,6 +629,47 @@ uint8_t whale_unlocks_for(uint8_t bond) {
            (bond >= WHALE_UNLOCK_PAJAMAS ? 4u : 0u) |
            (bond >= WHALE_UNLOCK_LOUNGE ? 8u : 0u);
 }
+static void badge_sync_acc(void) {
+    a.worn_acc = (a.badge_equipped >= 1 && a.badge_equipped <= WHALE_BADGE_COUNT &&
+                  (a.badges & (1u << (a.badge_equipped - 1))))
+                     ? whale_badge_wear[a.badge_equipped - 1]
+                     : 0;
+}
+static uint8_t badge_visible_mask(uint8_t choice) {
+    unsigned idx = choice < WHALE_BADGE_COUNT ? choice : 0;
+    unsigned win =
+        idx <= 1 ? 0 : idx >= WHALE_BADGE_COUNT - 2 ? WHALE_BADGE_COUNT - 4 : idx - 1;
+    return (uint8_t)(0x0fu << win);
+}
+static void badge_clear_visible(void) {
+    if (a.back_focus)
+        return;
+    uint8_t vis = badge_visible_mask(a.badge_choice);
+    a.badge_pending &= ~vis;
+    if (a.badge_unread & vis) {
+        a.badge_unread &= ~vis;
+        badge_unsaved = true;
+    }
+}
+static void badge_unlock(uint8_t index) {
+    if (index >= WHALE_BADGE_COUNT)
+        return;
+    uint8_t bit = 1u << index;
+    if (a.badges & bit)
+        return;
+    a.badges |= bit;
+    a.badge_unread |= bit;
+    a.badge_pending |= bit;
+    if (a.view == BADGES)
+        badge_clear_visible();
+    badge_unsaved = true;
+    dirty = true;
+}
+static void badge_on_completion(void) {
+    badge_unlock(0);
+    if (a.night)
+        badge_unlock(5);
+}
 static void bond_unlock(void) {
     uint8_t add = whale_unlocks_for(a.bond) & ~a.unlocked;
     if (add) {
@@ -622,6 +678,8 @@ static void bond_unlock(void) {
         room_unsaved = true;
         dirty = true;
     }
+    if (a.bond >= WHALE_UNLOCK_LOUNGE)
+        badge_unlock(7);
 }
 static void bond_gain(uint8_t points) {
     bool dated = sync_bond_day();
@@ -702,6 +760,70 @@ static void room_load(void) {
     }
     room_restore(profile);
 }
+static void badge_restore(const uint8_t p[6]) {
+    a.badges = p[0];
+    a.badge_unread = p[1] & a.badges;
+    a.badge_equipped = p[2] <= WHALE_BADGE_COUNT && p[2] && (a.badges & (1u << (p[2] - 1)))
+                           ? p[2]
+                           : 0;
+    a.badge_answers = p[3] <= 10 ? p[3] : 10;
+    a.badge_voices = p[4] <= 5 ? p[4] : 5;
+    a.badge_taps = p[5] <= 15 ? p[5] : 15;
+    if (a.badge_answers >= 10)
+        a.badges |= 1u << 1;
+    if (a.badge_voices >= 5)
+        a.badges |= 1u << 2;
+    if (a.badge_taps >= 15)
+        a.badges |= 1u << 6;
+    badge_sync_acc();
+}
+static void badge_profile(whale_audio_cmd_t cmd, uint8_t p[6]) {
+    uint64_t g = cmd.generation;
+    p[0] = cmd.mode;
+    p[1] = (uint8_t)(g & 255u) & p[0];
+    p[2] = (uint8_t)((g >> 8) & 255u);
+    p[3] = (uint8_t)((g >> 16) & 255u);
+    p[4] = (uint8_t)((g >> 24) & 255u);
+    p[5] = (uint8_t)((g >> 32) & 255u);
+}
+static void badge_blob_pack(whale_audio_cmd_t cmd, uint8_t out[WHALE_BADGE_BLOB_SIZE]) {
+    if (cmd.mode < WHALE_BADGE_SNAP_SLOTS) {
+        memcpy(out, badge_save_snaps[cmd.mode], WHALE_BADGE_BLOB_SIZE);
+        return;
+    }
+    badge_profile(cmd, out);
+    memset(out + WHALE_BADGE_BLOB_V1_LEGACY, 0, WHALE_BADGE_BLOB_SIZE - WHALE_BADGE_BLOB_V1_LEGACY);
+}
+static void badge_load(void) {
+    uint8_t blob[WHALE_BADGE_BLOB_SIZE] = {0};
+    memset(badge_seen_q, 0, sizeof badge_seen_q);
+    if (whale_blob_load("badges_v1", blob, sizeof blob)) {
+        badge_restore(blob);
+        if (!(a.badges & (1u << 1))) {
+            static const uint8_t zero_id[WHALE_BADGE_ID_LEN] = {0};
+            unsigned kept = 0;
+            for (unsigned i = 0; i < WHALE_BADGE_SEEN_MAX && kept < a.badge_answers; i++) {
+                const uint8_t *entry =
+                    blob + WHALE_BADGE_BLOB_V1_LEGACY + i * WHALE_BADGE_ID_LEN;
+                if (memcmp(entry, zero_id, WHALE_BADGE_ID_LEN) != 0)
+                    memcpy(badge_seen_q[kept++], entry, WHALE_BADGE_ID_LEN);
+            }
+        }
+    } else if (whale_blob_load("badges_v1", blob, WHALE_BADGE_BLOB_V1_ID12) ||
+               whale_blob_load("badges_v1", blob, WHALE_BADGE_BLOB_V1_LEGACY)) {
+        /* Migrate 126-byte (12B id without epoch) and 6-byte records: preserve badges,
+         * unread/equipped state and cumulative counts, keep badge_seen_q empty instead of
+         * fabricating missing epochs, and schedule async upgrade to the 206-byte format. */
+        badge_restore(blob);
+        badge_unsaved = true;
+    }
+    if (a.bond >= WHALE_UNLOCK_LOUNGE && !(a.badges & (1u << 7))) {
+        a.badges |= 1u << 7;
+        a.badge_unread |= 1u << 7;
+        badge_unsaved = true;
+    }
+    badge_sync_acc();
+}
 static void invitation_tick(bool idle) {
     bool quiet = idle && !dim && !a.night && !whale_voice_busy() && !whale_voice_pending();
     if (a.invitation) {
@@ -770,6 +892,27 @@ static void companion_tick(void) {
         if (xQueueSend(cues, &cmd, 0) == pdTRUE)
             room_unsaved = false;
     }
+    if (badge_unsaved && cues && (int32_t)(a.now - badge_retry_at) >= 0) {
+        uint8_t slot = badge_save_head % WHALE_BADGE_SNAP_SLOTS;
+        uint8_t *snap_blob = badge_save_snaps[slot];
+        snap_blob[0] = a.badges;
+        snap_blob[1] = a.badge_unread & a.badges;
+        snap_blob[2] = a.badge_equipped;
+        snap_blob[3] = a.badge_answers;
+        snap_blob[4] = a.badge_voices;
+        snap_blob[5] = a.badge_taps;
+        memcpy(snap_blob + WHALE_BADGE_BLOB_V1_LEGACY, badge_seen_q, sizeof badge_seen_q);
+        whale_audio_cmd_t cmd = {WHALE_CMD_BADGE_SAVE, slot,
+                                 (uint64_t)snap_blob[0] | (uint64_t)snap_blob[1] << 8 |
+                                     (uint64_t)snap_blob[2] << 16 |
+                                     (uint64_t)snap_blob[3] << 24 |
+                                     (uint64_t)snap_blob[4] << 32 |
+                                     (uint64_t)snap_blob[5] << 40};
+        if (xQueueSend(cues, &cmd, 0) == pdTRUE) {
+            badge_save_head = (uint8_t)((slot + 1u) % WHALE_BADGE_SNAP_SLOTS);
+            badge_unsaved = false;
+        }
+    }
     if (a.view == HOME && a.now - a.activity_at >= 9000) {
         uint8_t pick;
         esp_fill_random(&pick, sizeof pick);
@@ -801,7 +944,31 @@ static void companion_tick(void) {
     }
     if (a.cheer && a.now - a.cheer_at >= WHALE_CELEBRATE_MS)
         a.cheer = false;
+    if (a.badge_cheer && a.now - a.badge_cheer_at >= WHALE_CELEBRATE_MS) {
+        a.badge_cheer = 0;
+        dirty = true;
+    }
     in = director_in();
+    if (whale_director_badge_start(&in)) {
+        unsigned cnt = 0, first = 0;
+        for (unsigned i = 0; i < WHALE_BADGE_COUNT; i++)
+            if (a.badge_pending & (1u << i)) {
+                if (!cnt)
+                    first = i;
+                cnt++;
+            }
+        if (a.badge_cheer && a.now - a.badge_cheer_at < WHALE_CELEBRATE_MS) {
+            unsigned prev = (a.badge_cheer & 0x80u) ? (a.badge_cheer & 0x7fu) : 1u;
+            unsigned total = prev + cnt > WHALE_BADGE_COUNT ? WHALE_BADGE_COUNT : prev + cnt;
+            a.badge_cheer = (uint8_t)(0x80u | total);
+        } else {
+            a.badge_cheer = cnt > 1 ? (uint8_t)(0x80u | cnt) : (uint8_t)(first + 1u);
+            a.badge_cheer_at = a.now;
+        }
+        a.badge_pending = 0;
+        dirty = true;
+        in = director_in();
+    }
     uint8_t feel = (uint8_t)whale_director_feel(&in);
     if (feel != a.feel) {
         a.feel = feel;
@@ -1128,19 +1295,24 @@ static void key(uint32_t code) {
         }
         return;
     }
-    if (a.view == COMPANION || a.view == WARDROBE || a.view == MANAGE || a.view == SOUND ||
-        a.view == STANDBY) {
+    if (a.view == COMPANION || a.view == WARDROBE || a.view == BADGES || a.view == MANAGE ||
+        a.view == SOUND || a.view == STANDBY) {
         if (hold) {
             if (k == BSP_BTN_OK && a.view == COMPANION)
                 page(HOME);
+            else if (k == BSP_BTN_OK && a.view == BADGES)
+                page(COMPANION);
             return;
         }
         if (a.companion_action)
             return;
-        unsigned count = a.view == COMPANION ? 5
-                         : a.view == SOUND || a.view == STANDBY ? 2 : 4;
+        unsigned count = a.view == COMPANION                 ? 6
+                         : a.view == BADGES                  ? WHALE_BADGE_COUNT
+                         : a.view == SOUND || a.view == STANDBY ? 2
+                                                             : 4;
         uint8_t *choice = a.view == COMPANION  ? &a.companion_choice
                           : a.view == WARDROBE ? &a.outfit_choice
+                          : a.view == BADGES   ? &a.badge_choice
                           : a.view == SOUND    ? &a.sound_choice
                           : a.view == STANDBY  ? &a.standby_choice
                                                : &a.menu_choice;
@@ -1150,8 +1322,10 @@ static void key(uint32_t code) {
             if (next)
                 *choice = next - 1;
             a.locked_notice = false;
+            if (a.view == BADGES)
+                badge_clear_visible();
         } else if (a.back_focus) {
-            page(a.view == WARDROBE                       ? COMPANION
+            page(a.view == WARDROBE || a.view == BADGES ? COMPANION
                  : a.view == SOUND || a.view == STANDBY ? MANAGE
                                                         : HOME);
         } else if (a.view == COMPANION) {
@@ -1160,6 +1334,21 @@ static void key(uint32_t code) {
                 a.outfit_choice = whale_wardrobe_order[a.outfit_choice];
                 a.unlock_new = 0;
                 page(WARDROBE);
+            } else if (*choice == 5) {
+                uint8_t focus =
+                    a.badge_equipped >= 1 && a.badge_equipped <= WHALE_BADGE_COUNT
+                        ? a.badge_equipped - 1
+                        : 0;
+                if (a.badge_unread) {
+                    for (unsigned i = 0; i < WHALE_BADGE_COUNT; i++)
+                        if (a.badge_unread & (1u << i)) {
+                            focus = i;
+                            break;
+                        }
+                }
+                a.badge_choice = focus;
+                page(BADGES);
+                badge_clear_visible();
             } else {
                 bool invited = a.invitation == *choice + 1 && !a.invitation_settling &&
                                a.now - a.invitation_at < WHALE_INVITATION_MS;
@@ -1175,9 +1364,15 @@ static void key(uint32_t code) {
                     a.invitation_next = a.now + 480000;
                 a.invitation_cooling = true;
                 bond_tap();
+                if (a.badge_taps < 15) {
+                    a.badge_taps++;
+                    badge_unsaved = true;
+                }
+                if (a.badge_taps >= 15)
+                    badge_unlock(6);
             }
         } else if (a.view == WARDROBE) {
-            /* Display order does not change saved skin identities. */
+            /* Display order does not change saved skin identities; accessories stay orthogonal. */
             uint8_t bit = 1u << whale_wardrobe_order[*choice];
             if (!*choice)
                 a.worn = 0;
@@ -1189,6 +1384,16 @@ static void key(uint32_t code) {
             }
             a.locked_notice = false;
             room_unsaved = true;
+        } else if (a.view == BADGES) {
+            uint8_t bit = 1u << *choice;
+            if (!(a.badges & bit)) {
+                a.locked_notice = true;
+                return;
+            }
+            a.badge_equipped = a.badge_equipped == *choice + 1 ? 0 : *choice + 1;
+            badge_sync_acc();
+            a.locked_notice = false;
+            badge_unsaved = true;
         } else if (a.view == MANAGE) {
             a.sound_choice = a.sound_mode;
             a.standby_choice = a.standby_mode;
@@ -1735,8 +1940,15 @@ static void apply_message(whale_msg_t msg) {
             a.voice_text[n - 27] = 0;
         }
         if (code == 3 || code == 4) {
-            if (a.voice_submitted)
+            if (a.voice_submitted) {
                 bond_gain(WHALE_BOND_VOICE);
+                if (a.badge_voices < 5) {
+                    a.badge_voices++;
+                    badge_unsaved = true;
+                }
+                if (a.badge_voices >= 5)
+                    badge_unlock(2);
+            }
             a.voice_submitted = false;
         }
         if (code == 5)
@@ -1775,6 +1987,14 @@ static void apply_message(whale_msg_t msg) {
         a.summary_seconds = w32(p + 14);
         a.summary_valid = true;
         clock_step();
+        if (!a.summary_stale) {
+            if (a.summary_done >= 1)
+                badge_unlock(0);
+            if (a.summary_done >= 5)
+                badge_unlock(3);
+            if (a.summary_seconds >= 7200)
+                badge_unlock(4);
+        }
         return;
     }
     if (msg.type == 0x17 && n >= 18 && n == 18u + w16(p + 16) && n - 18 <= 512 &&
@@ -1816,6 +2036,7 @@ static void apply_message(whale_msg_t msg) {
         whale_cues_update(&reminders, seq, w32(p + 12), w32(p + 20), p[24], p[25], a.now);
         if (p[25] == 3) {
             bond_gain(WHALE_BOND_DONE);
+            badge_on_completion();
             a.mood = 2;
             a.activity = 5;
             a.mood_at = a.activity_at = a.now;
@@ -1892,8 +2113,40 @@ static void apply_message(whale_msg_t msg) {
     } else if (msg.type == 0x23 && n == 23 && current(p, n) && question_view()) {
         if (p[20] < 4) {
             a.result = p[20];
-            if (p[20] == 0)
+            if (p[20] == 0) {
                 bond_gain(WHALE_BOND_ANSWER);
+                if (!(a.badges & (1u << 1)) && a.badge_answers < WHALE_BADGE_SEEN_MAX) {
+                    /* Deduplicate by the full 20-byte wire identity (epoch + sid + rid + qid)
+                     * so replays/reconnects within a bridge Workspace do not double-count, while
+                     * a new bridge Workspace (new epoch, next_id reset to 1/2/3) never collides. */
+                    static const uint8_t zero_id[WHALE_BADGE_ID_LEN] = {0};
+                    const uint8_t *qid = a.identity;
+                    bool has_id = memcmp(qid + 8, zero_id + 8, 12) != 0;
+                    bool dup = false;
+                    if (has_id) {
+                        for (unsigned i = 0; i < WHALE_BADGE_SEEN_MAX; i++)
+                            if (!memcmp(badge_seen_q[i], qid, WHALE_BADGE_ID_LEN)) {
+                                dup = true;
+                                break;
+                            }
+                    }
+                    if (!dup) {
+                        if (has_id) {
+                            for (unsigned i = 0; i < WHALE_BADGE_SEEN_MAX; i++)
+                                if (!memcmp(badge_seen_q[i], zero_id, WHALE_BADGE_ID_LEN)) {
+                                    memcpy(badge_seen_q[i], qid, WHALE_BADGE_ID_LEN);
+                                    break;
+                                }
+                        }
+                        a.badge_answers++;
+                        badge_unsaved = true;
+                        if (a.badge_answers >= WHALE_BADGE_SEEN_MAX) {
+                            memset(badge_seen_q, 0, sizeof badge_seen_q);
+                            badge_unlock(1);
+                        }
+                    }
+                }
+            }
             page(RESULT);
         }
     } else if (msg.type == 0x20 && a.view == LOADING && current(p, n) && n >= 24 && !a.meta) {
@@ -2060,6 +2313,11 @@ static void peripheral_task(void *unused) {
                     room_profile(cue, profile);
                     if (!whale_blob_save("room_v3", profile, sizeof profile))
                         whale_post(&(whale_event_t){.kind = 96});
+                } else if (cue.kind == WHALE_CMD_BADGE_SAVE) {
+                    uint8_t blob[WHALE_BADGE_BLOB_SIZE];
+                    badge_blob_pack(cue, blob);
+                    if (!whale_blob_save("badges_v1", blob, sizeof blob))
+                        whale_post(&(whale_event_t){.kind = 95});
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
                     if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
                         whale_post(&(whale_event_t){.kind = 97});
@@ -2182,6 +2440,10 @@ static void service(whale_event_t e) {
         }
         break;
     }
+    case 95:
+        badge_unsaved = true;
+        badge_retry_at = a.now + 5000;
+        break;
     case 96:
         room_unsaved = true;
         save_retry_at = a.now + 5000;
@@ -2210,6 +2472,7 @@ static void service(whale_event_t e) {
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     room_load();
+    badge_load();
     a.sound_mode = whale_sound_load();
     a.standby_mode = whale_standby_load();
     a.sound_saved = 1;
@@ -2305,6 +2568,8 @@ void app_main(void) {
                 uint8_t mode = a.sound_mode, standby = a.standby_mode;
                 uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated,
                                      a.bond_taps, a.bond_taps_undated};
+                uint8_t bprof[] = {a.badges,       a.badge_unread, a.badge_equipped,
+                                   a.badge_answers, a.badge_voices, a.badge_taps};
                 uint32_t bond_day = a.bond_day;
                 memset(&a, 0, sizeof a);
                 a.bond = profile[0];
@@ -2314,6 +2579,13 @@ void app_main(void) {
                 a.bond_undated = profile[4];
                 a.bond_taps = profile[5];
                 a.bond_taps_undated = profile[6];
+                a.badges = bprof[0];
+                a.badge_unread = bprof[1];
+                a.badge_equipped = bprof[2];
+                a.badge_answers = bprof[3];
+                a.badge_voices = bprof[4];
+                a.badge_taps = bprof[5];
+                badge_sync_acc();
                 a.bond_day = bond_day;
                 a.dock = 1;
                 a.sound_mode = mode;

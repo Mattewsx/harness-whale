@@ -21,7 +21,7 @@ Highest first:
 
 | Function | When | Answer |
 | --- | --- | --- |
-| `whale_director_desk` | Home or task page, idle for `WHALE_DESK_IDLE_MS` (2 min), every session verifiably idle, no voice, no companion reaction | Desk display |
+| `whale_director_desk` | Home or task page, idle for `WHALE_DESK_IDLE_MS` (2 min), every session verifiably idle, no voice, no companion reaction, no pending or active badge celebration | Desk display |
 | `whale_director_desk` | Desk display, linked and ready to a bridge without the global summary (capability bit 11) | Home |
 | `whale_director_offline` | Offline, not a resting page, idle for `WHALE_POWER_OFF_MS`, nothing holding (voice, audio, cue batch, pairing, unbinding) | Home (voice is cancelled) |
 | `whale_director_summary` | Desk display and a valid global summary with a waiting question | Pending queue |
@@ -34,8 +34,9 @@ Highest first:
 | `whale_director_key` | Desk display and any key press | Home |
 | `whale_director_queue` | Result page of an accepted answer, shown for `WHALE_QUEUE_NEXT_MS` (1.5 s), a summary newer than the answer still counts a waiting question, no voice | Pending queue |
 | `whale_director_result_key` | Confirm on that result page with the same summary | Pending queue (otherwise the task, as before) |
-| `whale_director_screen` | Any operation page, or a linked live task outside the companion, wardrobe and desk pages | Keep the screen lit |
+| `whale_director_screen` | Any operation page, or a linked live task outside the companion, wardrobe, badges and desk pages | Keep the screen lit |
 | `whale_director_screen` | Voice, audio, cue batch, pairing or unbinding | Do not sleep |
+| `whale_director_badge_start` | Newly unlocked badge bit(s) queued, on a quiet home page without voice, companion reaction or invitation | Start 4 s badge celebration (single badge name or merged `"解锁 N 枚新徽章"` summary) |
 | `whale_director_activity_set` / `whale_director_activity` | Home page idle animation | Set from mood (5 min) or day and night; the next pick never repeats the current one |
 
 ## Feelings
@@ -44,7 +45,7 @@ Highest first:
 
 | Feeling | When | Shown as |
 | --- | --- | --- |
-| Celebrate | A session finished (live cue 3), for `WHALE_CELEBRATE_MS` (4 s) | Happy and waving poses, bouncing, "任务完成啦！" |
+| Celebrate | A session finished (live cue 3) or a badge celebration started, for `WHALE_CELEBRATE_MS` (4 s) | Happy and waving poses, bouncing, "任务完成啦！", `"解锁徽章 · <name>"` or `"解锁 N 枚新徽章"` |
 | Anxious | A question has waited `WHALE_ANXIOUS_MS` (2 min) and no key was pressed for as long | Waiting pose, shaking, "有 N 个问题在等你" |
 | Very anxious | The same for `WHALE_VERY_ANXIOUS_MS` (5 min) | Faster shake, "还在等你，来看看好不好？" |
 
@@ -67,7 +68,7 @@ The seeded fuzz test checks these after every random event:
 - A question pops up over the home page only after it was left alone for 10 s, and never over voice or a companion reaction.
 - The queue moves on only from the result of an accepted answer, after it has been shown, never during voice, and only on a summary newer than the answer that still counts a waiting question.
 - Confirm on a result page opens the queue only when a question waits.
-- A celebration needs a finished session and always ends after 4 s.
+- A celebration needs a finished session or an unlocked badge celebration started on a quiet home page, and always ends after 4 s.
 - The whale is anxious only while something verifiably waits, after both the wait and the time since the last key press passed the threshold.
 - Feelings show only on the home page and the list, never during voice, a companion reaction or an invitation.
 - Work never takes over any other page: the list, a reply being read, a question in progress, voice or settings.
@@ -75,7 +76,7 @@ The seeded fuzz test checks these after every random event:
 - The offline rule only fires when offline, after the screen-off time, on an operation page, and never interrupts voice, audio, pairing or unbinding.
 - After each pass, no offline operation page outlives the screen-off time.
 - The desk display never stays on an old bridge.
-- The companion, wardrobe and desk pages never keep the screen lit. Pairing, unbinding and voice always block sleep.
+- The companion, wardrobe, badges and desk pages never keep the screen lit. Pairing, unbinding and voice always block sleep.
 - No flapping: a page the director just chose is stable on the next pass.
 - The same input always gives the same answer.
 

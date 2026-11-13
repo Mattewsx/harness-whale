@@ -62,6 +62,14 @@ int whale_receive(whale_rx_t *rx, const uint8_t *f, size_t n, uint32_t ms, whale
         part = cap;
     if (n != part + 8)
         return -1;
+    /* A central can reopen GATT while the OS keeps the physical link alive.
+     * A complete, supported legacy HELLO starts a new logical wire session;
+     * it must not be rejected against the previous session's serial numbers.
+     * Do not let malformed/partial HELLOs discard an in-flight message. */
+    if (f[0] == 2 && f[1] == 1 && !i && count == 1 && len == 10 &&
+        f[8] == 2 && f[9] == 2 && (w32(f + 10) & 63u) == 63u &&
+        w16(f + 14) >= WHALE_FRAME_LEGACY && w16(f + 16) >= WHALE_FRAME_LEGACY)
+        memset(rx, 0, sizeof *rx);
     if (s->active && ms - s->last_ms >= 2000)
         s->active = false;
     if (!i && (!s->seen || id != s->id)) {

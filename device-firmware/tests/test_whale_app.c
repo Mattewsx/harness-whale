@@ -13,6 +13,9 @@ static bool send_ok = true;
 static const char *stored_room_key;
 static uint8_t stored_room[11];
 static size_t stored_room_size;
+static const char *stored_badge_key;
+static uint8_t stored_badge[WHALE_BADGE_BLOB_SIZE];
+static size_t stored_badge_size;
 void *xQueueCreate(int x, int y) {
     (void)x;
     (void)y;
@@ -24,12 +27,19 @@ int xQueueReceive(void *q, void *out, int wait) {
     (void)wait;
     return 0;
 }
-static whale_audio_cmd_t *last_cue_capture;
+static whale_audio_cmd_t *last_cue_capture, *last_badge_capture;
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
         if (*(const uint8_t *)in == WHALE_CMD_ROOM_SAVE) {
             if (last_cue_capture)
                 *last_cue_capture = *(const whale_audio_cmd_t *)in;
+            return 1;
+        }
+        if (*(const uint8_t *)in == WHALE_CMD_BADGE_SAVE) {
+            if (!cue_ok)
+                return 0;
+            if (last_badge_capture)
+                *last_badge_capture = *(const whale_audio_cmd_t *)in;
             return 1;
         }
         assert(wait == 0 && ((*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7) ||
@@ -147,8 +157,12 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     return send_ok;
 }
 static void setup(void) {
-    room_unsaved = previous_window = false;
-    stored_room_key = NULL;
+    room_unsaved = badge_unsaved = previous_window = false;
+    badge_retry_at = 0;
+    stored_room_key = stored_badge_key = NULL;
+    memset(badge_seen_q, 0, sizeof badge_seen_q);
+    memset(badge_save_snaps, 0, sizeof badge_save_snaps);
+    badge_save_head = 0;
     memset(&reminders, 0, sizeof reminders);
     disconnect_pending = false;
     seek_session = 0;
@@ -871,7 +885,7 @@ static void test_random_invitations(void) {
     a.global_at = a.now - 30000;
     companion_tick();
     assert(!a.invitation_scheduled);
-    const whale_page_t protected[] = {REPLY_READ, QUESTION, VOICE, WARDROBE, MANAGE, COMPANION};
+    const whale_page_t protected[] = {REPLY_READ, QUESTION, VOICE, WARDROBE, BADGES, MANAGE, COMPANION};
     for (unsigned i = 0; i < sizeof protected / sizeof protected[0]; i++) {
         invitation_room(true);
         page(protected[i]);
@@ -2135,6 +2149,419 @@ static void test_feelings(void) {
     puts("Feelings: anxious after a long wait, calmed by a key or an answer, brief celebration PASS");
 }
 
+static void answer_question_id(uint32_t session, uint32_t run, uint32_t qid, uint8_t status) {
+    put64(a.identity, a.epoch);
+    put32(a.identity + 8, session);
+    put32(a.identity + 12, run);
+    put32(a.identity + 16, qid);
+    a.view = SENDING;
+    uint8_t p[23] = {0};
+    memcpy(p, a.identity, 20);
+    p[20] = status;
+    apply_message((whale_msg_t){0x23, p, sizeof p});
+}
+
+static void test_badges_and_wearables(void) {
+    setup();
+    a.global_cap = a.attention_cap = true;
+    int64_t day0 = 1793750400LL; /* 2026-11-04 00:00 UTC: night */
+
+    /* Daytime non-completion cues unlock nothing; daytime completion unlocks #0 only (not #5). */
+    wall_clock(a.epoch, day0 + 12 * 3600, 0);
+    assert(!a.night);
+    cue_event(1, 10, 29, 2, 2);
+    cue_event(2, 10, 29, 0, 5);
+    assert(!a.badges && !a.badge_pending);
+    page(HOME);
+    summary(0, 0, 0);
+    cue_event(3, 10, 30, 3, 3);
+    assert(a.badges == 0x01 && a.badge_unread == 0x01 && a.badge_pending == 0x01);
+    companion_tick();
+    /* Single badge unlock shows badge index + 1 (1..8). */
+    assert(a.badge_cheer == 1 && !a.badge_pending && a.feel == WHALE_FEEL_CELEBRATE);
+    a.now += WHALE_CELEBRATE_MS;
+    companion_tick();
+    assert(!a.badge_cheer);
+
+    /* Simultaneous unlock: reset and trigger night completion -> unlocks both #0 and #5. */
+    setup();
+    a.global_cap = a.attention_cap = true;
+    wall_clock(a.epoch, day0 + 3600, 0); /* 01:00 -> night */
+    assert(a.night);
+    page(LIST);
+    cue_event(1, 10, 30, 3, 3);
+    assert((a.badges & 0x21) == 0x21 && (a.badge_unread & 0x21) == 0x21 &&
+           a.badge_pending == 0x21);
+    /* Toast waits until HOME is quiet (held off on LIST or during an active invitation). */
+    companion_tick();
+    assert(a.badge_pending == 0x21 && !a.badge_cheer);
+    page(HOME);
+    wall_clock(a.epoch, day0 + 12 * 3600, 0); /* 12:00 -> daytime */
+    summary(0, 0, 0);
+    a.invitation = 1;
+    a.invitation_at = a.now;
+    companion_tick();
+    assert(a.badge_pending == 0x21 && !a.badge_cheer);
+    a.invitation = 0;
+    companion_tick();
+    /* Merged toast: 0x80 | 2 ("解锁 2 枚新徽章") for a single 4s window without extending screen. */
+    assert(a.badge_cheer == (0x80u | 2u) && !a.badge_pending && a.feel == WHALE_FEEL_CELEBRATE);
+    a.now += WHALE_CELEBRATE_MS;
+    companion_tick();
+    assert(!a.badge_cheer);
+
+    /* 4-slot sliding-window unread clearing on BADGES:
+     * Currently unread = 0x21 (slots 0 and 5). Entering BADGES focuses lowest unread (0),
+     * clearing visible window 0..3 (slot 0) while preserving off-screen slot 5! */
+    a.view = COMPANION;
+    a.companion_choice = 5;
+    key(BSP_BTN_OK);
+    assert(a.view == BADGES && a.badge_choice == 0 && a.badge_unread == 0x20);
+    key(BSP_BTN_DOWN); /* choice 1, win 0..3 */
+    assert(a.badge_choice == 1 && a.badge_unread == 0x20);
+    key(BSP_BTN_DOWN); /* choice 2, win 1..4 */
+    assert(a.badge_choice == 2 && a.badge_unread == 0x20);
+    key(BSP_BTN_DOWN); /* choice 3, win 2..5 -> slot 5 enters window and clears! */
+    assert(a.badge_choice == 3 && a.badge_unread == 0);
+
+    /* Device answers: bounded 10-slot 20-byte (epoch+sid+rid+qid) deduplication across:
+     * 1) Dual bridge Workspace instances allocating identical sid=1/rid=2/qid=3 under distinct
+     *    64-bit epochs (must count 1 -> 2, never colliding across bridge instances).
+     * 2) Same-epoch reconnect replay and non-adjacent A -> B -> A replay (must stay 2).
+     * 3) Self-contained immutable NVS save snapshots (cmd_A + cmd_B queued before peripheral_task
+     *    consumes cmd_A, plus xQueueSend full-queue failures and cold reboot after cmd_A). */
+    const uint64_t epoch_ws_a = 2387325224728041593ULL;
+    const uint64_t epoch_ws_b = 16233919467398213239ULL;
+    a.epoch = epoch_ws_a;
+    answer_question_id(1, 2, 3, 0); /* Workspace A first question (sid=1, rid=2, qid=3) */
+    assert(a.badge_answers == 1);
+    answer_question_id(1, 2, 3, 0); /* Same-Workspace immediate replay: stays 1 */
+    assert(a.badge_answers == 1);
+
+    /* Queue cmd_A BEFORE question B arrives (peripheral_task has not consumed cmd_A yet). */
+    whale_audio_cmd_t cmd_a = {0}, cmd_b = {0};
+    last_badge_capture = &cmd_a;
+    companion_tick();
+    assert(!badge_unsaved && cmd_a.kind == WHALE_CMD_BADGE_SAVE);
+
+    /* New bridge Workspace B connects with fresh epoch and resets next_id -> sid=1, rid=2, qid=3. */
+    a.epoch = epoch_ws_b;
+    answer_question_id(1, 2, 3, 0); /* Distinct Workspace B question with same sid/rid/qid! */
+    assert(a.badge_answers == 2);
+
+    /* Queue cmd_B while cmd_A is still unconsumed in cues. */
+    last_badge_capture = &cmd_b;
+    companion_tick();
+    assert(!badge_unsaved && cmd_b.kind == WHALE_CMD_BADGE_SAVE && cmd_b.mode != cmd_a.mode);
+    last_badge_capture = NULL;
+
+    /* Simulate full cues queue (xQueueSend fails 12 times): must keep badge_unsaved=true
+     * and never overwrite or corrupt already-queued snapshots cmd_a or cmd_b! */
+    badge_unsaved = true;
+    cue_ok = false;
+    for (unsigned attempt = 0; attempt < 12; attempt++) {
+        companion_tick();
+        assert(badge_unsaved);
+    }
+    cue_ok = true;
+    badge_unsaved = false;
+
+    /* Non-adjacent A -> B -> A replay and same-epoch BLE reconnect replay: must stay 2! */
+    a.epoch = epoch_ws_a;
+    answer_question_id(1, 2, 3, 0);
+    assert(a.badge_answers == 2);
+    service((whale_event_t){.kind = WE_DOWN});
+    a.linked = a.ready = true;
+    a.epoch = epoch_ws_b;
+    answer_question_id(1, 2, 3, 0);
+    assert(a.badge_answers == 2);
+    answer_question_id(1, 2, 99, 1); /* Already handled on computer: not counted */
+    answer_question_id(1, 2, 99, 2); /* Withdrawn: not counted */
+    answer_question_id(1, 2, 99, 3); /* Expired: not counted */
+    assert(a.badge_answers == 2);
+
+    /* Consume cmd_A first and simulate cold reboot BEFORE cmd_B is written to NVS:
+     * cmd_A's snapshot must have count=1 and seen={A} only, so B is NOT lost after reboot! */
+    uint8_t blob_a[WHALE_BADGE_BLOB_SIZE], blob_b[WHALE_BADGE_BLOB_SIZE];
+    badge_blob_pack(cmd_a, blob_a);
+    badge_blob_pack(cmd_b, blob_b);
+    assert(blob_a[3] == 1 && blob_b[3] == 2);
+
+    setup();
+    a.global_cap = a.attention_cap = true;
+    wall_clock(a.epoch, day0 + 12 * 3600, 0);
+    stored_badge_key = "badges_v1";
+    memcpy(stored_badge, blob_a, sizeof blob_a);
+    stored_badge_size = sizeof blob_a;
+    badge_load();
+    assert(a.badge_answers == 1 && a.badges == 0x21);
+    a.epoch = epoch_ws_a;
+    answer_question_id(1, 2, 3, 0); /* Replay A after partial write + cold boot -> stays 1 */
+    assert(a.badge_answers == 1);
+    a.epoch = epoch_ws_b;
+    answer_question_id(1, 2, 3, 0); /* Retry B after partial write + cold boot -> counts to 2! */
+    assert(a.badge_answers == 2);
+
+    /* Now cold boot from blob_b (after cmd_B is written to NVS): both A and B deduplicate. */
+    setup();
+    a.global_cap = a.attention_cap = true;
+    wall_clock(a.epoch, day0 + 12 * 3600, 0);
+    stored_badge_key = "badges_v1";
+    memcpy(stored_badge, blob_b, sizeof blob_b);
+    stored_badge_size = sizeof blob_b;
+    badge_load();
+    assert(a.badge_answers == 2 && a.badges == 0x21);
+    a.epoch = epoch_ws_a;
+    answer_question_id(1, 2, 3, 0); /* Replay A after cold boot */
+    a.epoch = epoch_ws_b;
+    answer_question_id(1, 2, 3, 0); /* Replay B after cold boot */
+    assert(a.badge_answers == 2);
+    answer_question_id(10, 20, 3, 0); /* Distinct C after cold boot */
+    assert(a.badge_answers == 3);
+    for (unsigned q = 4; q <= 9; q++)
+        answer_question_id(10, 20, q, 0);
+    assert(a.badge_answers == 9 && !(a.badges & (1u << 1)));
+    answer_question_id(10, 20, 10, 0);
+    assert(a.badge_answers == 10 && (a.badges & (1u << 1)));
+
+    /* Voice submissions: non-accepted statuses do not count; 5 accepted unlock #2. */
+    for (unsigned bad = 0; bad <= 2; bad++) {
+        uint8_t v[27] = {0};
+        a.view = VOICE;
+        a.voice_submitted = true;
+        memcpy(v, a.voice_identity, 24);
+        v[24] = (uint8_t)bad;
+        apply_message((whale_msg_t){0x41, v, sizeof v});
+        assert(a.badge_voices == 0);
+    }
+    for (unsigned i = 1; i <= 5; i++) {
+        uint8_t v[27] = {0};
+        a.view = VOICE;
+        a.voice_submitted = true;
+        memcpy(v, a.voice_identity, 24);
+        v[24] = i % 2 ? 3 : 4;
+        apply_message((whale_msg_t){0x41, v, sizeof v});
+        assert(a.badge_voices == i);
+    }
+    assert(a.badges & (1u << 2));
+
+    /* Daily summary: stale day or below-threshold unlocks nothing; 5 done -> #3, 7200s -> #4. */
+    uint32_t work_day;
+    assert(whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day));
+    uint8_t s[18];
+    put64(s, a.epoch);
+    put32(s + 8, work_day - 1);
+    put16(s + 12, 6);
+    put32(s + 14, 9000);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert(a.summary_stale && !(a.badges & (1u << 3)) && !(a.badges & (1u << 4)));
+    put32(s + 8, work_day);
+    put16(s + 12, 4);
+    put32(s + 14, 7199);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert(!a.summary_stale && !(a.badges & (1u << 3)) && !(a.badges & (1u << 4)));
+    put16(s + 12, 5);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert((a.badges & (1u << 3)) && !(a.badges & (1u << 4)));
+    put32(s + 14, 7200);
+    apply_message((whale_msg_t){0x54, s, sizeof s});
+    assert((a.badges & (1u << 3)) && (a.badges & (1u << 4)));
+
+    /* 15 room interactions unlock #6 even though daily bond taps cap at 5. */
+    for (unsigned i = 1; i <= 14; i++) {
+        interact();
+        assert(a.badge_taps == i && !(a.badges & (1u << 6)));
+    }
+    interact();
+    assert(a.badge_taps == 15 && (a.badges & (1u << 6)));
+
+    /* Reaching bond 60 unlocks #7 (59 does not). */
+    wall_clock(a.epoch, day0 + 2 * 86400 + 12 * 3600, 0);
+    a.bond = 58;
+    a.bond_today = 0;
+    interact();
+    assert(a.bond == 59 && !(a.badges & (1u << 7)));
+    interact();
+    assert(a.bond == 60 && (a.badges & (1u << 7)));
+    assert(a.badges == 0xff);
+
+    /* Clear remaining unread via sliding window, verify orthogonal 4x(4+none)=20 states & '<' back. */
+    a.view = COMPANION;
+    a.back_focus = false;
+    a.companion_action = 0;
+    a.companion_choice = 5;
+    key(BSP_BTN_OK);
+    /* Unread bits were 1,2,3,4,6,7 -> lowest unread is 1 (win 0: clears 1,2,3; leaves 4,6,7). */
+    assert(a.view == BADGES && a.badge_choice == 1 && a.badge_unread == 0xd0);
+    while (a.badge_choice < 6)
+        key(BSP_BTN_DOWN);
+    assert(a.badge_unread == 0);
+    a.badge_choice = 7;
+    key(BSP_BTN_OK);
+    assert(a.badge_equipped == 8 && a.worn_acc == 2 && a.worn == 0);
+
+    /* Full 4 skins x (none + 4 wearables) = 20 state transitions preserve orthogonality. */
+    a.unlocked = 14;
+    static const uint8_t wear_badge_slots[4] = {1, 2, 4, 0}; /* wear 1, 2, 3, 4 */
+    for (unsigned skin_slot = 0; skin_slot < 4; skin_slot++) {
+        page(WARDROBE);
+        a.outfit_choice = skin_slot;
+        if (skin_slot == 0 || a.worn != (1u << whale_wardrobe_order[skin_slot]))
+            key(BSP_BTN_OK);
+        uint8_t expected_skin = skin_slot ? (uint8_t)(1u << whale_wardrobe_order[skin_slot]) : 0;
+        assert(a.worn == expected_skin);
+        page(BADGES);
+        /* Unequip to none */
+        if (a.badge_equipped) {
+            a.badge_choice = a.badge_equipped - 1;
+            key(BSP_BTN_OK);
+        }
+        assert(a.badge_equipped == 0 && a.worn_acc == 0 && a.worn == expected_skin);
+        for (unsigned w = 0; w < 4; w++) {
+            a.badge_choice = wear_badge_slots[w];
+            key(BSP_BTN_OK);
+            assert(a.badge_equipped == wear_badge_slots[w] + 1 && a.worn_acc == w + 1 &&
+                   a.worn == expected_skin);
+        }
+        /* '<' back focus cancels preview without changing equipped wearable or skin. */
+        a.badge_choice = 0;
+        key(BSP_BTN_UP);
+        assert(a.back_focus && a.worn_acc == 4 && a.worn == expected_skin);
+        key(BSP_BTN_OK);
+        assert(a.view == COMPANION && a.worn_acc == 4 && a.worn == expected_skin);
+    }
+
+    /* Persist to NVS "badges_v1", test retry on event 95, legacy 6-byte migration, and unbind. */
+    page(BADGES);
+    a.badge_choice = 4; /* wear 3 */
+    key(BSP_BTN_OK);
+    assert(a.badge_equipped == 5 && a.worn_acc == 3);
+    whale_audio_cmd_t saved_cmd = {0};
+    last_badge_capture = &saved_cmd;
+    badge_unsaved = true;
+    companion_tick();
+    assert(!badge_unsaved && saved_cmd.kind == WHALE_CMD_BADGE_SAVE);
+    service((whale_event_t){.kind = 95});
+    assert(badge_unsaved);
+    companion_tick();
+    assert(badge_unsaved); /* retry backoff active */
+    a.now += 5000;
+    companion_tick();
+    assert(!badge_unsaved);
+    last_badge_capture = NULL;
+    uint8_t blob[WHALE_BADGE_BLOB_SIZE];
+    badge_blob_pack(saved_cmd, blob);
+
+    /* Upgrade migration across all 3 formats (6 B legacy, 126 B 12B-id, 206 B 20B-id)
+     * with identical 6-byte header (badges=35, equipped=2, answers=5, voices=3, taps=7):
+     * 126-byte record must preserve all metadata/progress, clear badge_seen_q without
+     * fabricating fake epochs, and schedule upgrade persistence to 206-byte format. */
+    uint8_t header6[6] = {35, 0x02, 2, 5, 3, 7};
+    static const size_t format_sizes[3] = {
+        WHALE_BADGE_BLOB_V1_LEGACY, WHALE_BADGE_BLOB_V1_ID12, WHALE_BADGE_BLOB_SIZE};
+    for (unsigned fmt = 0; fmt < 3; fmt++) {
+        setup();
+        stored_badge_key = "badges_v1";
+        memset(stored_badge, 0, sizeof stored_badge);
+        memcpy(stored_badge, header6, sizeof header6);
+        if (fmt == 1) {
+            /* Legacy 126-byte payload contained 12-byte (sid/rid/qid) entries without epoch. */
+            put32(stored_badge + 6, 1);
+            put32(stored_badge + 10, 2);
+            put32(stored_badge + 14, 3);
+        } else if (fmt == 2) {
+            put64(stored_badge + 6, epoch_ws_a);
+            put32(stored_badge + 14, 1);
+            put32(stored_badge + 18, 2);
+            put32(stored_badge + 22, 3);
+        }
+        stored_badge_size = format_sizes[fmt];
+        badge_load();
+        assert(a.badges == 35 && a.badge_unread == 0x02 && a.badge_equipped == 2 &&
+               a.worn_acc == 1 && a.badge_answers == 5 && a.badge_voices == 3 &&
+               a.badge_taps == 7);
+        assert(badge_unsaved == (fmt < 2));
+        if (fmt == 1) {
+            /* No fabricated 20-byte identity on 126-byte migration; retry/reboot before
+             * upgrade save completes reloads the untouched 126-byte NVS record cleanly. */
+            static const uint8_t zero20[WHALE_BADGE_ID_LEN] = {0};
+            for (unsigned i = 0; i < WHALE_BADGE_SEEN_MAX; i++)
+                assert(memcmp(badge_seen_q[i], zero20, WHALE_BADGE_ID_LEN) == 0);
+
+            whale_audio_cmd_t mig_cmd = {0};
+            last_badge_capture = &mig_cmd;
+            companion_tick();
+            assert(!badge_unsaved && mig_cmd.kind == WHALE_CMD_BADGE_SAVE);
+            last_badge_capture = NULL;
+
+            /* NVS save failure (event 95) -> retry backoff -> cold reboot before write lands:
+             * 126-byte NVS record is still intact and reloads all progress without loss. */
+            service((whale_event_t){.kind = 95});
+            assert(badge_unsaved);
+            a.now += 5000;
+            last_badge_capture = &mig_cmd;
+            companion_tick();
+            assert(!badge_unsaved && mig_cmd.kind == WHALE_CMD_BADGE_SAVE);
+            last_badge_capture = NULL;
+
+            uint8_t upgraded[WHALE_BADGE_BLOB_SIZE];
+            badge_blob_pack(mig_cmd, upgraded);
+
+            /* Before 206B write lands, NVS still holds 126B -> cold reboot preserves progress. */
+            setup();
+            stored_badge_key = "badges_v1";
+            stored_badge_size = WHALE_BADGE_BLOB_V1_ID12;
+            badge_load();
+            assert(a.badges == 35 && a.badge_equipped == 2 && a.worn_acc == 1 &&
+                   a.badge_answers == 5 && a.badge_voices == 3 && a.badge_taps == 7 &&
+                   badge_unsaved);
+
+            /* Once 206B write lands, cold reboot loads 206B cleanly with badge_unsaved=false. */
+            setup();
+            stored_badge_key = "badges_v1";
+            memcpy(stored_badge, upgraded, sizeof upgraded);
+            stored_badge_size = sizeof upgraded;
+            badge_load();
+            assert(a.badges == 35 && a.badge_equipped == 2 && a.worn_acc == 1 &&
+                   a.badge_answers == 5 && a.badge_voices == 3 && a.badge_taps == 7 &&
+                   !badge_unsaved);
+        }
+    }
+
+    /* Full 206-byte blob restore + locked notice + BADGES screen dim/off behavior. */
+    setup();
+    stored_badge_key = "badges_v1";
+    memcpy(stored_badge, blob, sizeof blob);
+    stored_badge_size = sizeof blob;
+    badge_load();
+    assert(a.badges == 0xff && a.badge_equipped == 5 && a.worn_acc == 3 &&
+           a.badge_answers == 10 && a.badge_voices == 5 && a.badge_taps == 15);
+    a.badges = 0x10; /* only badge 4 unlocked */
+    page(BADGES);
+    a.badge_choice = 0;
+    key(BSP_BTN_OK);
+    assert(a.locked_notice && a.badge_equipped == 5 && a.worn_acc == 3);
+    power_reset(true);
+    a.badges = 0xff;
+    a.badge_equipped = 5;
+    badge_sync_acc();
+    a.view = BADGES;
+    a.rows[0].state = 2; /* even with active session, BADGES dims & turns off */
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM);
+    a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+    power_step();
+    assert(a.view == BADGES && screen_applied == WHALE_SCREEN_OFF);
+
+    /* Existing high-bond user upgrading gets badge 7 unlocked on boot. */
+    setup();
+    a.bond = 65;
+    badge_load();
+    assert((a.badges & (1u << 7)) && (a.badge_unread & (1u << 7)) && badge_unsaved);
+    puts("Achievement badges, 8 triggers, 10-slot dedup, NVS persistence and 4x5 orthogonality PASS");
+}
+
 /* Seeded random frames, keys, links and time through the whole application.
  * Built with ASan/UBSan in validate.sh; it looks for crashes, out-of-range
  * state and broken screen-director invariants rather than exact behavior.
@@ -2151,7 +2578,12 @@ static void app_fuzz_check(uint64_t seed, unsigned step, unsigned action) {
               a.scroll >= 0 && a.options <= 3 && a.focus <= 8 &&
               /* The queue only waits on its own priority snapshot. */
               (!queue_next || a.view == LIST_LOAD || a.view == LIST_FAILED) &&
-              a.feel <= WHALE_FEEL_VERY_ANXIOUS &&
+              a.feel <= WHALE_FEEL_VERY_ANXIOUS && a.badge_equipped <= WHALE_BADGE_COUNT &&
+              a.worn_acc <= 4 &&
+              (!a.badge_cheer || a.badge_cheer <= WHALE_BADGE_COUNT ||
+               ((a.badge_cheer & 0x80u) && (a.badge_cheer & 0x7fu) >= 2 &&
+                (a.badge_cheer & 0x7fu) <= WHALE_BADGE_COUNT)) &&
+              (!a.worn_acc || (a.badge_equipped && (a.badges & (1u << (a.badge_equipped - 1))))) &&
               /* Feelings only where the whale is on show; never anxious over nothing. */
               (!a.feel || a.view == HOME || a.view == LIST) &&
               (a.feel < WHALE_FEEL_ANXIOUS || (a.global_valid && a.global_waiting && a.linked));
@@ -2284,6 +2716,7 @@ int main(void) {
     test_voice_direct_entry();
     test_pending_queue();
     test_feelings();
+    test_badges_and_wearables();
     test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");
@@ -2326,6 +2759,10 @@ bool whale_standby_save(uint8_t mode) { return mode < 2; }
 bool whale_blob_load(const char *key, void *data, size_t size) {
     if (stored_room_key && !strcmp(key, stored_room_key) && size == stored_room_size) {
         memcpy(data, stored_room, size);
+        return true;
+    }
+    if (stored_badge_key && !strcmp(key, stored_badge_key) && size == stored_badge_size) {
+        memcpy(data, stored_badge, size);
         return true;
     }
     return false;

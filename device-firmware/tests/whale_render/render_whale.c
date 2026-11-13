@@ -2,6 +2,7 @@
 #include "whale_app.h"
 #include "whale_assets.h"
 #include "whale_outfits.h"
+#include "whale_accessories.h"
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
@@ -11,6 +12,7 @@ uint8_t landscape_pixels[2 * 240 * 228 * 2] __asm__("_binary_room_rgb_start");
 uint8_t pose_bytes[16 * 196 * 196 * 3] __asm__("_binary_poses_rgb_start");
 uint8_t companion_bytes[WHALE_COMPANION_BYTES] __asm__("_binary_companion_rgb_start");
 uint8_t outfit_bytes[WHALE_OUTFIT_BYTES] __asm__("_binary_outfits_rgb_start");
+uint8_t accessory_bytes[WHALE_ACC_BYTES] __asm__("_binary_accessories_rgb_start");
 static uint16_t pixels[240 * 320];
 static uint16_t buffer[240 * 20];
 static void check_sky_bar(void) {
@@ -33,10 +35,14 @@ static void check_action_caption(void) {
 static void memory(const char *label) {
     lv_mem_monitor_t stats;
     lv_mem_monitor(&stats);
-    printf("%s: used=%lu peak=%lu largest=%lu\n", label,
-           (unsigned long)(stats.total_size - stats.free_size), (unsigned long)stats.max_used,
-           (unsigned long)stats.free_biggest_size);
+    printf("%s: total=%lu used=%lu free=%lu peak=%lu largest=%lu frag=%u%%\n", label,
+           (unsigned long)stats.total_size,
+           (unsigned long)(stats.total_size - stats.free_size), (unsigned long)stats.free_size,
+           (unsigned long)stats.max_used, (unsigned long)stats.free_biggest_size,
+           (unsigned)stats.frag_pct);
     fflush(stdout);
+    assert(stats.free_size >= 4096 && stats.free_biggest_size >= 4096 &&
+           stats.total_size - stats.max_used >= 4096);
 }
 static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *data) {
     uint16_t *p = (uint16_t *)data;
@@ -70,6 +76,9 @@ int main(void) {
     fclose(f);
     f = fopen(WHALE_OUTFITS_PATH, "rb");
     assert(f && fread(outfit_bytes, 1, sizeof outfit_bytes, f) == sizeof outfit_bytes);
+    fclose(f);
+    f = fopen(WHALE_ACCESSORIES_PATH, "rb");
+    assert(f && fread(accessory_bytes, 1, sizeof accessory_bytes, f) == sizeof accessory_bytes);
     fclose(f);
     FILE *landscape = fopen(WHALE_ROOM_PATH, "rb");
     assert(landscape && fread(landscape_pixels, 1, sizeof landscape_pixels, landscape) ==
@@ -578,9 +587,90 @@ int main(void) {
     whale_ui_draw(&a);
     save("witch-coffee-finished");
     check_action_caption();
-    lv_mem_monitor_t memory;
-    lv_mem_monitor(&memory);
-    printf("LVGL renderer PASS; peak pool used %lu / %lu bytes\n", (unsigned long)memory.max_used,
-           (unsigned long)memory.total_size);
+    a.companion_action = 0;
+    a.badges = 0x57;
+    a.badge_unread = 0x80;
+    a.badge_equipped = 5;
+    a.worn_acc = 3;
+    for (unsigned skin = 0; skin < sizeof invitation_skins; skin++) {
+        a.worn = invitation_skins[skin];
+        a.view = BADGES;
+        a.now = 1000;
+        for (unsigned b = 0; b < WHALE_BADGE_COUNT; b++) {
+            a.badge_choice = b;
+            whale_ui_draw(&a);
+            char name[48];
+            snprintf(name, sizeof name, "badges-skin-%u-slot-%u", skin, b);
+            save(name);
+        }
+        /* Blink (17) through hollow W1 glasses, sleeping (15) with W2 hairpin,
+         * yawn (21) on DESK summary (172), COMPANION wave (18) with W1, and merged toast. */
+        a.badge_choice = 1; /* W1 glasses */
+        a.now = 4875;       /* blink 17 */
+        whale_ui_draw(&a);
+        char extra[64];
+        snprintf(extra, sizeof extra, "badges-skin-%u-glasses-blink", skin);
+        save(extra);
+
+        a.view = HOME;
+        a.night = true;
+        a.activity = 2; /* p15 sleeping */
+        a.worn_acc = 2; /* W2 lily-of-the-valley hairpin retained while resting */
+        a.now = 1000;
+        whale_ui_draw(&a);
+        snprintf(extra, sizeof extra, "home-skin-%u-sleep-hairpin", skin);
+        save(extra);
+        a.night = false;
+
+        a.worn_acc = 4;
+        a.feel = WHALE_FEEL_CALM;
+        a.invitation = 0;
+        for (unsigned activity = 0; activity < 8; activity++) {
+            a.activity = activity;
+            whale_ui_draw(&a);
+            snprintf(extra, sizeof extra, "home-skin-%u-activity-%u-plush", skin, activity);
+            save(extra);
+        }
+
+        a.view = COMPANION;
+        a.companion_action = 1; /* p18 wave */
+        a.action_at = 1000;
+        a.now = 1200;
+        a.worn_acc = 1; /* W1 glasses */
+        whale_ui_draw(&a);
+        snprintf(extra, sizeof extra, "comp-skin-%u-wave-glasses", skin);
+        save(extra);
+        a.companion_action = 0;
+
+        a.view = DESK;
+        a.clock_valid = a.summary_valid = true;
+        a.standby_mode = 0;
+        a.summary_done = 5;
+        a.summary_seconds = 7800;
+        a.page_at = 0;
+        a.now = 21000; /* p21 yawn at scale 172 */
+        a.worn_acc = 3; /* W3 tail ribbon */
+        whale_ui_draw(&a);
+        snprintf(extra, sizeof extra, "desk-skin-%u-yawn-ribbon", skin);
+        save(extra);
+    }
+    a.view = HOME;
+    a.worn = 4;
+    a.worn_acc = 4;
+    a.feel = WHALE_FEEL_CELEBRATE;
+    a.badge_cheer = (uint8_t)(0x80u | 2u);
+    a.now = 1000;
+    whale_ui_draw(&a);
+    save("home-badge-celebrate-merged");
+    a.feel = WHALE_FEEL_CALM;
+    a.badge_cheer = 0;
+    lv_mem_monitor_t mem_end;
+    lv_mem_monitor(&mem_end);
+    assert(mem_end.free_size >= 4096 && mem_end.free_biggest_size >= 4096 &&
+           mem_end.total_size - mem_end.max_used >= 4096);
+    printf("LVGL renderer PASS; total=%lu free=%lu peak=%lu largest=%lu frag=%u%%\n",
+           (unsigned long)mem_end.total_size, (unsigned long)mem_end.free_size,
+           (unsigned long)mem_end.max_used, (unsigned long)mem_end.free_biggest_size,
+           (unsigned)mem_end.frag_pct);
     return 0;
 }

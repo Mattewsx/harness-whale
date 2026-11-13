@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 import os
 import random
+import sys
 import time
 from typing import Any
 import urllib.error
@@ -23,14 +24,14 @@ import urllib.request
 try:
     from . import whale_v2
     from .whale_history import journal_path, read_session_history, reply_pages
-    from .whale_pairing import pair_passport, PairingDeclined
+    from .whale_pairing import pair_passport, paired_passport_device, PairingDeclined
     from .harness_ble_protocol import (
         Balance, Currency, State, make_frame, make_question_frame, normalize_state, snapshot_from_mapping,
     )
 except ImportError:  # Direct execution: python tools/harness_ble_bridge.py
     import whale_v2
     from whale_history import journal_path, read_session_history, reply_pages
-    from whale_pairing import pair_passport, PairingDeclined
+    from whale_pairing import pair_passport, paired_passport_device, PairingDeclined
     from harness_ble_protocol import (
         Balance, Currency, State, make_frame, make_question_frame, normalize_state, snapshot_from_mapping,
     )
@@ -480,6 +481,8 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
         raise SystemExit("bleak is required; install tools/requirements-client.txt") from exc
 
     link = model.link
+    known_device = None
+    connection_failures = 0
 
     def report(state: str, connected: bool = False, **fields: Any) -> None:
         link.state = state
@@ -503,7 +506,15 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
         link.retry_at = None
         model.link_cycle.clear()
         try:
-            device = address
+            device = known_device
+            if device is None:
+                try:
+                    device = await asyncio.wait_for(
+                        paired_passport_device(device_name, address), timeout=4.0)
+                except (ImportError, OSError, asyncio.TimeoutError) as exc:
+                    LOG.debug("Paired-device lookup unavailable: %s", type(exc).__name__)
+                if device is None:
+                    device = address
             if device is None:
                 LOG.info("scanning for BLE device %s", device_name)
                 report("scanning")
@@ -513,7 +524,13 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                     continue
                 device = found
             report("connecting")
-            async with BleakClient(device) as client:
+            # Reusing the peer identity must not reuse a stale GATT database
+            # after the device restarted or its firmware changed.
+            options = {"winrt": {"use_cached_services": False}} if sys.platform == "win32" else {}
+            async with BleakClient(device, **options) as client:
+                # Retain the discovered/cached BLEDevice, not just its address:
+                # a new name scan can miss a peer Windows still keeps connected.
+                known_device = device
                 LOG.info("BLE connected to %s", device_name)
                 mtu = int(getattr(client, "mtu_size", 23) or 23)
                 report("connected", True, mtu=mtu)
@@ -522,10 +539,11 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                     await pair_passport(client)
                     phase = "negotiating"
                     def record_write(ready):
-                        nonlocal phase
+                        nonlocal phase, connection_failures
                         model.packets_sent += 1
                         if ready and phase != "v2.2":
                             phase = "v2.2"
+                            connection_failures = 0
                             link.up()
                     relay = asyncio.create_task(whale_v2.serve(client, model.workspace, record_write))
                     cycle = asyncio.create_task(model.link_cycle.wait())
@@ -545,6 +563,9 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
                     # serve() returns once the peer has gone away.
                     await wait_retry(link.lost("link-lost"), "reconnecting")
                     continue
+                if client.services.get_characteristic(NOTIFY_UUID) is None:
+                    raise ConnectionError("Passport GATT services unavailable; reconnecting")
+
                 def on_notify(_: Any, data: bytearray) -> None:
                     if len(data) >= 2 and data[0] == 0x07 and data[1] >= 0x10:
                         LOG.warning("device rejected Harness packet: status=0x%02X", data[1])
@@ -553,6 +574,7 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
 
                 await client.start_notify(NOTIFY_UUID, on_notify)
                 link.up()
+                connection_failures = 0
                 question_revision = -1
                 while client.is_connected:
                     if model.link_cycle.is_set():
@@ -582,6 +604,10 @@ async def ble_loop(model: StatusModel, device_name: str, address: str | None,
             await wait_retry(link.hold(PAIRING_DECLINED_SECONDS), "reconnecting",
                              error=type(exc).__name__)
         except Exception as exc:
+            connection_failures += 1
+            if connection_failures >= 3:
+                known_device = None
+                connection_failures = 0
             delay = link.lost(type(exc).__name__)
             LOG.warning("BLE reconnect in %.1fs after %s: %s", delay, type(exc).__name__, exc)
             await wait_retry(delay, "reconnecting", error=type(exc).__name__)

@@ -60,6 +60,26 @@ int main(void) {
     assert(whale_receive(&big, oversize, sizeof oversize, 18, &out) == -1);
     uint8_t legacy[20] = {2, 0x23, 2, 0, 0, 1, 1, 0, 4};
     assert(whale_receive(&big, legacy, 9, 19, &out) == 1); // 2.2 frames stay valid after a grant
+    /* Logical reconnect without GAP disconnect: stale sequence state in both
+     * lanes and an unfinished bulk transfer must not swallow the new HELLO. */
+    whale_rx_t reopen = {0};
+    reopen.frame = WHALE_FRAME_MAX;
+    assert(whale_receive(&reopen, v3, sizeof v3, 20, &out) == 0);
+    ctrl[2] = 90;
+    assert(whale_receive(&reopen, ctrl, sizeof ctrl, 21, &out) == 1);
+    uint8_t hi[18] = {2, 1, 1, 0, 0, 1, 10, 0, 2, 2, 63, 0, 0, 0, 244, 0, 244, 0};
+    whale_rx_t saved = reopen;
+    hi[8] = 3; // unsupported HELLO is not a session boundary
+    assert(whale_receive(&reopen, hi, sizeof hi, 22, &out) == 0);
+    assert(!memcmp(&saved, &reopen, sizeof saved));
+    hi[8] = 2;
+    assert(whale_receive(&reopen, hi, sizeof hi, 23, &out) == 1 && out.type == 1);
+    assert(!reopen.frame && !reopen.slots[0].seen && !reopen.slots[0].active);
+    // Retrying a valid HELLO can recover a lost ACK, even with the same serial.
+    assert(whale_receive(&reopen, hi, sizeof hi, 24, &out) == 1);
+    assert(whale_receive(&reopen, ctrl, sizeof ctrl, 25, &out) == 1);
+    assert(whale_receive(&reopen, ctrl, sizeof ctrl, 26, &out) == 0); // other duplicates stay suppressed
+    puts("wire logical reconnect: valid HELLO resets serial/reassembly/grant; malformed HELLO and non-HELLO duplicates stay protected");
     uint8_t bad[] = {0xe0, 0x80, 0x80};
     assert(!whale_text(bad, 3));
     puts("wire: lengths, UTF-8, CRC, slot priority, duplicate, serial wrap and 2.3 large frames passed");

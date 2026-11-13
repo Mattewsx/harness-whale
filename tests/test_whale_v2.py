@@ -15,6 +15,24 @@ from harness_ble_bridge import HarnessDatagram, StatusModel
 
 
 class LargeFrames(unittest.TestCase):
+    def test_valid_hello_reopens_logical_session_without_physical_disconnect(self):
+        receiver = v.Receiver()
+        receiver.frame = 244
+        self.assertIsNone(receiver.accept(next(v.fragments(0x14, 44, b"x" * 300, 244))))
+        control = next(v.fragments(0x23, 90, b"x"))
+        self.assertEqual(receiver.accept(control), (0x23, b"x"))
+        malformed = next(v.fragments(1, 1, v.pack("BBIHH", 3, 2, 63, 244, 244)))
+        self.assertIsNone(receiver.accept(malformed))
+        self.assertEqual(receiver.frame, 244)
+        self.assertIn(False, receiver.active)
+        handshake = next(v.fragments(1, 1, v.hello(244)[1]))
+        self.assertEqual(receiver.accept(handshake), v.hello(244))
+        self.assertEqual(receiver.frame, 0)
+        self.assertNotIn(False, receiver.active)
+        self.assertEqual(receiver.accept(handshake), v.hello(244))
+        self.assertEqual(receiver.accept(control), (0x23, b"x"))
+        self.assertIsNone(receiver.accept(control))
+
     def test_version3_fragments_and_receiver_grant(self):
         body = bytes(range(256)) * 2
         legacy = list(v.fragments(0x1B, 5, body))

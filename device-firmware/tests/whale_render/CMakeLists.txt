@@ -10,7 +10,7 @@ add_executable(whale_render_test test_whale_render.c "${FW}/main/whale_ui.c"
     "${FW}/main/lv_font_cn_12.c" "${FW}/main/lv_font_cn_14.c"
     "${FW}/main/lv_font_cn_16.c" "${FW}/main/lv_font_cn_18.c" "${FW}/main/lv_font_cn_21.c" "${FW}/main/lv_font_cn_64.c")
 target_include_directories(whale_render_test PRIVATE "${FW}/main")
-target_compile_definitions(whale_render_test PRIVATE WHALE_ROOM_PATH="${FW}/main/room.rgb" WHALE_POSES_PATH="${FW}/main/poses.rgb" WHALE_COMPANION_PATH="${FW}/main/companion.rgb" WHALE_OUTFITS_PATH="${FW}/main/outfits.rgb")
+target_compile_definitions(whale_render_test PRIVATE WHALE_ROOM_PATH="${FW}/main/room.rgb" WHALE_POSES_PATH="${FW}/main/poses.rgb" WHALE_COMPANION_PATH="${FW}/main/companion.rgb" WHALE_OUTFITS_PATH="${FW}/main/outfits.rgb" WHALE_ACCESSORIES_PATH="${FW}/main/accessories.rgb")
 target_link_libraries(whale_render_test PRIVATE lvgl)
 if(UNIX)
     target_link_libraries(whale_render_test PRIVATE m)
@@ -22,7 +22,7 @@ add_executable(whale_render render_whale.c "${FW}/main/whale_ui.c"
     "${FW}/main/lv_font_cn_12.c" "${FW}/main/lv_font_cn_14.c"
     "${FW}/main/lv_font_cn_16.c" "${FW}/main/lv_font_cn_18.c" "${FW}/main/lv_font_cn_21.c" "${FW}/main/lv_font_cn_64.c")
 target_include_directories(whale_render PRIVATE "${FW}/main")
-target_compile_definitions(whale_render PRIVATE WHALE_ROOM_PATH="${FW}/main/room.rgb" WHALE_POSES_PATH="${FW}/main/poses.rgb" WHALE_COMPANION_PATH="${FW}/main/companion.rgb" WHALE_OUTFITS_PATH="${FW}/main/outfits.rgb")
+target_compile_definitions(whale_render PRIVATE WHALE_ROOM_PATH="${FW}/main/room.rgb" WHALE_POSES_PATH="${FW}/main/poses.rgb" WHALE_COMPANION_PATH="${FW}/main/companion.rgb" WHALE_OUTFITS_PATH="${FW}/main/outfits.rgb" WHALE_ACCESSORIES_PATH="${FW}/main/accessories.rgb")
 target_link_libraries(whale_render PRIVATE lvgl)
 if(UNIX)
     target_link_libraries(whale_render PRIVATE m)

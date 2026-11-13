@@ -66,3 +66,9 @@ BSP 在 `components/bsp/src/bsp_battery.c` 中嵌入这 80 字节，主机检查
 ## 鲸鱼陪伴 v1.3 素材
 
 已确认的六张姿态与两件咖啡道具存于 `images/companion-v130/`；四个原创 8-bit 音效与四句固定合成语音存于 `music/whale-cues-v130/`。原始图集、生成提示、语音选择及评审记录见 [`design/v1.3.0`](../../design/v1.3.0)。咖啡 PNG 由已评审 SVG 渲染；语音沿用已确认的晓伊合成与离线机械感处理，没有采样游戏角色原声。`tools/make_whale_companion.py` 将这些源素材转换成 Flash 中的 `main/companion.rgb`、`main/cues.pcm` 和偏移表，无需联网即可重建。
+
+## 成就徽章穿戴饰品
+
+[`images/accessories-v180.png`](images/accessories-v180.png) 为 784 × 784 的 PNG RGBA 4 × 4 叠加图集，在 196 × 196 画布上保存四套皮肤（女仆装、见习魔女、长袖睡衣、连帽家居服）对应的四组互斥穿戴饰品图层：镂空镜片金丝眼镜＋星芒领饰（`W1`）、铃兰发饰＋珍珠耳麦（`W2`）、星光尾绶带（`W3`）与怀抱小鲸玩偶（`W4`）。素材基于项目既有形象与皮肤参考生成并在对话中完成评审；角色署名仍见 `LICENSES/ATTRIBUTION.txt`。安装 Pillow 后运行 `python tools/make_whale_accessories.py`，即可将 25 个 4 字节对齐的 RGB565A8 贴片（`main/accessories.rgb` 共 `119,272` 字节）及 `4 × 4 × 10` 姿态族锚点映射（覆盖姿态 `{1, 3, 10, 15, 16, 17, 18, 19, 20, 21}`，趴睡/伏案休息时摘下眼镜与麦克风仅留发饰与尾绶带，手部占用及其他非怀抱姿态将 `W4` 玩偶放在身侧，四套皮肤的主页活动均保持可见）生成至 `main/whale_accessories.h`。
+
+独立身侧玩偶源图 [`images/accessories-v180-plush.png`](images/accessories-v180-plush.png) 使用 imagegen 从现有图集中的蓝色玩偶重建，移除人物双手与衣袖，保留透明背景；沿用本项目角色素材的归属说明。生成器将其裁切并缩放为 42×27 的共用贴片，原有站立怀抱贴片继续保留；不增加 LVGL 对象或动态图片缓冲区。
