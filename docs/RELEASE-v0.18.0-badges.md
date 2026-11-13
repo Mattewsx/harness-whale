@@ -2,8 +2,9 @@
 
 # Badge accessories and logical reconnects
 
-This revision builds on the published standby companion version. Use the
-`feature/desk-companion-upgrade` branch for its matching computer components:
+This revision builds on the published standby companion version and is integrated
+into `main`. Use `main` or the retained `feature/desk-companion-upgrade` branch for
+its matching computer components:
 
 ```text
 python installer/install_companion.py --non-interactive --skip-key

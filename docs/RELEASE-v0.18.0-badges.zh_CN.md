@@ -2,8 +2,8 @@
 
 # 徽章饰品与逻辑重连
 
-本修订基于已公开的待机陪伴版本。对应电脑组件请使用
-`feature/desk-companion-upgrade` 分支，在解压目录运行：
+本修订基于已公开的待机陪伴版本，现已整合到 `main`。对应电脑组件可使用
+`main` 或继续保留的 `feature/desk-companion-upgrade` 开发分支，在解压目录运行：
 
 ```text
 python installer/install_companion.py --non-interactive --skip-key
