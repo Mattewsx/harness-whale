@@ -45,9 +45,11 @@ typedef enum {
     SOUND,
     HOME,
     WARDROBE,
-    BADGES, /* achievement badges and wearable accessories */
-    DESK,   /* desk display: clock, whale and today's summary, entered when idle */
-    STANDBY /* settings: choose the desk display (summary or plain clock) */
+    BADGES,   /* achievement badges and wearable accessories */
+    DESK,     /* desk display: clock, whale and today's summary, entered when idle */
+    STANDBY,  /* settings: choose the desk display (summary or plain clock) */
+    POMODORO, /* focus & break timer */
+    DIARY     /* daily wrap-up mini diary (7-day rolling archive) */
 } whale_page_t;
 
 /* Idle time on the home or task page before the desk display takes over. */
@@ -98,6 +100,7 @@ typedef struct {
     bool audio_busy;       /* a cue or reply is playing */
     bool cues_batching;    /* reminder cues are still being collected */
     bool companion_action; /* a companion reaction is still on screen */
+    bool pomo_active;      /* running or paused pomodoro prevents deep sleep, not screen off */
     bool live_task;        /* a cached row is running or has a question */
     bool invitation;       /* the whale is inviting the user to interact */
     bool cheer;            /* a session finished at cheer_at */

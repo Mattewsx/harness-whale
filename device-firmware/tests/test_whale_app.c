@@ -16,6 +16,9 @@ static size_t stored_room_size;
 static const char *stored_badge_key;
 static uint8_t stored_badge[WHALE_BADGE_BLOB_SIZE];
 static size_t stored_badge_size;
+static const char *stored_diary_key;
+static whale_diary_entry_t stored_diary[WHALE_DIARY_DAYS];
+static size_t stored_diary_size;
 void *xQueueCreate(int x, int y) {
     (void)x;
     (void)y;
@@ -27,7 +30,7 @@ int xQueueReceive(void *q, void *out, int wait) {
     (void)wait;
     return 0;
 }
-static whale_audio_cmd_t *last_cue_capture, *last_badge_capture;
+static whale_audio_cmd_t *last_cue_capture, *last_badge_capture, *last_diary_capture;
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
         if (*(const uint8_t *)in == WHALE_CMD_ROOM_SAVE) {
@@ -40,6 +43,13 @@ int xQueueSend(void *q, const void *in, int wait) {
                 return 0;
             if (last_badge_capture)
                 *last_badge_capture = *(const whale_audio_cmd_t *)in;
+            return 1;
+        }
+        if (*(const uint8_t *)in == WHALE_CMD_DIARY_SAVE) {
+            if (!cue_ok)
+                return 0;
+            if (last_diary_capture)
+                *last_diary_capture = *(const whale_audio_cmd_t *)in;
             return 1;
         }
         assert(wait == 0 && ((*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7) ||
@@ -91,7 +101,8 @@ unsigned uxTaskGetStackHighWaterMark(void *task) {
 int nvs_flash_init(void) { return 0; }
 int64_t esp_timer_get_time(void) { return 0; }
 void whale_pair(bool yes) { (void)yes; }
-bool whale_unbind(void) { return true; }
+static bool unbind_ok = true;
+bool whale_unbind(void) { return unbind_ok; }
 void whale_ble_start(void) {}
 static uint16_t frame_limit = WHALE_FRAME_LEGACY, tx_frame = WHALE_FRAME_LEGACY,
                 hello_frame = WHALE_FRAME_LEGACY;
@@ -157,12 +168,15 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     return send_ok;
 }
 static void setup(void) {
-    room_unsaved = badge_unsaved = previous_window = false;
-    badge_retry_at = 0;
-    stored_room_key = stored_badge_key = NULL;
+    room_unsaved = badge_unsaved = diary_unsaved = previous_window = false;
+    badge_retry_at = diary_retry_at = 0;
+    stored_room_key = stored_badge_key = stored_diary_key = NULL;
     memset(badge_seen_q, 0, sizeof badge_seen_q);
     memset(badge_save_snaps, 0, sizeof badge_save_snaps);
     badge_save_head = 0;
+    memset(diary_save_snaps, 0, sizeof diary_save_snaps);
+    diary_save_head = 0;
+    diary_saved_day = diary_saved_seconds = 0;
     memset(&reminders, 0, sizeof reminders);
     disconnect_pending = false;
     seek_session = 0;
@@ -825,6 +839,7 @@ static void test_random_invitations(void) {
         invitation_room(false); /* manual acceptance works offline too */
         a.invitation = action;
         a.invitation_at = a.now;
+        key(BSP_BTN_UP); /* sessions -> focus -> interaction */
         key(BSP_BTN_UP);
         assert(a.view == HOME && a.dock == 0);
         key(BSP_BTN_OK);
@@ -1012,6 +1027,7 @@ static void test_desk_display(void) {
     enter_desk();
     companion_tick();
     assert(a.view == HOME);
+    key(BSP_BTN_UP); /* sessions -> focus -> interaction */
     key(BSP_BTN_UP);
     key(BSP_BTN_OK);
     companion_tick();
@@ -1795,7 +1811,7 @@ static void test_voice_new_task(void) {
     page(VOICE);
     voice_status(14);
     assert(a.voice_phase == VOICE_PREPARE);
-    /* Holding OK on home starts nothing; the dock keeps three entries. */
+    /* Holding OK on home starts nothing; the dock has four entries. */
     setup();
     a.voice_cap = a.voice_task_cap = true;
     page(HOME);
@@ -2574,7 +2590,7 @@ static uint32_t app_random(void) {
     return (uint32_t)(app_rng >> 32);
 }
 static void app_fuzz_check(uint64_t seed, unsigned step, unsigned action) {
-    bool ok = a.view <= STANDBY && a.count <= 8 && (!a.count || a.selected < a.count) &&
+    bool ok = a.view <= DIARY && a.count <= 8 && (!a.count || a.selected < a.count) &&
               a.scroll >= 0 && a.options <= 3 && a.focus <= 8 &&
               /* The queue only waits on its own priority snapshot. */
               (!queue_next || a.view == LIST_LOAD || a.view == LIST_FAILED) &&
@@ -2690,6 +2706,532 @@ static void test_random_app_events(void) {
         app_fuzz_one(seed, 3000);
 }
 
+static void test_pomodoro_start_flow(void) {
+    const uint32_t durations[] = {15u * 60000u, 30u * 60000u, 60u * 60000u};
+    for (unsigned preset = 0; preset < 3; preset++) {
+        setup();
+        a.view = HOME;
+        a.dock = WHALE_DOCK_FOCUS;
+        key(BSP_BTN_OK);
+        assert(a.view == POMODORO && a.pomo_state == WHALE_POMO_OFF && !a.pomo_time_select);
+        key(BSP_BTN_OK); /* Time opens the separate picker without starting. */
+        assert(a.pomo_time_select && a.pomo_choice == 0);
+        for (unsigned i = 0; i < preset; i++)
+            key(BSP_BTN_DOWN);
+        assert(a.pomo_choice == preset && a.pomo_state == WHALE_POMO_OFF && !a.pomo_rem_ms);
+        key(BSP_BTN_OK | 256); /* Cancel never commits the highlighted duration. */
+        assert(a.view == POMODORO && !a.pomo_time_select && a.pomo_choice == 0 &&
+               a.pomo_preset == 0 && a.pomo_state == WHALE_POMO_OFF && !a.pomo_rem_ms);
+        key(BSP_BTN_OK);
+        assert(a.pomo_time_select && a.pomo_choice == 0);
+        for (unsigned i = 0; i < preset; i++)
+            key(BSP_BTN_DOWN);
+        a.back_focus = true;
+        key(BSP_BTN_OK); /* Parent icon also cancels without starting. */
+        assert(a.view == POMODORO && !a.pomo_time_select && a.pomo_preset == 0 &&
+               a.pomo_state == WHALE_POMO_OFF && !a.pomo_rem_ms);
+        key(BSP_BTN_OK);
+        for (unsigned i = 0; i < preset; i++)
+            key(BSP_BTN_DOWN);
+        key(BSP_BTN_OK); /* The one confirmation starts and returns home. */
+        assert(a.view == HOME && a.dock == WHALE_DOCK_FOCUS && !a.pomo_time_select &&
+               a.pomo_preset == preset && a.pomo_state == WHALE_POMO_FOCUS &&
+               !a.pomo_paused && a.pomo_rem_ms == durations[preset]);
+        a.now += 1000;
+        companion_tick();
+        key(BSP_BTN_OK);
+        assert(a.view == POMODORO && a.pomo_choice == 0 && !a.pomo_paused &&
+               a.pomo_rem_ms == durations[preset] - 1000);
+        key(BSP_BTN_DOWN); /* Stop, then check remembered duration and quick start. */
+        key(BSP_BTN_OK);
+        assert(a.pomo_state == WHALE_POMO_OFF && a.pomo_choice == 1);
+        key(BSP_BTN_UP);
+        key(BSP_BTN_OK);
+        assert(a.pomo_time_select && a.pomo_choice == preset);
+        key(BSP_BTN_OK | 256);
+        key(BSP_BTN_DOWN);
+        key(BSP_BTN_OK); /* Overview Start uses the last successfully started duration. */
+        assert(a.view == HOME && a.pomo_state == WHALE_POMO_FOCUS &&
+               a.pomo_preset == preset && a.pomo_rem_ms == durations[preset]);
+    }
+    puts("Time picker: one confirmation starts 15/30/60m and returns home; cancel, quick start and reentry PASS");
+}
+static void test_pomodoro_paused_power(void) {
+    for (unsigned phase = WHALE_POMO_FOCUS; phase <= WHALE_POMO_BREAK; phase++) {
+        power_reset(false);
+        a.ready = false;
+        a.view = HOME;
+        key(BSP_BTN_UP); /* Focus dock. */
+        key(BSP_BTN_OK);
+        key(BSP_BTN_DOWN); /* Start with the default duration. */
+        key(BSP_BTN_OK);
+        assert(a.view == HOME && a.pomo_state == WHALE_POMO_FOCUS);
+        key(BSP_BTN_OK);
+        if (phase == WHALE_POMO_BREAK) {
+            a.now += a.pomo_rem_ms;
+            companion_tick();
+        }
+        a.now += 1000;
+        companion_tick();
+        key(BSP_BTN_OK); /* Pause through the visible timer control. */
+        uint32_t remaining = a.pomo_rem_ms;
+        assert(a.pomo_state == phase && a.pomo_paused && remaining > 1000);
+
+        a.now += WHALE_POWER_DIM_MS;
+        companion_tick();
+        power_step();
+        assert(screen_applied == WHALE_SCREEN_DIM && !sleep_commands);
+        a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+        companion_tick();
+        power_step();
+        assert(screen_applied == WHALE_SCREEN_OFF && !sleep_commands);
+        a.now += WHALE_POWER_OFFLINE_MS - WHALE_POWER_OFF_MS + 1;
+        companion_tick();
+        power_step();
+        assert(screen_applied == WHALE_SCREEN_OFF && !sleep_requested && !sleep_commands);
+        assert(a.pomo_state == phase && a.pomo_paused && a.pomo_rem_ms == remaining);
+
+        key(BSP_BTN_OK); /* First press wakes; the next resumes the timer. */
+        assert(screen_applied == WHALE_SCREEN_ON && a.pomo_paused);
+        key(BSP_BTN_OK);
+        assert(!a.pomo_paused && a.pomo_tick_at == a.now && a.pomo_rem_ms == remaining);
+        a.now += 1000;
+        companion_tick();
+        assert(a.pomo_state == phase && a.pomo_rem_ms == remaining - 1000);
+        key(BSP_BTN_OK); /* Stop also releases the hold when paused. */
+        assert(a.pomo_paused);
+        key(BSP_BTN_DOWN);
+        key(BSP_BTN_OK);
+        assert(a.pomo_state == WHALE_POMO_OFF && !a.pomo_paused && !a.pomo_rem_ms);
+        a.now += WHALE_POWER_OFFLINE_MS + 1;
+        companion_tick();
+        power_step();
+        assert(screen_applied == WHALE_SCREEN_OFF && sleep_requested && sleep_commands == 1);
+    }
+    power_reset(false); /* Clear the simulated sleep request for the following tests. */
+    puts("Paused focus/break survive offline sleep threshold, dim/off, resume and release sleep on stop PASS");
+}
+
+static void test_pomodoro(void) {
+    setup();
+    a.linked = a.ready = false;
+    a.view = HOME;
+    assert(a.dock == WHALE_DOCK_SESSIONS);
+    key(BSP_BTN_UP);
+    assert(a.dock == WHALE_DOCK_FOCUS);
+    key(BSP_BTN_UP);
+    assert(a.dock == WHALE_DOCK_COMPANION);
+    key(BSP_BTN_DOWN);
+    assert(a.dock == WHALE_DOCK_FOCUS);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && a.pomo_state == WHALE_POMO_OFF && a.pomo_choice == 0);
+
+    /* Diary is available before a timer starts; both return actions lead back to focus. */
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.pomo_choice == 2 && !a.back_focus);
+    key(BSP_BTN_OK);
+    assert(a.view == DIARY && a.pomo_state == WHALE_POMO_OFF);
+    key(BSP_BTN_OK | 256);
+    assert(a.view == POMODORO && a.pomo_choice == 2);
+    key(BSP_BTN_OK);
+    assert(a.view == DIARY);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && a.pomo_choice == 2);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    assert(a.pomo_choice == 0 && !a.back_focus);
+
+    key(BSP_BTN_OK); /* Time */
+    key(BSP_BTN_DOWN); /* 30m, long enough for the screen-off lifecycle below. */
+    /* Confirmation starts 30m and returns home, with no second Start action.
+     * Verify 2m dim/5m screen off while offline deep sleep remains held off. */
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && a.pomo_state == WHALE_POMO_FOCUS && !a.pomo_paused &&
+           a.pomo_rem_ms == 30u * 60000u);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && !a.pomo_paused);
+    a.now += WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_DIM);
+    a.now += WHALE_POWER_OFF_MS - WHALE_POWER_DIM_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF);
+    a.now += WHALE_POWER_OFFLINE_MS;
+    power_step();
+    assert(!sleep_requested);
+
+    /* Pause and resume keeps remaining time accurate. */
+    key(BSP_BTN_OK); /* wakes screen first */
+    assert(screen_applied == WHALE_SCREEN_ON && !a.pomo_paused);
+    companion_tick();
+    uint32_t before_pause = a.pomo_rem_ms;
+    key(BSP_BTN_OK); /* choice 0 = pause */
+    assert(a.pomo_paused);
+    a.now += 60000u;
+    companion_tick();
+    assert(a.pomo_rem_ms == before_pause);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.view == DIARY && a.pomo_paused);
+    a.now += 1000;
+    companion_tick();
+    key(BSP_BTN_OK | 256);
+    assert(a.view == POMODORO && a.pomo_choice == 2 && a.pomo_paused &&
+           a.pomo_rem_ms == before_pause);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK); /* choice 0 = resume */
+    assert(!a.pomo_paused && a.pomo_tick_at == a.now);
+
+    uint32_t before_diary = a.pomo_rem_ms;
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.view == DIARY && a.pomo_state == WHALE_POMO_FOCUS && !a.pomo_paused);
+    a.now += 1000;
+    companion_tick();
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && a.pomo_choice == 2 &&
+           a.pomo_rem_ms == before_diary - 1000);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP);
+    assert(a.pomo_choice == 0);
+
+    /* Returning home and reopening focus never restarts or stops the timer. */
+    uint32_t remaining = a.pomo_rem_ms;
+    key(BSP_BTN_OK | 256);
+    assert(a.view == HOME && a.dock == WHALE_DOCK_FOCUS &&
+           a.pomo_state == WHALE_POMO_FOCUS && !a.pomo_paused);
+    a.now += 1000;
+    companion_tick();
+    assert(a.pomo_rem_ms == remaining - 1000);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && a.pomo_choice == 0 && !a.back_focus);
+    key(BSP_BTN_UP); /* parent icon */
+    assert(a.back_focus);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && a.dock == WHALE_DOCK_FOCUS &&
+           a.pomo_rem_ms == remaining - 1000);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && !a.back_focus);
+
+    /* Finish focus while screen is off: wakes screen, plays cue, increments pomo_today & bond,
+     * and transitions to 5m break. */
+    a.now += WHALE_POWER_OFF_MS;
+    power_step();
+    assert(screen_applied == WHALE_SCREEN_OFF);
+    uint8_t bond_before = a.bond;
+    a.now += a.pomo_rem_ms;
+    companion_tick();
+    power_step();
+    assert(a.pomo_state == WHALE_POMO_BREAK && a.pomo_today == 1 && a.pomo_alert == 1 &&
+           a.bond == bond_before + 1 && screen_applied == WHALE_SCREEN_ON);
+
+    /* Break finishes -> returns to OFF with break-done alert, then clears after WHALE_CELEBRATE_MS. */
+    a.pomo_choice = 2;
+    key(BSP_BTN_OK);
+    assert(a.view == DIARY && a.pomo_state == WHALE_POMO_BREAK);
+    a.now += a.pomo_rem_ms;
+    companion_tick();
+    assert(a.pomo_state == WHALE_POMO_OFF && a.pomo_alert == 2);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && a.pomo_choice == 2);
+    a.now += WHALE_CELEBRATE_MS;
+    companion_tick();
+    assert(a.pomo_alert == 0);
+
+    /* Stop mid-focus cancels timer cleanly. */
+    a.pomo_preset = 1; /* selected 30m */
+    a.pomo_choice = 1; /* overview Start */
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && a.pomo_state == WHALE_POMO_FOCUS && a.pomo_rem_ms == 30u * 60000u);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO);
+    key(BSP_BTN_DOWN); /* choice 1 = stop */
+    key(BSP_BTN_OK);
+    assert(a.pomo_state == WHALE_POMO_OFF && a.pomo_rem_ms == 0);
+    puts("Pomodoro focus/break timer, screen-off power policy and cues PASS");
+}
+
+static void test_diary(void) {
+    setup();
+    a.worn = 4;
+    a.worn_acc = 2;
+    /* Record 8 consecutive work days -> keeps newest 7 days sorted newest-first. */
+    for (uint32_t d = 100; d <= 107; d++)
+        diary_touch(d, (uint16_t)(d - 99), (d - 99) * 1800u, (uint8_t)(d - 99),
+                    d == 107 ? 0x20u : 0u);
+    assert(a.diary_count == WHALE_DIARY_DAYS);
+    assert(a.diary[0].day == 107 && a.diary[6].day == 101 && diary_unsaved);
+
+    /* Immutable snapshot slots: queue cmd_1 BEFORE producing cmd_2 -> cmd_1 stays intact! */
+    whale_audio_cmd_t cmd_1 = {0}, cmd_2 = {0};
+    last_diary_capture = &cmd_1;
+    companion_tick();
+    assert(!diary_unsaved && cmd_1.kind == WHALE_CMD_DIARY_SAVE);
+    diary_touch(107, 9, 8 * 1800u, 8, 0x20u);
+    last_diary_capture = &cmd_2;
+    companion_tick();
+    assert(!diary_unsaved && cmd_2.kind == WHALE_CMD_DIARY_SAVE && cmd_2.mode != cmd_1.mode);
+    last_diary_capture = NULL;
+    assert(diary_save_snaps[cmd_1.mode][0].done == 8 &&
+           diary_save_snaps[cmd_2.mode][0].done == 9);
+
+    /* Incremental 30s updates must trigger save once cumulative delta >= 300s from saved baseline! */
+    for (unsigned step = 1; step <= 9; step++) {
+        diary_touch(107, 9, 8 * 1800u + step * 30u, 8, 0x20u);
+        assert(!diary_unsaved);
+    }
+    diary_touch(107, 9, 8 * 1800u + 300u, 8, 0x20u);
+    assert(diary_unsaved);
+
+    /* NVS write failure (event 94) retries after 5s backoff and persists across cold boot. */
+    last_diary_capture = &cmd_2;
+    companion_tick();
+    assert(!diary_unsaved);
+    service((whale_event_t){.kind = 94});
+    assert(diary_unsaved);
+    companion_tick();
+    assert(diary_unsaved);
+    a.now += 5000;
+    companion_tick();
+    assert(!diary_unsaved);
+    last_diary_capture = NULL;
+
+    whale_diary_entry_t persisted[WHALE_DIARY_DAYS];
+    memcpy(persisted, diary_save_snaps[cmd_2.mode], sizeof persisted);
+
+    /* Cold boot restores diary AND today's pomo count when clock matches, then 3->4 works! */
+    setup();
+    int64_t day0 = 1793750400LL; /* 2026-11-04 00:00 UTC */
+    wall_clock(a.epoch, day0 + 12 * 3600, 0);
+    uint32_t today_wd = 0;
+    assert(whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &today_wd));
+    persisted[0].day = today_wd;
+    persisted[0].pomo = 3;
+    stored_diary_key = "diary_v1";
+    memcpy(stored_diary, persisted, sizeof stored_diary);
+    stored_diary_size = sizeof stored_diary;
+    diary_load();
+    assert(a.diary_count == WHALE_DIARY_DAYS && a.pomo_today == 3 && a.pomo_day == today_wd);
+
+    /* Complete one more pomodoro -> increments 3 -> 4 and updates diary[0].pomo = 4! */
+    a.view = POMODORO;
+    a.pomo_choice = 1; /* overview Start */
+    key(BSP_BTN_OK);
+    a.now += a.pomo_rem_ms;
+    last_diary_capture = &cmd_2;
+    companion_tick();
+    assert(a.pomo_today == 4 && a.diary[0].pomo == 4 && !diary_unsaved &&
+           diary_save_snaps[cmd_2.mode][0].pomo == 4);
+    last_diary_capture = NULL;
+
+    /* Offline wardrobe & badge accessory change updates today's diary flags & schedules save. */
+    diary_unsaved = false;
+    a.unlocked = 14;
+    a.view = WARDROBE;
+    a.outfit_choice = 2; /* switches from skin 2 to skin 1 */
+    key(BSP_BTN_OK);
+    assert(diary_unsaved && (a.diary[0].flags & 3u) == 1u);
+    diary_unsaved = false;
+    a.badges = 1;
+    a.view = BADGES;
+    a.badge_choice = 0;
+    key(BSP_BTN_OK);
+    assert(diary_unsaved && ((a.diary[0].flags >> 2) & 7u) == 4u);
+
+    /* Real unbind path (unbind_step): a failed unbind keeps everything and shows the error. */
+    diary_touch(today_wd, 0, 0, 4, 0);
+    diary_unsaved = true; /* an unsaved change is pending across the unbind */
+    whale_diary_entry_t before_unbind[WHALE_DIARY_DAYS];
+    memcpy(before_unbind, a.diary, sizeof before_unbind);
+    unbind_ok = false;
+    a.view = UNBINDING;
+    unbind_at = a.now - 500u;
+    unbind_step();
+    assert(a.view == UNBIND_FAILED && a.diary_count == WHALE_DIARY_DAYS && a.pomo_today == 4);
+    unbind_ok = true;
+
+    /* Successful unbind clears the session state (epoch, rows) but keeps the diary
+     * byte-for-byte, today's tally and the pending save. */
+    a.view = UNBINDING;
+    unbind_at = a.now - 500u;
+    unbind_step();
+    assert(a.view == HOME && a.epoch == 0 && a.count == 0);
+    assert(a.diary_count == WHALE_DIARY_DAYS && !memcmp(a.diary, before_unbind, sizeof a.diary));
+    assert(a.pomo_today == 4 && a.pomo_day == today_wd && a.work_day == today_wd);
+    assert(diary_unsaved);
+    /* The next save after unbinding carries all 7 days, then a reboot restores them. */
+    a.now = 900000u;
+    whale_audio_cmd_t after_unbind = {0};
+    last_diary_capture = &after_unbind;
+    companion_tick();
+    last_diary_capture = NULL;
+    assert(!diary_unsaved && after_unbind.kind == WHALE_CMD_DIARY_SAVE);
+    assert(!memcmp(diary_save_snaps[after_unbind.mode], before_unbind, sizeof before_unbind));
+    whale_diary_entry_t unbind_saved[WHALE_DIARY_DAYS];
+    memcpy(unbind_saved, diary_save_snaps[after_unbind.mode], sizeof unbind_saved);
+    setup();
+    wall_clock(a.epoch, day0 + 12 * 3600, 0);
+    stored_diary_key = "diary_v1";
+    memcpy(stored_diary, unbind_saved, sizeof stored_diary);
+    stored_diary_size = sizeof stored_diary;
+    diary_load();
+    assert(a.diary_count == WHALE_DIARY_DAYS && a.pomo_today == 4 &&
+           a.diary[WHALE_DIARY_DAYS - 1].day == unbind_saved[WHALE_DIARY_DAYS - 1].day);
+
+    /* Workday rollover (05:00 next day) resets pomo_today to 0 and keeps previous day archived. */
+    wall_clock(a.epoch, day0 + 86400 + 12 * 3600, 0);
+    clock_step();
+    assert(a.work_day == today_wd + 1u && a.pomo_today == 0);
+
+    /* Navigation on DIARY: gap day shows today's empty slot [0] + archived days [1..7]. */
+    a.view = HOME;
+    a.dock = WHALE_DOCK_FOCUS;
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO);
+    a.pomo_choice = 2;
+    key(BSP_BTN_OK);
+    assert(a.view == DIARY && a.diary_choice == 0);
+    key(BSP_BTN_DOWN);
+    assert(a.diary_choice == 1);
+    key(BSP_BTN_OK);
+    assert(a.view == POMODORO && a.pomo_choice == 2);
+    puts("Daily wrap-up mini diary 7-day NVS archive, retry and navigation PASS");
+}
+
+/* Boot with today's record but no clock, finish rounds offline, then sync. */
+static void diary_boot_unsynced(const whale_diary_entry_t *stored, unsigned count) {
+    setup();
+    memset(stored_diary, 0, sizeof stored_diary);
+    memcpy(stored_diary, stored, count * sizeof *stored);
+    stored_diary_key = "diary_v1";
+    stored_diary_size = sizeof stored_diary;
+    diary_load();
+    assert(!a.work_day_valid && a.pomo_today == 0 && a.pomo_day == 0);
+}
+static void diary_finish_offline_round(void) {
+    a.view = POMODORO;
+    a.pomo_state = WHALE_POMO_OFF;
+    a.pomo_preset = 0; /* 15 min */
+    a.pomo_choice = 1; /* overview Start */
+    key(BSP_BTN_OK);
+    a.now += a.pomo_rem_ms;
+    companion_tick(); /* focus -> break */
+    a.now += a.pomo_rem_ms;
+    companion_tick(); /* break -> off */
+    assert(a.pomo_state == WHALE_POMO_OFF);
+}
+/* Only normal ticks and queue draining: the merged tally must reach NVS by itself. */
+static void diary_drain(whale_diary_entry_t out[WHALE_DIARY_DAYS]) {
+    whale_audio_cmd_t cmd = {0};
+    last_diary_capture = &cmd;
+    for (unsigned i = 0; i < 3; i++) {
+        a.now += 1000;
+        clock_step();
+        companion_tick();
+    }
+    last_diary_capture = NULL;
+    assert(!diary_unsaved && cmd.kind == WHALE_CMD_DIARY_SAVE);
+    memcpy(out, diary_save_snaps[cmd.mode], WHALE_DIARY_DAYS * sizeof *out);
+}
+static void test_diary_clock_merge(void) {
+    const int64_t noon = 1793750400LL + 12 * 3600; /* 2026-11-04 12:00 UTC */
+    whale_clock_t probe = {0};
+    uint32_t today = 0, rtc = rtc_seconds();
+    assert(whale_clock_sync(&probe, rtc, noon, 0) && whale_clock_work_day(&probe, rtc, &today));
+    whale_diary_entry_t saved[WHALE_DIARY_DAYS];
+
+    /* 1) Stored today = 3 -> one offline round -> clock sync -> diary and NVS = 4. */
+    whale_diary_entry_t base[2] = {{.day = today, .done = 2, .seconds = 600, .pomo = 3},
+                                   {.day = today - 3, .done = 1, .seconds = 60, .pomo = 1}};
+    diary_boot_unsynced(base, 2);
+    diary_finish_offline_round();
+    assert(a.pomo_today == 1 && a.diary[0].pomo == 3); /* undated until the clock arrives */
+    wall_clock(a.epoch, noon, 0);
+    assert(a.pomo_today == 4 && a.diary[0].day == today && a.diary[0].pomo == 4 && diary_unsaved);
+    diary_drain(saved);
+    assert(saved[0].day == today && saved[0].pomo == 4 && saved[1].day == today - 3);
+    /* Repeated syncs never add the offline round again. */
+    wall_clock(a.epoch, noon + 60, 0);
+    wall_clock(a.epoch, noon + 120, 0);
+    clock_step();
+    assert(a.pomo_today == 4 && a.diary[0].pomo == 4 && !diary_unsaved);
+    /* Reboot: still 4. */
+    setup();
+    wall_clock(a.epoch, noon + 180, 0);
+    memcpy(stored_diary, saved, sizeof stored_diary);
+    stored_diary_key = "diary_v1";
+    stored_diary_size = sizeof stored_diary;
+    diary_load();
+    assert(a.pomo_today == 4 && a.diary[0].pomo == 4);
+
+    /* 2) No record for today (only an older day): the merge creates today's entry. */
+    whale_diary_entry_t old_only[1] = {{.day = today - 10, .done = 5, .seconds = 3600, .pomo = 2}};
+    diary_boot_unsynced(old_only, 1);
+    diary_finish_offline_round();
+    diary_finish_offline_round();
+    wall_clock(a.epoch, noon, 0);
+    assert(a.pomo_today == 2 && a.diary_count == 2 && a.diary[0].day == today &&
+           a.diary[0].pomo == 2 && a.diary[1].day == today - 10 && a.diary[1].pomo == 2);
+    diary_drain(saved);
+    assert(saved[0].day == today && saved[0].pomo == 2 && saved[1].pomo == 2);
+
+    /* 3) 99 cap: stored 98 + 3 offline rounds clamps to 99 in memory and NVS. */
+    whale_diary_entry_t near_cap[1] = {{.day = today, .pomo = 98}};
+    diary_boot_unsynced(near_cap, 1);
+    for (unsigned i = 0; i < 3; i++)
+        diary_finish_offline_round();
+    wall_clock(a.epoch, noon, 0);
+    assert(a.pomo_today == 99 && a.diary[0].pomo == 99);
+    diary_drain(saved);
+    assert(saved[0].pomo == 99);
+
+    /* 4) Work-day boundary: 04:59 belongs to yesterday's work day, 05:00 to today. */
+    const int64_t before_five = 1793750400LL + 4 * 3600 + 59 * 60 + 59; /* 04:59:59 */
+    whale_diary_entry_t yesterday[1] = {{.day = today - 1, .pomo = 5}};
+    diary_boot_unsynced(yesterday, 1);
+    diary_finish_offline_round();
+    wall_clock(a.epoch, before_five, 0);
+    assert(a.work_day == today - 1 && a.pomo_today == 6 && a.diary[0].pomo == 6);
+    diary_drain(saved);
+    assert(saved[0].day == today - 1 && saved[0].pomo == 6);
+    wall_clock(a.epoch, before_five + 1, 0); /* 05:00:00 */
+    assert(a.work_day == today && a.pomo_today == 0 && a.diary[0].day == today - 1);
+
+    /* 5) Queue full: the save stays pending, earlier snapshots are untouched, and it
+     * goes out once the queue accepts again; slots cycle through all 9. */
+    setup();
+    wall_clock(a.epoch, noon, 0);
+    diary_touch(today, 1, 0, 1, 0);
+    whale_audio_cmd_t first = {0};
+    last_diary_capture = &first;
+    companion_tick();
+    whale_diary_entry_t first_copy[WHALE_DIARY_DAYS];
+    memcpy(first_copy, diary_save_snaps[first.mode], sizeof first_copy);
+    cue_ok = false;
+    for (unsigned i = 2; i < 30; i++) {
+        diary_touch(today, (uint16_t)i, 0, 1, 0);
+        companion_tick();
+        assert(diary_unsaved);
+    }
+    assert(!memcmp(diary_save_snaps[first.mode], first_copy, sizeof first_copy));
+    cue_ok = true;
+    uint8_t seen = 0;
+    for (unsigned i = 0; i < 2 * WHALE_DIARY_SNAP_SLOTS; i++) {
+        diary_touch(today, (uint16_t)(100 + i), 0, 1, 0);
+        companion_tick();
+        assert(!diary_unsaved && diary_save_snaps[first.mode][0].done == 100 + i);
+        seen |= (uint8_t)(1u << (first.mode % 8));
+    }
+    last_diary_capture = NULL;
+    assert(diary_save_head < WHALE_DIARY_SNAP_SLOTS && seen == 0xff);
+    puts("Diary deferred clock merge, repeat sync, 99 cap, work-day boundary, queue-full and slot "
+         "cycling PASS");
+}
+
 int main(void) {
     test_random_invitations();
     test_voice_new_task();
@@ -2717,6 +3259,11 @@ int main(void) {
     test_pending_queue();
     test_feelings();
     test_badges_and_wearables();
+    test_pomodoro_start_flow();
+    test_pomodoro_paused_power();
+    test_pomodoro();
+    test_diary();
+    test_diary_clock_merge();
     test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");
@@ -2763,6 +3310,10 @@ bool whale_blob_load(const char *key, void *data, size_t size) {
     }
     if (stored_badge_key && !strcmp(key, stored_badge_key) && size == stored_badge_size) {
         memcpy(data, stored_badge, size);
+        return true;
+    }
+    if (stored_diary_key && !strcmp(key, stored_diary_key) && size == stored_diary_size) {
+        memcpy(data, stored_diary, size);
         return true;
     }
     return false;

@@ -41,6 +41,7 @@ static char title_prefix[73];
 #define WHALE_CMD_ROOM_SAVE 8
 #define WHALE_CMD_STANDBY_SAVE 9
 #define WHALE_CMD_BADGE_SAVE 10
+#define WHALE_CMD_DIARY_SAVE 11
 /* Bond earned per local day from all sources. Without a synced clock the
  * day never rolls over, so the count keeps limiting until the next sync.
  * Companion taps add at most WHALE_BOND_TAP_MAX of it;
@@ -55,8 +56,12 @@ static char title_prefix[73];
 #define WHALE_UNLOCK_WITCH 20
 #define WHALE_UNLOCK_PAJAMAS 40
 #define WHALE_UNLOCK_LOUNGE 60
-static bool room_unsaved, badge_unsaved, previous_window;
-static uint32_t save_retry_at, badge_retry_at;
+static bool room_unsaved, badge_unsaved, diary_unsaved, previous_window;
+static uint32_t save_retry_at, badge_retry_at, diary_retry_at;
+#define WHALE_DIARY_SNAP_SLOTS 9
+static whale_diary_entry_t diary_save_snaps[WHALE_DIARY_SNAP_SLOTS][WHALE_DIARY_DAYS];
+static uint8_t diary_save_head;
+static uint32_t diary_saved_day, diary_saved_seconds;
 #define WHALE_BADGE_SEEN_MAX 10
 #define WHALE_BADGE_ID_LEN 20
 #define WHALE_BADGE_BLOB_V1_LEGACY 6
@@ -489,6 +494,7 @@ static whale_director_in_t director_in(void) {
         .audio_busy = whale_audio_busy(),
         .cues_batching = reminders.batching,
         .companion_action = a.companion_action != 0,
+        .pomo_active = a.pomo_state != WHALE_POMO_OFF,
         .invitation = a.invitation != 0,
         .cheer = a.cheer,
         .cheer_at = a.cheer_at,
@@ -824,6 +830,86 @@ static void badge_load(void) {
     }
     badge_sync_acc();
 }
+static uint8_t diary_skin_bits(void) {
+    return a.worn & 8 ? 3u : a.worn & 4 ? 2u : a.worn & 2 ? 1u : 0u;
+}
+static void diary_touch(uint32_t day, uint16_t done, uint32_t seconds, uint8_t pomo,
+                        uint8_t extra_flags) {
+    if (!day)
+        return;
+    uint8_t flags = (uint8_t)((diary_skin_bits() & 3u) | ((a.worn_acc & 7u) << 2) |
+                              (extra_flags & 0xe0u));
+    int idx = -1;
+    for (unsigned i = 0; i < a.diary_count && i < WHALE_DIARY_DAYS; i++) {
+        if (a.diary[i].day == day) {
+            idx = (int)i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        if (a.diary_count && day < a.diary[0].day)
+            return;
+        unsigned move = a.diary_count < WHALE_DIARY_DAYS ? a.diary_count : WHALE_DIARY_DAYS - 1u;
+        if (move)
+            memmove(&a.diary[1], &a.diary[0], move * sizeof a.diary[0]);
+        a.diary[0] = (whale_diary_entry_t){
+            .day = day, .done = done, .seconds = seconds, .pomo = pomo, .flags = flags};
+        if (a.diary_count < WHALE_DIARY_DAYS)
+            a.diary_count++;
+        diary_unsaved = true;
+        return;
+    }
+    whale_diary_entry_t *e = &a.diary[idx];
+    uint16_t ndone = done > e->done ? done : e->done;
+    uint32_t nsec = seconds > e->seconds ? seconds : e->seconds;
+    uint8_t npomo = pomo > e->pomo ? pomo : e->pomo;
+    uint8_t nflags = (uint8_t)((e->flags & 0xe0u) | flags);
+    bool sec_due = e->day != diary_saved_day || nsec >= diary_saved_seconds + 300u;
+    bool major = ndone != e->done || npomo != e->pomo || nflags != e->flags || sec_due;
+    e->done = ndone;
+    e->seconds = nsec;
+    e->pomo = npomo;
+    e->flags = nflags;
+    if (major)
+        diary_unsaved = true;
+}
+static void diary_touch_today(uint8_t extra_flags) {
+    uint32_t day = 0;
+    if (!whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &day))
+        return;
+    a.work_day_valid = true;
+    a.work_day = day;
+    diary_touch(day, a.summary_stale ? 0 : a.summary_done,
+                a.summary_stale ? 0 : a.summary_seconds, a.pomo_today, extra_flags);
+}
+static void diary_load(void) {
+    memset(a.diary, 0, sizeof a.diary);
+    a.diary_count = 0;
+    diary_saved_day = diary_saved_seconds = 0;
+    if (whale_blob_load("diary_v1", a.diary, sizeof a.diary)) {
+        for (unsigned i = 0; i < WHALE_DIARY_DAYS; i++) {
+            if (!a.diary[i].day)
+                break;
+            a.diary_count++;
+        }
+        if (a.diary_count) {
+            diary_saved_day = a.diary[0].day;
+            diary_saved_seconds = a.diary[0].seconds;
+        }
+    }
+    uint32_t work_day = 0;
+    if (whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day)) {
+        a.work_day_valid = true;
+        a.work_day = work_day;
+        for (unsigned i = 0; i < a.diary_count; i++) {
+            if (a.diary[i].day == work_day) {
+                a.pomo_today = a.diary[i].pomo;
+                a.pomo_day = work_day;
+                break;
+            }
+        }
+    }
+}
 static void invitation_tick(bool idle) {
     bool quiet = idle && !dim && !a.night && !whale_voice_busy() && !whale_voice_pending();
     if (a.invitation) {
@@ -874,7 +960,68 @@ static void invitation_tick(bool idle) {
     a.invitation_cooling = true;
     dirty = true;
 }
+static const uint32_t pomo_focus_ms[3] = {15u * 60000u, 30u * 60000u, 60u * 60000u};
+static const uint32_t pomo_break_ms[3] = {5u * 60000u, 5u * 60000u, 10u * 60000u};
+/* Both explicit start actions share the same timer and navigation transition. */
+static void pomo_start(uint8_t preset) {
+    a.pomo_preset = preset < 3 ? preset : 0;
+    a.pomo_time_select = false;
+    a.pomo_state = WHALE_POMO_FOCUS;
+    a.pomo_paused = false;
+    a.pomo_rem_ms = pomo_focus_ms[a.pomo_preset];
+    a.pomo_tick_at = a.now;
+    a.pomo_alert = 0;
+    a.pomo_choice = 0;
+    a.dock = WHALE_DOCK_FOCUS;
+    page(HOME);
+}
+static void pomo_step(void) {
+    if (a.pomo_alert && a.now - a.pomo_alert_at >= WHALE_CELEBRATE_MS) {
+        a.pomo_alert = 0;
+        dirty = true;
+    }
+    if (a.pomo_state == WHALE_POMO_OFF || a.pomo_paused)
+        return;
+    uint32_t dt = a.now - a.pomo_tick_at;
+    a.pomo_tick_at = a.now;
+    if (dt < a.pomo_rem_ms) {
+        if (dt / 1000u || (a.pomo_rem_ms - dt) / 1000u != a.pomo_rem_ms / 1000u)
+            dirty = true;
+        a.pomo_rem_ms -= dt;
+        return;
+    }
+    uint8_t preset = a.pomo_preset < 3 ? a.pomo_preset : 0;
+    if (a.pomo_state == WHALE_POMO_FOCUS) {
+        uint32_t work_day = 0;
+        if (whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day))
+            a.pomo_day = work_day;
+        if (a.pomo_today < 99)
+            a.pomo_today++;
+        bond_gain(1);
+        if (a.pomo_day)
+            diary_touch(a.pomo_day, a.summary_stale ? 0 : a.summary_done,
+                        a.summary_stale ? 0 : a.summary_seconds, a.pomo_today,
+                        a.night ? 0x20u : 0u);
+        a.pomo_state = WHALE_POMO_BREAK;
+        a.pomo_rem_ms = pomo_break_ms[preset];
+        a.pomo_tick_at = a.now;
+        a.pomo_alert = 1;
+        a.pomo_alert_at = a.now;
+        whale_power_input(&power, a.now);
+        queue_cue(3);
+    } else {
+        a.pomo_state = WHALE_POMO_OFF;
+        a.pomo_rem_ms = 0;
+        a.pomo_choice = 1;
+        a.pomo_alert = 2;
+        a.pomo_alert_at = a.now;
+        whale_power_input(&power, a.now);
+        queue_cue(2);
+    }
+    dirty = true;
+}
 static void companion_tick(void) {
+    pomo_step();
     if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
         a.companion_action = 0;
         a.companion_invited = false;
@@ -911,6 +1058,19 @@ static void companion_tick(void) {
         if (xQueueSend(cues, &cmd, 0) == pdTRUE) {
             badge_save_head = (uint8_t)((slot + 1u) % WHALE_BADGE_SNAP_SLOTS);
             badge_unsaved = false;
+        }
+    }
+    if (diary_unsaved && cues && (int32_t)(a.now - diary_retry_at) >= 0) {
+        uint8_t slot = (uint8_t)(diary_save_head % WHALE_DIARY_SNAP_SLOTS);
+        memcpy(diary_save_snaps[slot], a.diary, sizeof diary_save_snaps[slot]);
+        whale_audio_cmd_t cmd = {WHALE_CMD_DIARY_SAVE, slot, 0};
+        if (xQueueSend(cues, &cmd, 0) == pdTRUE) {
+            diary_save_head = (uint8_t)((slot + 1u) % WHALE_DIARY_SNAP_SLOTS);
+            diary_unsaved = false;
+            if (a.diary_count) {
+                diary_saved_day = a.diary[0].day;
+                diary_saved_seconds = a.diary[0].seconds;
+            }
         }
     }
     if (a.view == HOME && a.now - a.activity_at >= 9000) {
@@ -1284,10 +1444,15 @@ static void key(uint32_t code) {
         if (hold)
             return;
         if (direction)
-            a.dock = (a.dock + direction + 3) % 3;
-        else if (a.dock == 0)
+            a.dock = whale_dock_order[(whale_dock_slot(a.dock) + direction + WHALE_DOCK_COUNT) %
+                                      WHALE_DOCK_COUNT];
+        else if (a.dock == WHALE_DOCK_COMPANION)
             enter_companion();
-        else if (a.dock == 1)
+        else if (a.dock == WHALE_DOCK_FOCUS) {
+            a.pomo_time_select = false;
+            a.pomo_choice = 0;
+            page(POMODORO);
+        } else if (a.dock == WHALE_DOCK_SESSIONS)
             open_list();
         else {
             a.menu_choice = 0;
@@ -1295,24 +1460,42 @@ static void key(uint32_t code) {
         }
         return;
     }
-    if (a.view == COMPANION || a.view == WARDROBE || a.view == BADGES || a.view == MANAGE ||
-        a.view == SOUND || a.view == STANDBY) {
+    if (a.view == COMPANION || a.view == WARDROBE || a.view == BADGES || a.view == POMODORO ||
+        a.view == DIARY || a.view == MANAGE || a.view == SOUND || a.view == STANDBY) {
         if (hold) {
-            if (k == BSP_BTN_OK && a.view == COMPANION)
+            if (k == BSP_BTN_OK && (a.view == COMPANION || a.view == POMODORO)) {
+                if (a.view == POMODORO && a.pomo_time_select) {
+                    a.pomo_time_select = false;
+                    a.pomo_choice = 0;
+                    page(POMODORO);
+                    return;
+                }
+                if (a.view == POMODORO)
+                    a.dock = WHALE_DOCK_FOCUS;
                 page(HOME);
-            else if (k == BSP_BTN_OK && a.view == BADGES)
+            } else if (k == BSP_BTN_OK && a.view == DIARY) {
+                a.pomo_time_select = false;
+                a.pomo_choice = 2;
+                page(POMODORO);
+            } else if (k == BSP_BTN_OK && a.view == BADGES)
                 page(COMPANION);
             return;
         }
         if (a.companion_action)
             return;
-        unsigned count = a.view == COMPANION                 ? 6
-                         : a.view == BADGES                  ? WHALE_BADGE_COUNT
+        bool diary_gap = a.work_day_valid && (!a.diary_count || a.diary[0].day != a.work_day);
+        unsigned diary_slots = diary_gap ? (unsigned)a.diary_count + 1u : (a.diary_count ? a.diary_count : 1u);
+        unsigned count = a.view == COMPANION                  ? 6
+                         : a.view == BADGES                   ? WHALE_BADGE_COUNT
+                         : a.view == POMODORO                 ? 3u
+                         : a.view == DIARY                    ? diary_slots
                          : a.view == SOUND || a.view == STANDBY ? 2
-                                                             : 4;
+                                                              : 4;
         uint8_t *choice = a.view == COMPANION  ? &a.companion_choice
                           : a.view == WARDROBE ? &a.outfit_choice
                           : a.view == BADGES   ? &a.badge_choice
+                          : a.view == POMODORO ? &a.pomo_choice
+                          : a.view == DIARY    ? &a.diary_choice
                           : a.view == SOUND    ? &a.sound_choice
                           : a.view == STANDBY  ? &a.standby_choice
                                                : &a.menu_choice;
@@ -1324,10 +1507,48 @@ static void key(uint32_t code) {
             a.locked_notice = false;
             if (a.view == BADGES)
                 badge_clear_visible();
-        } else if (a.back_focus) {
-            page(a.view == WARDROBE || a.view == BADGES ? COMPANION
+        } else if (a.back_focus || a.view == DIARY) {
+            if (a.view == POMODORO && a.pomo_time_select) {
+                a.pomo_time_select = false;
+                a.pomo_choice = 0;
+                page(POMODORO);
+                return;
+            }
+            if (a.view == POMODORO)
+                a.dock = WHALE_DOCK_FOCUS;
+            if (a.view == DIARY) {
+                a.pomo_time_select = false;
+                a.pomo_choice = 2;
+            }
+            page(a.view == DIARY ? POMODORO
+                 : a.view == WARDROBE || a.view == BADGES
+                     ? COMPANION
                  : a.view == SOUND || a.view == STANDBY ? MANAGE
                                                         : HOME);
+        } else if (a.view == POMODORO) {
+            if (a.pomo_state == WHALE_POMO_OFF && a.pomo_time_select) {
+                pomo_start(*choice);
+            } else if (*choice == 2) {
+                a.diary_choice = 0;
+                page(DIARY);
+            } else if (a.pomo_state == WHALE_POMO_OFF) {
+                if (*choice == 0) {
+                    a.pomo_time_select = true;
+                    a.pomo_choice = a.pomo_preset < 3 ? a.pomo_preset : 0;
+                    page(POMODORO);
+                    return;
+                }
+                pomo_start(a.pomo_preset);
+            } else if (*choice == 0) {
+                a.pomo_paused = !a.pomo_paused;
+                a.pomo_tick_at = a.now;
+            } else {
+                a.pomo_state = WHALE_POMO_OFF;
+                a.pomo_paused = false;
+                a.pomo_rem_ms = 0;
+                a.pomo_alert = 0;
+                a.pomo_choice = 1;
+            }
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
                 a.outfit_choice = a.worn & 8 ? 3 : a.worn & 4 ? 2 : a.worn & 2 ? 1 : 0;
@@ -1384,6 +1605,7 @@ static void key(uint32_t code) {
             }
             a.locked_notice = false;
             room_unsaved = true;
+            diary_touch_today(0);
         } else if (a.view == BADGES) {
             uint8_t bit = 1u << *choice;
             if (!(a.badges & bit)) {
@@ -1394,6 +1616,7 @@ static void key(uint32_t code) {
             badge_sync_acc();
             a.locked_notice = false;
             badge_unsaved = true;
+            diary_touch_today(0);
         } else if (a.view == MANAGE) {
             a.sound_choice = a.sound_mode;
             a.standby_choice = a.standby_mode;
@@ -1994,6 +2217,8 @@ static void apply_message(whale_msg_t msg) {
                 badge_unlock(3);
             if (a.summary_seconds >= 7200)
                 badge_unlock(4);
+            diary_touch(a.summary_day, a.summary_done, a.summary_seconds, a.pomo_today,
+                        a.night ? 0x20u : 0u);
         }
         return;
     }
@@ -2261,9 +2486,37 @@ static void clock_step(void) {
     a.night = a.clock_valid && whale_clock_night(&a.clock);
     /* Totals from an earlier work day (e.g. kept offline past 05:00) read as zero. */
     uint32_t work_day;
-    a.summary_stale = a.summary_valid &&
-                      whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day) &&
-                      work_day != a.summary_day;
+    bool has_day = whale_clock_work_day(whale_sleep_clock(), rtc_seconds(), &work_day);
+    a.work_day_valid = has_day;
+    if (has_day)
+        a.work_day = work_day;
+    a.summary_stale = a.summary_valid && has_day && work_day != a.summary_day;
+    if (has_day && work_day != a.pomo_day) {
+        uint8_t stored_pomo = 0;
+        for (unsigned i = 0; i < a.diary_count; i++) {
+            if (a.diary[i].day == work_day) {
+                stored_pomo = a.diary[i].pomo;
+                break;
+            }
+        }
+        bool undated = !a.pomo_day && a.pomo_today;
+        if (!a.pomo_day) {
+            /* Rounds finished before the first clock sync belong to this work day:
+             * merge once (pomo_day is set below, so a repeated sync never re-adds). */
+            unsigned merged = (unsigned)a.pomo_today + stored_pomo;
+            a.pomo_today = (uint8_t)(merged > 99u ? 99u : merged);
+        } else {
+            a.pomo_today = stored_pomo;
+        }
+        a.pomo_day = work_day;
+        /* Persist the merged tally now instead of waiting for a later summary,
+         * wardrobe change or another round to carry it to NVS. */
+        if (undated && a.pomo_today != stored_pomo) {
+            bool same_day = a.summary_valid && a.summary_day == work_day;
+            diary_touch(work_day, same_day ? a.summary_done : 0, same_day ? a.summary_seconds : 0,
+                        a.pomo_today, a.night ? 0x20u : 0u);
+        }
+    }
 }
 static void batt_dump(const char *name) {
     if (!whale_blob_load(name, &batt_log, sizeof batt_log) || !whale_batt_log_valid(&batt_log))
@@ -2318,6 +2571,12 @@ static void peripheral_task(void *unused) {
                     badge_blob_pack(cue, blob);
                     if (!whale_blob_save("badges_v1", blob, sizeof blob))
                         whale_post(&(whale_event_t){.kind = 95});
+                } else if (cue.kind == WHALE_CMD_DIARY_SAVE) {
+                    uint8_t slot = cue.mode < WHALE_DIARY_SNAP_SLOTS ? cue.mode : 0;
+                    whale_diary_entry_t local_diary[WHALE_DIARY_DAYS];
+                    memcpy(local_diary, diary_save_snaps[slot], sizeof local_diary);
+                    if (!whale_blob_save("diary_v1", local_diary, sizeof local_diary))
+                        whale_post(&(whale_event_t){.kind = 94});
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
                     if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
                         whale_post(&(whale_event_t){.kind = 97});
@@ -2440,6 +2699,10 @@ static void service(whale_event_t e) {
         }
         break;
     }
+    case 94:
+        diary_unsaved = true;
+        diary_retry_at = a.now + 5000;
+        break;
     case 95:
         badge_unsaved = true;
         badge_retry_at = a.now + 5000;
@@ -2469,10 +2732,66 @@ static void service(whale_event_t e) {
         break;
     }
 }
+/* Runs the BLE unbind once its confirmation delay has elapsed. Called from the
+ * main loop; kept separate so host tests drive the real clear/restore path. */
+static void unbind_step(void) {
+    if (a.view == UNBINDING && a.now - unbind_at >= 500) {
+        if (whale_unbind()) {
+            whale_reply_cache_clear();
+            memset(sounded, 0, sizeof sounded);
+            sounded_next = 0;
+            uint8_t mode = a.sound_mode, standby = a.standby_mode;
+            uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated,
+                                 a.bond_taps, a.bond_taps_undated};
+            uint8_t bprof[] = {a.badges,       a.badge_unread, a.badge_equipped,
+                               a.badge_answers, a.badge_voices, a.badge_taps};
+            uint32_t bond_day = a.bond_day;
+            whale_diary_entry_t diary_keep[WHALE_DIARY_DAYS];
+            memcpy(diary_keep, a.diary, sizeof diary_keep);
+            uint8_t diary_count_keep = a.diary_count;
+            uint8_t pomo_today_keep = a.pomo_today;
+            uint32_t pomo_day_keep = a.pomo_day;
+            bool work_day_valid_keep = a.work_day_valid;
+            uint32_t work_day_keep = a.work_day;
+            memset(&a, 0, sizeof a);
+            memcpy(a.diary, diary_keep, sizeof a.diary);
+            a.diary_count = diary_count_keep;
+            a.pomo_today = pomo_today_keep;
+            a.pomo_day = pomo_day_keep;
+            a.work_day_valid = work_day_valid_keep;
+            a.work_day = work_day_keep;
+            a.bond = profile[0];
+            a.unlocked = profile[1];
+            a.worn = profile[2];
+            a.bond_today = profile[3];
+            a.bond_undated = profile[4];
+            a.bond_taps = profile[5];
+            a.bond_taps_undated = profile[6];
+            a.badges = bprof[0];
+            a.badge_unread = bprof[1];
+            a.badge_equipped = bprof[2];
+            a.badge_answers = bprof[3];
+            a.badge_voices = bprof[4];
+            a.badge_taps = bprof[5];
+            badge_sync_acc();
+            a.bond_day = bond_day;
+            a.dock = 1;
+            a.sound_mode = mode;
+            a.standby_mode = standby;
+            memset(&reminders, 0, sizeof reminders);
+            a.global_valid = false;
+            a.soc = -1;
+            a.next = UINT32_MAX;
+            page(HOME);
+        } else
+            page(UNBIND_FAILED);
+    }
+}
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     room_load();
     badge_load();
+    diary_load();
     a.sound_mode = whale_sound_load();
     a.standby_mode = whale_standby_load();
     a.sound_saved = 1;
@@ -2560,44 +2879,7 @@ void app_main(void) {
                 queries++;
             }
         }
-        if (a.view == UNBINDING && a.now - unbind_at >= 500) {
-            if (whale_unbind()) {
-                whale_reply_cache_clear();
-                memset(sounded, 0, sizeof sounded);
-                sounded_next = 0;
-                uint8_t mode = a.sound_mode, standby = a.standby_mode;
-                uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated,
-                                     a.bond_taps, a.bond_taps_undated};
-                uint8_t bprof[] = {a.badges,       a.badge_unread, a.badge_equipped,
-                                   a.badge_answers, a.badge_voices, a.badge_taps};
-                uint32_t bond_day = a.bond_day;
-                memset(&a, 0, sizeof a);
-                a.bond = profile[0];
-                a.unlocked = profile[1];
-                a.worn = profile[2];
-                a.bond_today = profile[3];
-                a.bond_undated = profile[4];
-                a.bond_taps = profile[5];
-                a.bond_taps_undated = profile[6];
-                a.badges = bprof[0];
-                a.badge_unread = bprof[1];
-                a.badge_equipped = bprof[2];
-                a.badge_answers = bprof[3];
-                a.badge_voices = bprof[4];
-                a.badge_taps = bprof[5];
-                badge_sync_acc();
-                a.bond_day = bond_day;
-                a.dock = 1;
-                a.sound_mode = mode;
-                a.standby_mode = standby;
-                memset(&reminders, 0, sizeof reminders);
-                a.global_valid = false;
-                a.soc = -1;
-                a.next = UINT32_MAX;
-                page(HOME);
-            } else
-                page(UNBIND_FAILED);
-        }
+        unbind_step();
         if ((stage.active || request_snap) && (int32_t)(a.now - stage.deadline) >= 0 && a.linked) {
             if (a.view == LIST_LOAD) {
                 stage.active = request_snap = false;

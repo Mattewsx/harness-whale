@@ -3,7 +3,8 @@
 
 bool whale_director_main_view(whale_page_t view) {
     return view == HOME || view == TASK_DETAIL || view == LIST || view == COMPANION ||
-           view == WARDROBE || view == BADGES || view == DESK;
+           view == WARDROBE || view == BADGES || view == POMODORO || view == DIARY ||
+           view == DESK;
 }
 
 bool whale_director_idle(const whale_director_in_t *in) {
@@ -30,12 +31,13 @@ whale_go_t whale_director_desk(const whale_director_in_t *in) {
 
 whale_director_screen_t whale_director_screen(const whale_director_in_t *in) {
     whale_director_screen_t s;
-    s.hold = in->voice_busy || in->audio_busy || in->cues_batching || in->view == PAIR ||
-             in->view == UNBINDING;
+    s.hold = in->voice_busy || in->audio_busy || in->cues_batching || in->pomo_active ||
+             in->view == PAIR || in->view == UNBINDING;
     /* Rows are stale while offline; only a live task keeps the screen lit. */
     s.busy = !whale_director_main_view(in->view) || (in->linked && in->live_task);
     /* Background work may keep a task visible, but never keeps these pages lit. */
-    if (in->view == COMPANION || in->view == WARDROBE || in->view == BADGES || in->view == DESK)
+    if (in->view == COMPANION || in->view == WARDROBE || in->view == BADGES ||
+        in->view == POMODORO || in->view == DIARY || in->view == DESK)
         s.busy = false;
     return s;
 }

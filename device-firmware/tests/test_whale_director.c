@@ -714,6 +714,11 @@ int main(void) {
     test_offline_and_screen();
     test_activity();
     test_fuzz();
+    whale_director_in_t in = base();
+    in.view = POMODORO;
+    in.pomo_active = true;
+    whale_director_screen_t ps = whale_director_screen(&in);
+    assert(!ps.busy && ps.hold);
     puts("Whale screen director tests PASS");
     return 0;
 }

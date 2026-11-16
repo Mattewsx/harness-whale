@@ -7,6 +7,7 @@ add_library(lvgl OBJECT ${LV_SOURCES})
 target_include_directories(lvgl PUBLIC "${LV}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(lvgl PUBLIC LV_CONF_INCLUDE_SIMPLE)
 add_executable(whale_render_test test_whale_render.c "${FW}/main/whale_ui.c"
+    "${FW}/main/whale_clock.c"
     "${FW}/main/lv_font_cn_12.c" "${FW}/main/lv_font_cn_14.c"
     "${FW}/main/lv_font_cn_16.c" "${FW}/main/lv_font_cn_18.c" "${FW}/main/lv_font_cn_21.c" "${FW}/main/lv_font_cn_64.c")
 target_include_directories(whale_render_test PRIVATE "${FW}/main")
@@ -19,6 +20,7 @@ enable_testing()
 add_test(NAME whale_render_test COMMAND whale_render_test)
 
 add_executable(whale_render render_whale.c "${FW}/main/whale_ui.c"
+    "${FW}/main/whale_clock.c"
     "${FW}/main/lv_font_cn_12.c" "${FW}/main/lv_font_cn_14.c"
     "${FW}/main/lv_font_cn_16.c" "${FW}/main/lv_font_cn_18.c" "${FW}/main/lv_font_cn_21.c" "${FW}/main/lv_font_cn_64.c")
 target_include_directories(whale_render PRIVATE "${FW}/main")

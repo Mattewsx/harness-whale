@@ -108,7 +108,7 @@ sid=m.keys['g11'];m.update(dict(sessionId='g11',runId='run',state='thinking',tit
 for kind,body in link.changes():send(kind,body)
 lines+=['view 18']
 for kind,body in link.receive(0x52,v.pack('QI',m.epoch,sid)):send(kind,body)
-lines+=['view 0','key 256','key 0','key 2','view 24']
+lines+=['view 0','key 256','key 0','key 0','key 2','view 24']
 m.update(dict(sessionId='g11',runId='run',state='done',replyId='final',title='Outside window'))
 changes=link.changes()
 for kind,body in changes:send(kind,body)

@@ -99,6 +99,36 @@ static void desk_caption(const char *expected) {
     assert(lv_obj_get_x(caption) >= 0 &&
            lv_obj_get_x(caption) + lv_obj_get_width(caption) <= 240);
 }
+static void diary_paragraph_fits(const char *expected) {
+    lv_obj_t *root = lv_screen_active(), *paragraph = NULL;
+    for (unsigned i = 0; i < lv_obj_get_child_count(root); i++) {
+        lv_obj_t *obj = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(obj, &lv_label_class) &&
+            !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) &&
+            !strcmp(lv_label_get_text(obj), expected))
+            paragraph = obj;
+    }
+    assert(paragraph && "Diary paragraph text must be retained in full");
+    unsigned characters = 0;
+    for (const unsigned char *p = (const unsigned char *)expected; *p; p++)
+        characters += (*p & 0xc0u) != 0x80u;
+    lv_point_t last, size;
+    const lv_font_t *font = lv_obj_get_style_text_font(paragraph, 0);
+    lv_label_get_letter_pos(paragraph, characters - 1u, &last);
+    lv_text_get_size(&size, expected, font,
+                     lv_obj_get_style_text_letter_space(paragraph, 0),
+                     lv_obj_get_style_text_line_space(paragraph, 0),
+                     lv_obj_get_content_width(paragraph), LV_TEXT_FLAG_NONE);
+    printf("diary paragraph: last=(%ld,%ld), needed_height=%ld, box=%ldx%ld\n",
+           (long)last.x, (long)last.y, (long)size.y,
+           (long)lv_obj_get_content_width(paragraph), (long)lv_obj_get_content_height(paragraph));
+    assert(last.x >= 0 && last.x + lv_font_get_glyph_width(font, 0x3002, 0) <=
+                                lv_obj_get_content_width(paragraph));
+    assert(last.y >= 0 && last.y + font->line_height <= lv_obj_get_content_height(paragraph));
+    assert(lv_label_get_long_mode(paragraph) == LV_LABEL_LONG_WRAP);
+    assert(size.y <= lv_obj_get_content_height(paragraph));
+    assert(lv_obj_get_y(paragraph) + size.y <= 282);
+}
 static void desk_pose_fits(int top, int bottom) {
     lv_obj_t *root = lv_screen_active();
     unsigned found = 0;
@@ -394,6 +424,11 @@ int main(void) {
     a.view = HOME;
     a.dock = 1;
     a.global_unread = 5;
+    for (unsigned slot = 0; slot < WHALE_DOCK_COUNT; slot++) {
+        a.dock = whale_dock_order[slot];
+        draw_and_verify_redraw(&a);
+    }
+    a.dock = WHALE_DOCK_SESSIONS;
     a.worn = 6;
     for (unsigned frame = 0; frame < 8; frame++) {
         a.activity = frame;
@@ -759,6 +794,79 @@ int main(void) {
     a.feel = WHALE_FEEL_CALM;
     a.badge_cheer = 0;
     a.global_waiting = 0;
+
+    /* POMODORO page (off, active focus, paused, break, alert) stays within 4 KiB pool headroom. */
+    a.view = POMODORO;
+    a.pomo_state = WHALE_POMO_OFF;
+    draw_and_verify_redraw(&a);
+    a.pomo_time_select = true;
+    for (unsigned preset = 0; preset < 3; preset++) {
+        a.pomo_choice = preset;
+        draw_and_verify_redraw(&a);
+    }
+    a.pomo_time_select = false;
+    a.pomo_choice = 0;
+    a.pomo_state = WHALE_POMO_FOCUS;
+    a.pomo_rem_ms = 18u * 60000u + 40000u;
+    a.pomo_today = 2;
+    draw_and_verify_redraw(&a);
+    a.pomo_paused = true;
+    draw_and_verify_redraw(&a);
+    a.pomo_paused = false;
+    a.pomo_state = WHALE_POMO_BREAK;
+    a.pomo_rem_ms = 4u * 60000u + 12000u;
+    a.pomo_alert = 1;
+    draw_and_verify_redraw(&a);
+    a.pomo_alert = 0;
+    a.pomo_state = WHALE_POMO_OFF;
+
+    /* DIARY page (empty, today, 10-day gap history) stays within 4 KiB LVGL pool headroom. */
+    a.view = DIARY;
+    a.work_day_valid = true;
+    a.work_day = 20773u;
+    a.diary_count = 0;
+    draw_and_verify_redraw(&a);
+    a.diary_count = 2;
+    a.diary[0] = (whale_diary_entry_t){
+        .day = 20773u, .done = 6, .seconds = 7800, .pomo = 3, .flags = 2u | (1u << 2)};
+    a.diary[1] = (whale_diary_entry_t){
+        .day = 20763u, .done = 2, .seconds = 2400, .pomo = 1, .flags = 0x20u};
+    a.diary_choice = 0;
+    draw_and_verify_redraw(&a);
+    a.diary_choice = 1;
+    draw_and_verify_redraw(&a);
+    a.diary_choice = 0;
+    static const struct {
+        uint16_t done;
+        uint8_t pomo, flags;
+        const char *text;
+    } diary_notes[] = {
+        {1, 1, 0, "一点一滴都在推进，今天也有好好陪伴彼此。"},
+        {5, 1, 0, "今天真高产！辛苦忙了一整天，记得喝水早点休息。"},
+        {1, 1, 0x20, "夜深了还在陪你赶进度，收工后好好睡一觉吧。"},
+        {1, 2, 0, "节奏稳稳的，专注把一件事做完的感觉真棒！"},
+    };
+    for (unsigned i = 0; i < sizeof diary_notes / sizeof diary_notes[0]; i++) {
+        a.diary[0].done = diary_notes[i].done;
+        a.diary[0].seconds = 60;
+        a.diary[0].pomo = diary_notes[i].pomo;
+        a.diary[0].flags = diary_notes[i].flags;
+        draw_and_verify_redraw(&a);
+        diary_paragraph_fits(diary_notes[i].text);
+    }
+    a.diary_choice = 0;
+    a.diary_count = 0;
+    a.work_day_valid = false;
+    draw_and_verify_redraw(&a);
+    diary_paragraph_fits("连接电脑开工或开一轮专注，小鲸会帮你记下每日收获。");
+
+    a.view = HOME;
+    draw_and_verify_redraw(&a);
+    for (unsigned i = 0; i < lv_obj_get_child_count(lv_screen_active()); i++) {
+        lv_obj_t *obj = lv_obj_get_child(lv_screen_active(), i);
+        if (lv_obj_check_type(obj, &lv_label_class) && !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN))
+            assert(lv_label_get_long_mode(obj) == LV_LABEL_LONG_CLIP);
+    }
 
     /* Transition from HOME/BADGES with wearable to TASK_DETAIL & LIST leaves 0 stray pixels. */
     a.view = TASK_DETAIL;

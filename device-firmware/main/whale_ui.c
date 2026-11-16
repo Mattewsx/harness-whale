@@ -87,8 +87,8 @@ bool whale_displayable(const char *s) {
     }
     return true;
 }
-static void text_at(int x, int y, int w, int h, const lv_font_t *font, const char *s, int fg,
-                    int bg, lv_text_align_t align) {
+static void text_at_mode(int x, int y, int w, int h, const lv_font_t *font, const char *s, int fg,
+                         int bg, lv_text_align_t align, lv_label_long_mode_t mode) {
     if (used >= LABEL_COUNT) {
 #ifdef WHALE_ROOM_PATH
         fprintf(stderr, "whale_ui label pool exhausted (%u/%u)\n", used, (unsigned)LABEL_COUNT);
@@ -99,6 +99,8 @@ static void text_at(int x, int y, int w, int h, const lv_font_t *font, const cha
     unsigned idx = used++;
     lv_obj_t *o = labels[idx];
     lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    if (lv_label_get_long_mode(o) != mode)
+        lv_label_set_long_mode(o, mode);
     if (lv_obj_get_style_text_font(o, 0) != font)
         lv_obj_set_style_text_font(o, font, 0);
     lv_obj_set_height(o, h);
@@ -117,6 +119,13 @@ static void text_at(int x, int y, int w, int h, const lv_font_t *font, const cha
         snprintf(label_bufs[idx], sizeof label_bufs[idx], "%s", s);
         lv_label_set_text_static(o, label_bufs[idx]);
     }
+}
+static void text_at(int x, int y, int w, int h, const lv_font_t *font, const char *s, int fg,
+                    int bg, lv_text_align_t align) {
+    text_at_mode(x, y, w, h, font, s, fg, bg, align, LV_LABEL_LONG_CLIP);
+}
+static void paragraph_at(int x, int y, int w, int h, const char *s, int fg, lv_text_align_t align) {
+    text_at_mode(x, y, w, h, &lv_font_cn_14, s, fg, -1, align, LV_LABEL_LONG_WRAP);
 }
 static void label(int x, int y, int w, const char *s, int fg, int bg, lv_text_align_t align) {
     const lv_font_t *font = (y == 3 || y == 292 || y == 30) ? &lv_font_cn_14 : &lv_font_cn_16;
@@ -259,7 +268,7 @@ static void summary_card(const whale_app_t *a, int y, int card, int rule, int st
 }
 static void strip(const enum room_icon *icons, const char *const *names, int count, int selected,
                   int active, unsigned locked, bool home) {
-    int step = home ? 66 : count == 6 ? 38 : count == 5 ? 43 : 55;
+    int step = home ? (count == 4 ? 60 : 66) : count >= 7 ? 32 : count == 6 ? 38 : count == 5 ? 43 : 55;
     panel(action_bar, 0, 252, 240, 68, home && room_night ? BAR_DUSK : BAR, 0);
     for (int i = 0; i < count; ++i) {
         int x = 120 + (2 * i - count + 1) * step / 2;
@@ -729,17 +738,36 @@ void whale_ui_draw(const whale_app_t *a) {
                 snprintf(value, sizeof value, "有 %u 个问题在等你", (unsigned)a->global_waiting);
             panel(sheet, 14, 225, 212, 24, cheer ? PAPER : 0xf6e3c0, 10);
             text_at(20, 228, 200, 20, &lv_font_cn_14, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
+        } else if (a->pomo_alert || a->pomo_state) {
+            int n = a->pomo_state == WHALE_POMO_FOCUS && !a->pomo_paused ? 3
+                    : a->pomo_state == WHALE_POMO_BREAK                  ? 20
+                                                                         : life[a->activity % 8];
+            dressed_acc(a->worn, a->worn_acc, n, 29, 43, 236);
+            if (a->pomo_alert)
+                snprintf(value, sizeof value,
+                         a->pomo_alert == 1 ? "专注完成，歇会儿吧" : "休息结束，继续加油");
+            else {
+                uint32_t s = (a->pomo_rem_ms + 999u) / 1000u;
+                snprintf(value, sizeof value, "%s %02lu:%02lu",
+                         a->pomo_paused                       ? "已暂停"
+                         : a->pomo_state == WHALE_POMO_BREAK ? "休息"
+                                                             : "专注",
+                         (unsigned long)(s / 60u), (unsigned long)(s % 60u));
+            }
+            panel(sheet, 14, 225, 212, 24, PAPER, 10);
+            text_at(20, 228, 200, 20, &lv_font_cn_14, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
         } else
             dressed_acc(a->worn, a->worn_acc, life[a->activity % 8], 22, y, 256);
         if (!offer && !a->feel && a->activity == 1)
             icon_at(ICON_cola, 148, y + 108, 0xab473d);
-        static const enum room_icon icons[] = {ICON_heart, ICON_chat, ICON_settings};
-        const char *const names[] = {inviting ? "回应邀请" : "互动", "会话", "设置"};
-        strip(icons, names, 3, a->dock, inviting || a->badge_unread ? 0 : -1, 0, true);
+        static const enum room_icon icons[] = {ICON_heart, ICON_clock, ICON_chat, ICON_settings};
+        const char *const names[] = {inviting ? "回应邀请" : "互动", "专注", "会话", "设置"};
+        strip(icons, names, WHALE_DOCK_COUNT, whale_dock_slot(a->dock),
+              inviting || a->badge_unread ? 0 : a->pomo_state ? 1 : -1, 0, true);
         if (a->global_unread) {
             snprintf(value, sizeof value, "%u", a->global_unread);
-            panel(menu_box, 130, 250, 29, 16, 0xeac58c, 8);
-            text_at(130, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
+            panel(menu_box, 160, 250, 29, 16, 0xeac58c, 8);
+            text_at(160, 250, 29, 16, &lv_font_cn_12, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
         }
     } else if (a->view == TASK_DETAIL || inline_reply) {
         int n = r->state == 3 ? tool_pose[r->tool] : state_pose[r->state];
@@ -851,7 +879,8 @@ void whale_ui_draw(const whale_app_t *a) {
                 panel(menu_box, 210, 296, 5, 5, TEAL, 3);
         }
     } else if (a->view == COMPANION) {
-        static const char *choices[] = {"打招呼", "摸摸", "喂小鱼", "喝咖啡", "服饰", "徽章"};
+        static const char *choices[] = {"打招呼", "摸摸", "喂小鱼", "喝咖啡",
+                                        "服饰",   "徽章"};
         static const char *lines[] = {"我在呢，慢慢来。", "嗨，我在这里呀。", "嘿嘿，再摸摸嘛。",
                                       "啊呜，谢谢你的小鱼。", "喝咖啡"};
         unsigned action = a->companion_action <= 4 ? a->companion_action : 0;
@@ -912,10 +941,27 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 232, 224, 21, &lv_font_cn_14,
                     "新徽章已解锁，去徽章看看",
                     NAV, -1, LV_TEXT_ALIGN_CENTER);
-        static const enum room_icon icons[] = {ICON_wave,   ICON_pat,    ICON_fish,
-                                               ICON_coffee, ICON_hanger, ICON_flower};
+        static const enum room_icon icons[] = {ICON_wave,   ICON_pat,    ICON_fish,   ICON_coffee,
+                                               ICON_hanger, ICON_flower};
         int comp_active = a->unlock_new ? 4 : a->badge_unread ? 5 : -1;
-        strip(icons, choices, 6, a->back_focus ? -1 : a->companion_choice, comp_active, 0, false);
+        unsigned cidx = a->companion_choice < 6 ? a->companion_choice : 0;
+        int cwin = cidx >= 4 ? (int)cidx - 3 : 0;
+        if (cwin > 2)
+            cwin = 2;
+        enum room_icon w_icons[4];
+        const char *w_names[4];
+        int w_active = -1;
+        for (int i = 0; i < 4; i++) {
+            w_icons[i] = icons[cwin + i];
+            w_names[i] = choices[cwin + i];
+            if (comp_active == cwin + i)
+                w_active = i;
+        }
+        strip(w_icons, w_names, 4, a->back_focus ? -1 : (int)cidx - cwin, w_active, 0, false);
+        if (cwin > 0)
+            text_at(2, 264, 12, 18, &lv_font_cn_14, "‹", MUT, -1, LV_TEXT_ALIGN_CENTER);
+        if (cwin + 4 < 6)
+            text_at(226, 264, 12, 18, &lv_font_cn_14, "›", MUT, -1, LV_TEXT_ALIGN_CENTER);
     } else if (a->view == WARDROBE) {
         uint8_t skin = whale_wardrobe_order[a->outfit_choice];
         uint8_t preview = a->back_focus ? a->worn : (1u << skin) & 14;
@@ -1022,6 +1068,111 @@ void whale_ui_draw(const whale_app_t *a) {
         }
         if (text[0])
             text_at(8, 231, 224, 19, &lv_font_cn_14, text, hint_color, -1, LV_TEXT_ALIGN_CENTER);
+    } else if (a->view == POMODORO) {
+        int pose_id = a->pomo_state == WHALE_POMO_FOCUS && !a->pomo_paused ? 3
+                      : a->pomo_state == WHALE_POMO_BREAK                  ? 20
+                      : animate && a->now % 5000 > 4750                    ? 17
+                                                                           : 16;
+        dressed_acc(a->worn, a->worn_acc, pose_id, 22, 44, 256);
+        parent_icon(a->pomo_time_select ? ICON_clock : ICON_home, a->back_focus);
+        if (a->pomo_state) {
+            uint32_t s = (a->pomo_rem_ms + 999u) / 1000u;
+            snprintf(value, sizeof value, "%s · %02lu:%02lu",
+                     a->pomo_paused                       ? "已暂停"
+                     : a->pomo_state == WHALE_POMO_BREAK ? "休息"
+                                                         : "专注",
+                     (unsigned long)(s / 60u), (unsigned long)(s % 60u));
+            center(35, value, NAV, -1);
+            if (a->pomo_alert)
+                snprintf(text, sizeof text,
+                         a->pomo_alert == 1 ? "专注完成，歇会儿吧" : "休息结束，继续加油");
+            else
+                snprintf(text, sizeof text, "今日已完成 %u 个番茄", (unsigned)a->pomo_today);
+            text_at(8, 232, 224, 20, &lv_font_cn_14, text,
+                    a->pomo_alert ? TEAL : MUT, -1, LV_TEXT_ALIGN_CENTER);
+            static const enum room_icon act_icons[] = {ICON_clock, ICON_cancel, ICON_read};
+            const char *act_names[] = {a->pomo_paused ? "继续" : "暂停", "结束", "日记"};
+            strip(act_icons, act_names, 3, a->back_focus ? -1 : a->pomo_choice, 0, 0, false);
+        } else if (a->pomo_time_select) {
+            center(35, "选择时间", NAV, -1);
+            text_at(8, 232, 224, 20, &lv_font_cn_14, "确认开始专注", MUT, -1,
+                    LV_TEXT_ALIGN_CENTER);
+            static const enum room_icon time_icons[] = {ICON_clock, ICON_clock, ICON_clock};
+            static const char *const time_names[] = {"15分钟", "30分钟", "60分钟"};
+            strip(time_icons, time_names, 3, a->back_focus ? -1 : a->pomo_choice, -1, 0, false);
+        } else {
+            center(35, "专注", NAV, -1);
+            if (a->pomo_alert)
+                snprintf(text, sizeof text,
+                         a->pomo_alert == 1 ? "专注完成，歇会儿吧" : "休息结束，继续加油");
+            else if (a->pomo_today)
+                snprintf(text, sizeof text, "今日已完成 %u 个番茄", (unsigned)a->pomo_today);
+            else
+                snprintf(text, sizeof text, "设置时间，再开始专注");
+            text_at(8, 232, 224, 20, &lv_font_cn_14, text,
+                    a->pomo_alert ? TEAL : MUT, -1, LV_TEXT_ALIGN_CENTER);
+            static const unsigned minutes[] = {15, 30, 60};
+            snprintf(value, sizeof value, "开始 · %u分钟", minutes[a->pomo_preset < 3 ? a->pomo_preset : 0]);
+            static const enum room_icon pre_icons[] = {ICON_clock, ICON_send, ICON_read};
+            const char *pre_names[] = {"时间", value, "日记"};
+            strip(pre_icons, pre_names, 3, a->back_focus ? -1 : a->pomo_choice, -1, 0, false);
+        }
+    } else if (a->view == DIARY) {
+        parent_icon(ICON_clock, a->back_focus);
+        bool diary_gap = a->work_day_valid && (!a->diary_count || a->diary[0].day != a->work_day);
+        unsigned slots = diary_gap ? (unsigned)a->diary_count + 1u
+                                   : (a->diary_count ? a->diary_count : 1u);
+        unsigned choice = a->diary_choice < slots ? a->diary_choice : 0;
+        const whale_diary_entry_t *e = NULL;
+        if (diary_gap)
+            e = choice == 0 ? NULL : &a->diary[choice - 1u];
+        else if (a->diary_count)
+            e = &a->diary[choice];
+        if (!e) {
+            center(35, a->work_day_valid ? "今日小日记" : "收工小日记", NAV, -1);
+        } else if (a->work_day_valid && e->day == a->work_day) {
+            center(35, "今日小日记", NAV, -1);
+        } else {
+            whale_local_time_t dt;
+            whale_clock_civil((int64_t)e->day * 86400 + WHALE_WORK_DAY_START_HOUR * 3600, &dt);
+            snprintf(value, sizeof value, "%u月%u日日记", dt.month, dt.day);
+            center(35, value, NAV, -1);
+        }
+        uint8_t skin_id = e ? (e->flags & 3u) : 0;
+        uint8_t d_worn = skin_id ? (uint8_t)(1u << skin_id) : 0;
+        uint8_t d_acc = e ? (uint8_t)((e->flags >> 2) & 7u) : 0;
+        dressed_acc(e ? d_worn : a->worn, e ? d_acc : a->worn_acc, 16, 71, 60, 128);
+        panel(sheet, 12, 168, 216, 114, CARD, 14);
+        if (!e || (!e->done && !e->seconds && !e->pomo)) {
+            text_at(22, 184, 196, 20, &lv_font_cn_14,
+                    !e && !a->work_day_valid ? "未校时 · 暂无日记" : "今天还没开始记录", NAV, -1,
+                    LV_TEXT_ALIGN_CENTER);
+            paragraph_at(22, 214, 196, 46,
+                         "连接电脑开工或开一轮专注，小鲸会帮你记下每日收获。", MUT,
+                         LV_TEXT_ALIGN_CENTER);
+        } else {
+            unsigned mins = e->seconds / 60u;
+            if (mins >= 60u)
+                snprintf(value, sizeof value, "完成%u项 · %uh%02um · %u番茄", (unsigned)e->done,
+                         mins / 60u, mins % 60u, (unsigned)e->pomo);
+            else
+                snprintf(value, sizeof value, "完成%u项 · %um · %u番茄", (unsigned)e->done, mins,
+                         (unsigned)e->pomo);
+            text_at(20, 180, 200, 20, &lv_font_cn_14, value, TEAL, -1, LV_TEXT_ALIGN_CENTER);
+            const char *note =
+                e->done >= 5 || mins >= 120u
+                    ? "今天真高产！辛苦忙了一整天，记得喝水早点休息。"
+                : (e->flags & 0x20u)
+                    ? "夜深了还在陪你赶进度，收工后好好睡一觉吧。"
+                : e->pomo >= 2
+                    ? "节奏稳稳的，专注把一件事做完的感觉真棒！"
+                    : "一点一滴都在推进，今天也有好好陪伴彼此。";
+            paragraph_at(22, 208, 196, 60, note, NAV, LV_TEXT_ALIGN_LEFT);
+        }
+        panel(action_bar, 0, 292, 240, 28, BAR, 0);
+        text_at(8, 297, 224, 19, &lv_font_cn_12,
+                slots > 1 ? "↑↓ 翻看往日  ·  确认 返回" : "确认 返回", NAV, -1,
+                LV_TEXT_ALIGN_CENTER);
     } else if (desk) {
         static const char *week[] = {"日", "一", "二", "三", "四", "五", "六"};
         const whale_local_time_t *t = &a->clock;
@@ -1058,10 +1209,21 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 66, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
             unsigned phase = (a->now - a->page_at) % 24000;
-            int n = phase > 20000 && phase < 22000    ? 21
-                    : animate && a->now % 5000 > 4750 ? 17
-                                                      : 16;
+            int n = a->pomo_state == WHALE_POMO_FOCUS && !a->pomo_paused ? 3
+                    : a->pomo_state == WHALE_POMO_BREAK                  ? 20
+                    : phase > 20000 && phase < 22000                     ? 21
+                    : animate && a->now % 5000 > 4750                    ? 17
+                                                                         : 16;
             const char *note = desk_line(a, idle_day);
+            if (a->pomo_state) {
+                uint32_t s = (a->pomo_rem_ms + 999u) / 1000u;
+                snprintf(value, sizeof value, "%s %02lu:%02lu",
+                         a->pomo_paused                       ? "已暂停"
+                         : a->pomo_state == WHALE_POMO_BREAK ? "休息"
+                                                             : "专注",
+                         (unsigned long)(s / 60u), (unsigned long)(s % 60u));
+                note = value;
+            }
             if (idle_day) {
                 int w = text_width(&lv_font_cn_14, note) + 28;
                 dressed_acc(a->worn, a->worn_acc, n, 45, 92, 196);
@@ -1478,9 +1640,10 @@ void whale_ui_draw(const whale_app_t *a) {
     }
     if (!painted_pose)
         lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
-    if (a->view != HOME && a->view != WARDROBE && a->view != BADGES && a->view != LIST &&
-        a->view != MANAGE && a->view != SOUND && a->view != STANDBY && a->view != COMPANION &&
-        a->view != TASK_DETAIL && !inline_reply && !desk && foot) {
+    if (a->view != HOME && a->view != WARDROBE && a->view != BADGES && a->view != POMODORO &&
+        a->view != DIARY && a->view != LIST && a->view != MANAGE && a->view != SOUND &&
+        a->view != STANDBY && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
+        !desk && foot) {
         panel(action_bar, 0, 292, 240, 28, BAR, 0);
         text_at(8, 297, 224, 19, &lv_font_cn_12, foot, NAV, -1, LV_TEXT_ALIGN_CENTER);
     }

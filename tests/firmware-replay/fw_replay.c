@@ -32,6 +32,8 @@ bool whale_send(uint8_t type,const uint8_t *b,size_t n){
 size_t whale_line_offset(const char *s,int line){const char *start=s;while(*s && line>0)if(*s++=='\n')line--;return s-start;}
 int whale_scroll_at(const char *s,size_t offset){int line=0;for(size_t i=0;s[i] && i<offset;i++)if(s[i]=='\n')line++;return line;}
 int main(void){
+    /* Unbuffered so captured tx lines survive an assert abort or a pipe that closes early. */
+    setvbuf(stdout,NULL,_IONBF,0);setvbuf(stderr,NULL,_IONBF,0);
     cues=(void*)2;
     char line[4096];unsigned val;
     while(fgets(line,sizeof(line),stdin)){

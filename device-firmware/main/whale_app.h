@@ -9,6 +9,31 @@ static const uint8_t whale_wardrobe_order[] = {0, 2, 1, 3};
 #define WHALE_BADGE_COUNT 8
 /* Wearable set (1..4) unlocked by each of the 8 achievement badges. */
 static const uint8_t whale_badge_wear[WHALE_BADGE_COUNT] = {4, 1, 2, 1, 3, 3, 4, 2};
+enum { WHALE_POMO_OFF = 0, WHALE_POMO_FOCUS = 1, WHALE_POMO_BREAK = 2 };
+enum {
+    WHALE_DOCK_COMPANION = 0,
+    WHALE_DOCK_SESSIONS = 1,
+    WHALE_DOCK_SETTINGS = 2,
+    WHALE_DOCK_FOCUS = 3,
+    WHALE_DOCK_COUNT = 4
+};
+/* Keep existing route IDs while placing focus immediately after interaction. */
+static const uint8_t whale_dock_order[] = {
+    WHALE_DOCK_COMPANION, WHALE_DOCK_FOCUS, WHALE_DOCK_SESSIONS, WHALE_DOCK_SETTINGS};
+static inline unsigned whale_dock_slot(uint8_t dock) {
+    for (unsigned i = 0; i < WHALE_DOCK_COUNT; i++)
+        if (whale_dock_order[i] == dock)
+            return i;
+    return WHALE_DOCK_COUNT - 1u;
+}
+#define WHALE_DIARY_DAYS 7
+typedef struct __attribute__((packed)) {
+    uint32_t day;
+    uint16_t done;
+    uint32_t seconds;
+    uint8_t pomo;
+    uint8_t flags;
+} whale_diary_entry_t;
 
 typedef struct {
     whale_row_t rows[8];
@@ -84,6 +109,15 @@ typedef struct {
     bool summary_valid, summary_stale;
     uint16_t summary_done;
     uint32_t summary_day, summary_seconds;
+    /* Pomodoro focus & break timer (offline-capable, non-preemptive). */
+    uint8_t pomo_state, pomo_preset, pomo_choice, pomo_today, pomo_alert;
+    bool pomo_paused, pomo_time_select;
+    uint32_t pomo_rem_ms, pomo_tick_at, pomo_day, pomo_alert_at;
+    /* Daily wrap-up mini diary (7-day rolling NVS archive). */
+    whale_diary_entry_t diary[WHALE_DIARY_DAYS];
+    uint8_t diary_count, diary_choice;
+    bool work_day_valid;
+    uint32_t work_day;
 } whale_app_t;
 /* Skin bits: apprentice witch at 20, long-sleeved pajamas at 40, loungewear at 60. */
 uint8_t whale_unlocks_for(uint8_t bond);
