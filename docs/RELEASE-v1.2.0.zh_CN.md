@@ -1,5 +1,7 @@
 # DeepSeek Harness 鲸鱼搭子 v1.2.0
 
+> 历史修订记录，不是当前main安装指南。本页哈希与验收只属于所述历史构建；相对链接中的main、manifest和release-source可能已演进。当前安装先按[升级说明](UPGRADE.md)选择目标修订，不用当前清单校验旧镜像，也不把旧镜像当作main。
+
 [English](RELEASE-v1.2.0.md)
 
 本次发行组合为 v1.2.0 电脑插件／桥接器和固件 `whale-R11.4-2.2`，协议 2.2。

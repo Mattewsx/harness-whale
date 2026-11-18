@@ -2,6 +2,8 @@
 
 # DeepSeek Harness Whale Companion v0.17.0-demo
 
+> Historical release record: use the [corrected GitHub release page](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo) for v0.17.0-demo downloads, installation and checksums. Do not use main manifests or old upgrade documents linked relatively from these notes.
+
 v0.17.0-demo · Spontaneous company and spoken new tasks
 
 1. Spontaneous invitations: when work is quiet, the whale girl may invite you to wave, pet her, offer a fish or share a coffee. Respond or let her quietly return to her routine.
@@ -12,9 +14,9 @@ v0.17.0-demo · Spontaneous company and spoken new tasks
 
 ## Getting started
 
-Download the matching computer package from this release. Run `python installer/install_companion.py --non-interactive --skip-key`, fully quit and reopen DSH, then pair over Bluetooth. Existing installations need the new computer package too. No Wi-Fi setup is required. See [README](../README.md) for all controls and local voice preparation.
+Download the matching computer package from this release. Run `python installer/install_companion.py --non-interactive --skip-key`, fully quit and reopen DSH, then pair over Bluetooth. Existing installations need the new computer package too. No Wi-Fi setup is required. See [this release’s instructions](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo) for all controls and local voice preparation.
 
-The full image is for 0x0 and resets stored settings and pairing. On a device with the verified matching layout, the application image at 0x10000 preserves stored data; follow [upgrade guidance](UPGRADE.md). Never put the application image at 0x0. Assets and code are updated together over USB.
+The full image is for 0x0 and resets stored settings and pairing. On a device with the verified matching layout, the application image at 0x10000 preserves stored data; follow [this release page](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo). Never put the application image at 0x0. Assets and code are updated together over USB.
 
 ## Validation and scope
 

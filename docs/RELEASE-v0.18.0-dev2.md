@@ -2,6 +2,8 @@
 
 # DeepSeek Harness Whale Companion v0.18.0-dev2
 
+> Historical revision record, not the current main installation guide. Hashes and acceptance below belong to that historical build; relative main, manifest and release-source references may have evolved. For current installation, select the target revision in [UPGRADE](UPGRADE.md). Do not validate old images with current manifests or install them as main.
+
 Compared with the public v0.17.0-demo:
 
 1. Answer waiting questions across sessions in arrival order. Accepted answers open the next question automatically. Read-but-unanswered questions remain available without restoring cleared unread badges.

@@ -1,5 +1,7 @@
 # DeepSeek Harness Whale Companion v1.2.0
 
+> Historical revision record, not the current main installation guide. Hashes and acceptance below belong to that historical build; relative main, manifest and release-source references may have evolved. For current installation, select the target revision in [UPGRADE](UPGRADE.md). Do not validate old images with current manifests or install them as main.
+
 [简体中文](RELEASE-v1.2.0.zh_CN.md)
 
 This release pairs the v1.2.0 desktop companion with firmware `whale-R11.4-2.2`

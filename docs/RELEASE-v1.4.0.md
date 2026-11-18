@@ -1,5 +1,7 @@
 # v1.4.0 integration candidate
 
+> Historical revision record, not the current main installation guide. Hashes and acceptance below belong to that historical build; relative main, manifest and release-source references may have evolved. For current installation, select the target revision in [UPGRADE](UPGRADE.md). Do not validate old images with current manifests or install them as main.
+
 **English** · [简体中文](RELEASE-v1.4.0.zh_CN.md)
 
 This candidate combines power saving, corrected battery-life recording, the desk clock and protocol 2.3 large frames. It is not a public release. OTA is excluded; firmware and embedded artwork/audio update together over USB using the existing single-app partition layout.

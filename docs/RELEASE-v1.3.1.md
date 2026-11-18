@@ -1,5 +1,7 @@
 # v1.3.1 release record
 
+> Historical revision record, not the current main installation guide. Hashes and acceptance below belong to that historical build; relative main, manifest and release-source references may have evolved. For current installation, select the target revision in [UPGRADE](UPGRADE.md). Do not validate old images with current manifests or install them as main.
+
 [简体中文](RELEASE-v1.3.1.zh_CN.md)
 
 A stability update on top of v1.3.0. Protocol (still 2.2), partition layout and UI are unchanged.

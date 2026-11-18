@@ -2,6 +2,8 @@
 
 # Badge accessories and logical reconnects
 
+> Historical revision record, not the current main installation guide. Hashes and acceptance below belong to that historical build; relative main, manifest and release-source references may have evolved. For current installation, select the target revision in [UPGRADE](UPGRADE.md). Do not validate old images with current manifests or install them as main.
+
 This revision builds on the published standby companion version and is integrated
 into `main`. Use `main` or the retained `feature/desk-companion-upgrade` branch for
 its matching computer components:

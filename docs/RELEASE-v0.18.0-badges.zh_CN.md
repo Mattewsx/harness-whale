@@ -2,6 +2,8 @@
 
 # 徽章饰品与逻辑重连
 
+> 历史修订记录，不是当前main安装指南。本页哈希与验收只属于所述历史构建；相对链接中的main、manifest和release-source可能已演进。当前安装先按[升级说明](UPGRADE.md)选择目标修订，不用当前清单校验旧镜像，也不把旧镜像当作main。
+
 本修订基于已公开的待机陪伴版本，现已整合到 `main`。对应电脑组件可使用
 `main` 或继续保留的 `feature/desk-companion-upgrade` 开发分支，在解压目录运行：
 

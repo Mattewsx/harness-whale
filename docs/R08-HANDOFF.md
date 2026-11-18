@@ -1,5 +1,7 @@
 # R08 本地开发基线
 
+> 历史修订记录，不是当前main安装指南。本页哈希与验收只属于所述历史构建；相对链接中的main、manifest和release-source可能已演进。当前安装先按[升级说明](UPGRADE.md)选择目标修订，不用当前清单校验旧镜像，也不把旧镜像当作main。
+
 本分支包含 DeepSeek Harness 插件、Windows BLE 桥接器和回归测试。配套固件在 FoloToy AI Passport 衍生仓库的 `feature/dsh-whale-ble` 分支，已验收源码提交为 `7ed69d206158273d2f14b38dc15b30903ad93eae`。固件内置版本为 `whale-R08-2.2`。
 
 | 已验收文件 | 写入地址 | SHA-256 |

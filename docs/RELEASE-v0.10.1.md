@@ -1,5 +1,7 @@
 # Harness Whale Companion v0.10.1
 
+> Historical revision record, not the current main installation guide. Hashes and acceptance below belong to that historical build; relative main, manifest and release-source references may have evolved. For current installation, select the target revision in [UPGRADE](UPGRADE.md). Do not validate old images with current manifests or install them as main.
+
 ## What's new
 
 - Larger whale companion on task detail, with title, status, elapsed time and battery.

@@ -2,6 +2,8 @@
 
 # DeepSeek Harness 鲸鱼搭子 v0.17.0-demo
 
+> 历史发布记录：v0.17.0-demo的安装、下载与校验以[修正后的GitHub发布页](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)为准；不要使用本页相对引用的main清单或旧升级文档。
+
 v0.17.0-demo · 主动陪伴与语音新任务
 
 1. 新增随机互动邀请：空闲时鲸鱼娘会邀请你打招呼、摸摸、喂小鱼或喝咖啡；可以回应，也可以让她安静回到日常活动。
@@ -12,9 +14,9 @@ v0.17.0-demo · 主动陪伴与语音新任务
 
 ## 使用与升级
 
-下载此版本配套电脑包，运行 `python installer/install_companion.py --non-interactive --skip-key`，完全退出重开 DSH，再通过蓝牙配对。已有用户升级时也要更新电脑包，无需配网。主要按键及本地语音准备见 [README](../README.md)。
+下载此版本配套电脑包，运行 `python installer/install_companion.py --non-interactive --skip-key`，完全退出重开 DSH，再通过蓝牙配对。已有用户升级时也要更新电脑包，无需配网。主要按键及本地语音准备见 [本版使用说明](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)。
 
-完整镜像从 0x0 刷入，会重置设置和配对。已核对分区相同的旧版设备，可按 [升级说明](UPGRADE.md) 只将应用镜像写入 0x10000，以保留存储数据；应用镜像不能写到 0x0。程序与素材通过 USB 一起更新。
+完整镜像从 0x0 刷入，会重置设置和配对。已核对分区相同的旧版设备，可按 [本版发布页](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo) 只将应用镜像写入 0x10000，以保留存储数据；应用镜像不能写到 0x0。程序与素材通过 USB 一起更新。
 
 ## 验证与边界
 

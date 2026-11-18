@@ -1,5 +1,7 @@
 # R09 发布基线（v0.09）
 
+> 历史修订记录，不是当前main安装指南。本页哈希与验收只属于所述历史构建；相对链接中的main、manifest和release-source可能已演进。当前安装先按[升级说明](UPGRADE.md)选择目标修订，不用当前清单校验旧镜像，也不把旧镜像当作main。
+
 本仓库衍生自 [1ikeMcFlurry/harness-whale-companion](https://github.com/1ikeMcFlurry/harness-whale-companion)，在其基础上继续开发 R06–R09。上游代码版权归原作者所有，本仓库新增部分以 [MIT](../LICENSE) 授权。
 
 ## 仓库组成
