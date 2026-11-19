@@ -5,7 +5,19 @@
 #include "whale_voice.h"
 
 /* Display slots map to persistent skin IDs. This permutation is its own inverse. */
-static const uint8_t whale_wardrobe_order[] = {0, 2, 1, 3};
+#define WHALE_WARDROBE_COUNT 5
+static const uint8_t whale_wardrobe_order[WHALE_WARDROBE_COUNT] = {0, 2, 1, 3, 4};
+static inline uint8_t whale_skin_id(uint8_t worn) {
+    return worn & 16 ? 4u : worn & 8 ? 3u : worn & 4 ? 2u : worn & 2 ? 1u : 0u;
+}
+/* Diary flags pack skin_id (0..7) in bits 0..1 and bit 6 (0x40), preserving
+ * worn_acc in bits 2..4 and the sticky night bit in bit 5 (0x20). */
+static inline uint8_t whale_diary_skin_id(uint8_t flags) {
+    return (uint8_t)((flags & 3u) | ((flags & 0x40u) >> 4));
+}
+static inline uint8_t whale_diary_pack_skin(uint8_t skin_id) {
+    return (uint8_t)((skin_id & 3u) | ((skin_id & 4u) << 4));
+}
 #define WHALE_BADGE_COUNT 8
 /* Wearable set (1..4) unlocked by each of the 8 achievement badges. */
 static const uint8_t whale_badge_wear[WHALE_BADGE_COUNT] = {4, 1, 2, 1, 3, 3, 4, 2};
@@ -112,14 +124,14 @@ typedef struct {
     /* Pomodoro focus & break timer (offline-capable, non-preemptive). */
     uint8_t pomo_state, pomo_preset, pomo_choice, pomo_today, pomo_alert;
     bool pomo_paused, pomo_time_select;
-    uint32_t pomo_rem_ms, pomo_tick_at, pomo_day, pomo_alert_at;
+    uint32_t pomo_rem_ms, pomo_tick_at, pomo_day, pomo_alert_at, pomo_paused_at;
     /* Daily wrap-up mini diary (7-day rolling NVS archive). */
     whale_diary_entry_t diary[WHALE_DIARY_DAYS];
     uint8_t diary_count, diary_choice;
     bool work_day_valid;
     uint32_t work_day;
 } whale_app_t;
-/* Skin bits: apprentice witch at 20, long-sleeved pajamas at 40, loungewear at 60. */
+/* Skin bits: apprentice witch at 20, pajamas at 40, loungewear at 60, scholar at 80. */
 uint8_t whale_unlocks_for(uint8_t bond);
 /* The voice new-task row sits above the first session of the first window. */
 static inline bool whale_list_has_new(const whale_app_t *app) {

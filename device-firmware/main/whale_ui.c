@@ -1,4 +1,5 @@
 #include "lvgl.h"
+#include "lvgl_private.h"
 #include "whale_app.h"
 #include "whale_assets.h"
 #include "whale_outfits.h"
@@ -285,7 +286,7 @@ static void strip(const enum room_icon *icons, const char *const *names, int cou
     }
 }
 static void dressed_acc(uint8_t worn, uint8_t acc, int pose_id, int x, int y, unsigned scale) {
-    int set = worn & 8 ? 3 : worn & 4 ? 2 : worn & 2 ? 1 : 0;
+    int set = whale_skin_id(worn);
     int slot = -1;
     for (unsigned i = 0; i < OUTFIT_POSES; i++)
         if (outfit_pose_ids[i] == pose_id) {
@@ -394,7 +395,171 @@ static void accessory_event(lv_event_t *event) {
         lv_draw_image(layer, &draw, &coords);
     }
 }
+/* Zero-heap LVGL draw unit for DROM-backed I8 (256-entry BGRA palette + 1B/px)
+ * outfit sprites. Renders directly into RGB565 layers at native 1:1 or smooth
+ * premultiplied bilinear scale without touching LVGL's 32 KiB pool. */
+static inline uint16_t blend_rgb565_rgba(uint16_t dst, uint32_t r, uint32_t g, uint32_t b,
+                                         uint32_t a) {
+    if (a >= 255u)
+        return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    uint32_t dr = ((dst >> 11) & 31u) * 255u / 31u;
+    uint32_t dg = ((dst >> 5) & 63u) * 255u / 63u;
+    uint32_t db = (dst & 31u) * 255u / 31u;
+    uint32_t inv = 255u - a;
+    uint32_t or_ = (r * a + dr * inv + 127u) / 255u;
+    uint32_t og = (g * a + dg * inv + 127u) / 255u;
+    uint32_t ob = (b * a + db * inv + 127u) / 255u;
+    return (uint16_t)(((or_ >> 3) << 11) | ((og >> 2) << 5) | (ob >> 3));
+}
+static inline void i8_sample(const uint8_t *pal, const uint8_t *pix, int32_t w, int32_t h,
+                             int32_t sx, int32_t sy, uint32_t *r, uint32_t *g, uint32_t *b,
+                             uint32_t *a) {
+    if (sx < 0 || sy < 0 || sx >= w || sy >= h) {
+        *r = *g = *b = *a = 0;
+        return;
+    }
+    const uint8_t *c = pal + (uint32_t)pix[sy * w + sx] * 4u;
+    *b = c[0];
+    *g = c[1];
+    *r = c[2];
+    *a = c[3];
+}
+static void whale_i8_draw_task(lv_draw_task_t *t, lv_layer_t *layer) {
+    const lv_draw_image_dsc_t *dsc = (const lv_draw_image_dsc_t *)t->draw_dsc;
+    const lv_image_dsc_t *img = (const lv_image_dsc_t *)dsc->src;
+    if (!img || !img->data || !layer->draw_buf || layer->color_format != LV_COLOR_FORMAT_RGB565)
+        return;
+    lv_area_t out;
+    if (!lv_area_intersect(&out, &t->_real_area, &t->clip_area))
+        return;
+    if (!lv_area_intersect(&out, &out, &layer->buf_area))
+        return;
+    const uint8_t *pal = img->data;
+    const uint8_t *pix = img->data + WHALE_OUTFIT_PALETTE_BYTES;
+    int32_t sw = (int32_t)img->header.w;
+    int32_t sh = (int32_t)img->header.h;
+    int32_t sx_scale = dsc->scale_x ? dsc->scale_x : 256;
+    int32_t sy_scale = dsc->scale_y ? dsc->scale_y : 256;
+    int32_t ox = t->area.x1;
+    int32_t oy = t->area.y1;
+    int32_t bx = layer->buf_area.x1;
+    int32_t by = layer->buf_area.y1;
+    int32_t dst_stride = (int32_t)(layer->draw_buf->header.stride / 2u);
+    uint16_t *dst_base = (uint16_t *)layer->draw_buf->data;
+    if (sx_scale == 256 && sy_scale == 256) {
+        for (int32_t y = out.y1; y <= out.y2; y++) {
+            int32_t sy = y - oy;
+            if (sy < 0 || sy >= sh)
+                continue;
+            uint16_t *row = dst_base + (y - by) * dst_stride;
+            const uint8_t *srow = pix + sy * sw;
+            for (int32_t x = out.x1; x <= out.x2; x++) {
+                int32_t sx = x - ox;
+                if (sx < 0 || sx >= sw)
+                    continue;
+                const uint8_t *c = pal + (uint32_t)srow[sx] * 4u;
+                uint32_t a = c[3];
+                if (!a)
+                    continue;
+                uint16_t *dp = &row[x - bx];
+                *dp = blend_rgb565_rgba(*dp, c[2], c[1], c[0], a);
+            }
+        }
+        return;
+    }
+    int32_t piv_x = dsc->pivot.x, piv_y = dsc->pivot.y;
+    for (int32_t y = out.y1; y <= out.y2; y++) {
+        int32_t v_fp = ((y - oy - piv_y) * 256 + 128) * 256 / sy_scale + piv_y * 256 - 128;
+        int32_t y0 = v_fp >= 0 ? (v_fp >> 8) : -((-v_fp + 255) >> 8);
+        uint32_t fy = (uint32_t)(v_fp - y0 * 256);
+        if (y0 < -1 || y0 >= sh)
+            continue;
+        uint16_t *row = dst_base + (y - by) * dst_stride;
+        for (int32_t x = out.x1; x <= out.x2; x++) {
+            int32_t u_fp = ((x - ox - piv_x) * 256 + 128) * 256 / sx_scale + piv_x * 256 - 128;
+            int32_t x0 = u_fp >= 0 ? (u_fp >> 8) : -((-u_fp + 255) >> 8);
+            uint32_t fx = (uint32_t)(u_fp - x0 * 256);
+            if (x0 < -1 || x0 >= sw)
+                continue;
+            uint32_t r00, g00, b00, a00, r10, g10, b10, a10;
+            uint32_t r01, g01, b01, a01, r11, g11, b11, a11;
+            i8_sample(pal, pix, sw, sh, x0, y0, &r00, &g00, &b00, &a00);
+            i8_sample(pal, pix, sw, sh, x0 + 1, y0, &r10, &g10, &b10, &a10);
+            i8_sample(pal, pix, sw, sh, x0, y0 + 1, &r01, &g01, &b01, &a01);
+            i8_sample(pal, pix, sw, sh, x0 + 1, y0 + 1, &r11, &g11, &b11, &a11);
+            uint32_t w00 = ((256u - fx) * (256u - fy)) >> 8;
+            uint32_t w10 = (fx * (256u - fy)) >> 8;
+            uint32_t w01 = ((256u - fx) * fy) >> 8;
+            uint32_t w11 = 256u - w00 - w10 - w01;
+            uint32_t a_sum = w00 * a00 + w10 * a10 + w01 * a01 + w11 * a11;
+            if (a_sum < 256u)
+                continue;
+            uint32_t r_pm = w00 * r00 * a00 + w10 * r10 * a10 + w01 * r01 * a01 + w11 * r11 * a11;
+            uint32_t g_pm = w00 * g00 * a00 + w10 * g10 * a10 + w01 * g01 * a01 + w11 * g11 * a11;
+            uint32_t b_pm = w00 * b00 * a00 + w10 * b10 * a10 + w01 * b01 * a01 + w11 * b11 * a11;
+            uint16_t *dp = &row[x - bx];
+            if (a_sum >= 65280u) {
+                uint32_t or_ = (r_pm + 32640u) / 65280u;
+                uint32_t og = (g_pm + 32640u) / 65280u;
+                uint32_t ob = (b_pm + 32640u) / 65280u;
+                *dp = (uint16_t)(((or_ >> 3) << 11) | ((og >> 2) << 5) | (ob >> 3));
+            } else {
+                uint16_t dst = *dp;
+                uint32_t dr = ((dst >> 11) & 31u) * 255u / 31u;
+                uint32_t dg = ((dst >> 5) & 63u) * 255u / 63u;
+                uint32_t db = (dst & 31u) * 255u / 31u;
+                uint32_t inv = 65280u - a_sum;
+                uint32_t or_ = (r_pm + dr * inv + 32640u) / 65280u;
+                uint32_t og = (g_pm + dg * inv + 32640u) / 65280u;
+                uint32_t ob = (b_pm + db * inv + 32640u) / 65280u;
+                *dp = (uint16_t)(((or_ >> 3) << 11) | ((og >> 2) << 5) | (ob >> 3));
+            }
+        }
+    }
+}
+static int32_t whale_i8_evaluate(lv_draw_unit_t *u, lv_draw_task_t *t) {
+    if (t->type != LV_DRAW_TASK_TYPE_IMAGE)
+        return 0;
+    const lv_draw_image_dsc_t *dsc = (const lv_draw_image_dsc_t *)t->draw_dsc;
+    if (dsc->header.cf != LV_COLOR_FORMAT_I8 || dsc->rotation != 0 || dsc->tile ||
+        dsc->skew_x != 0 || dsc->skew_y != 0 || dsc->clip_radius != 0 ||
+        dsc->bitmap_mask_src != NULL || dsc->opa < LV_OPA_MAX ||
+        lv_image_src_get_type(dsc->src) != LV_IMAGE_SRC_VARIABLE)
+        return 0;
+    if (t->preference_score > 50) {
+        t->preference_score = 50;
+        t->preferred_draw_unit_id = (uint8_t)u->idx;
+    }
+    return 0;
+}
+static int32_t whale_i8_dispatch(lv_draw_unit_t *u, lv_layer_t *layer) {
+    lv_draw_task_t *t = lv_draw_get_next_available_task(layer, NULL, (uint8_t)u->idx);
+    if (!t)
+        return LV_DRAW_UNIT_IDLE;
+    if (!lv_draw_layer_alloc_buf(layer))
+        return LV_DRAW_UNIT_IDLE;
+    t->state = LV_DRAW_TASK_STATE_IN_PROGRESS;
+    whale_i8_draw_task(t, layer);
+    t->state = LV_DRAW_TASK_STATE_FINISHED;
+    lv_draw_dispatch_request();
+    return 1;
+}
+static void whale_i8_register(void) {
+    lv_draw_unit_t *u = LV_GLOBAL_DEFAULT()->draw_info.unit_head;
+    while (u) {
+        if (u->name && strcmp(u->name, "WHALE_I8") == 0)
+            return;
+        u = u->next;
+    }
+    lv_draw_unit_t *unit = lv_draw_create_unit(sizeof(lv_draw_unit_t));
+    if (unit) {
+        unit->name = "WHALE_I8";
+        unit->evaluate_cb = whale_i8_evaluate;
+        unit->dispatch_cb = whale_i8_dispatch;
+    }
+}
 void whale_ui_init(void) {
+    whale_i8_register();
     lv_obj_t *screen = lv_screen_active();
     lv_obj_set_style_bg_color(screen, lv_color_hex(PAPER), 0);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
@@ -427,12 +592,14 @@ void whale_ui_init(void) {
                                       .data = whale_poses + i * 115248};
     for (unsigned i = 0; i < OUTFIT_SETS * OUTFIT_POSES; i++) {
         const whale_outfit_frame_t *frame = &whale_outfit_frames[i];
-        sprites[OUTFIT_BASE + i] = sprites[0];
-        sprites[OUTFIT_BASE + i].header.w = frame->width;
-        sprites[OUTFIT_BASE + i].header.h = frame->height;
-        sprites[OUTFIT_BASE + i].header.stride = frame->width * 2;
-        sprites[OUTFIT_BASE + i].data_size = frame->width * frame->height * 3;
-        sprites[OUTFIT_BASE + i].data = outfit_poses + frame->offset;
+        sprites[OUTFIT_BASE + i] = (lv_image_dsc_t){
+            .header = {.magic = LV_IMAGE_HEADER_MAGIC,
+                       .cf = LV_COLOR_FORMAT_I8,
+                       .w = frame->width,
+                       .h = frame->height,
+                       .stride = frame->width},
+            .data_size = WHALE_OUTFIT_PALETTE_BYTES + (uint32_t)frame->width * frame->height,
+            .data = outfit_poses + frame->offset};
     }
     for (unsigned i = 0; i < 8; i++) {
         const whale_image_asset_t *v = &whale_image_assets[i];
@@ -963,25 +1130,30 @@ void whale_ui_draw(const whale_app_t *a) {
         if (cwin + 4 < 6)
             text_at(226, 264, 12, 18, &lv_font_cn_14, "›", MUT, -1, LV_TEXT_ALIGN_CENTER);
     } else if (a->view == WARDROBE) {
-        uint8_t skin = whale_wardrobe_order[a->outfit_choice];
-        uint8_t preview = a->back_focus ? a->worn : (1u << skin) & 14;
+        unsigned slot_idx = a->outfit_choice < WHALE_WARDROBE_COUNT ? a->outfit_choice : 0;
+        uint8_t skin = whale_wardrobe_order[slot_idx];
+        uint8_t preview = a->back_focus ? a->worn : (uint8_t)((1u << skin) & 30u);
         dressed_acc(preview, a->worn_acc, 16, 22, 44, 256);
         parent_icon(ICON_heart, a->back_focus);
         center(35, "服饰", NAV, -1);
-        static const enum room_icon icons[] = {ICON_skin_maid, ICON_skin_pajamas,
-                                               ICON_skin_witch, ICON_skin_lounge};
-        static const char *const names[] = {"女仆装", "长袖睡衣", "见习魔女", "连帽家居服"};
-        int worn = a->worn & 8 ? 3 : a->worn & 4 ? 2 : a->worn & 2 ? 1 : 0;
-        worn = whale_wardrobe_order[worn];
+        static const enum room_icon icons[WHALE_WARDROBE_COUNT] = {
+            ICON_skin_maid, ICON_skin_pajamas, ICON_skin_witch, ICON_skin_lounge,
+            ICON_skin_scholar};
+        static const char *const names[WHALE_WARDROBE_COUNT] = {
+            "女仆装", "长袖睡衣", "见习魔女", "连帽家居服", "书院大小姐"};
+        int worn = whale_wardrobe_order[whale_skin_id(a->worn)];
         unsigned locked = 0;
-        for (unsigned slot = 1; slot < 4; slot++)
+        for (unsigned slot = 1; slot < WHALE_WARDROBE_COUNT; slot++)
             if (!(a->unlocked & (1u << whale_wardrobe_order[slot])))
                 locked |= 1u << slot;
-        strip(icons, names, 4, a->back_focus ? -1 : a->outfit_choice, worn, locked,
+        strip(icons, names, WHALE_WARDROBE_COUNT, a->back_focus ? -1 : (int)slot_idx, worn, locked,
               false);
         if (a->locked_notice)
-            center(232, skin == 1 ? "亲密度20解锁"
-                        : skin == 2 ? "亲密度40解锁" : "亲密度60解锁", MUT, -1);
+            center(232, skin == 1   ? "亲密度20解锁"
+                        : skin == 2 ? "亲密度40解锁"
+                        : skin == 3 ? "亲密度60解锁"
+                                    : "亲密度80解锁",
+                   MUT, -1);
     } else if (a->view == BADGES) {
         unsigned idx = a->badge_choice < WHALE_BADGE_COUNT ? a->badge_choice : 0;
         uint8_t preview_acc = a->back_focus ? a->worn_acc : whale_badge_wear[idx];
@@ -1138,7 +1310,7 @@ void whale_ui_draw(const whale_app_t *a) {
             snprintf(value, sizeof value, "%u月%u日日记", dt.month, dt.day);
             center(35, value, NAV, -1);
         }
-        uint8_t skin_id = e ? (e->flags & 3u) : 0;
+        uint8_t skin_id = e ? whale_diary_skin_id(e->flags) : 0;
         uint8_t d_worn = skin_id ? (uint8_t)(1u << skin_id) : 0;
         uint8_t d_acc = e ? (uint8_t)((e->flags >> 2) & 7u) : 0;
         dressed_acc(e ? d_worn : a->worn, e ? d_acc : a->worn_acc, 16, 71, 60, 128);
@@ -1215,7 +1387,9 @@ void whale_ui_draw(const whale_app_t *a) {
                     : animate && a->now % 5000 > 4750                    ? 17
                                                                          : 16;
             const char *note = desk_line(a, idle_day);
-            if (a->pomo_state) {
+            if (a->pomo_alert) {
+                note = a->pomo_alert == 1 ? "专注完成，歇会儿吧" : "休息结束，继续加油";
+            } else if (a->pomo_state) {
                 uint32_t s = (a->pomo_rem_ms + 999u) / 1000u;
                 snprintf(value, sizeof value, "%s %02lu:%02lu",
                          a->pomo_paused                       ? "已暂停"

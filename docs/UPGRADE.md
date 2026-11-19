@@ -4,17 +4,17 @@
 
 ## 选择目标修订
 
-- **当前main：番茄钟／日记暂停离线修复版**，variant为 `focus-diary-paused-sleep`。使用本仓库同一main提交的电脑组件及该构建实际交付的镜像。安装器[manifest.json](../installer/firmware/manifest.json)记录下列身份；[release-source.json](release-source.json)记录固件输入。此修订没有独立GitHub Release；社区可见性以玩法1966实际审核结果为准，本页不承诺已公开下载。
-- **GitHub公开版v0.17.0-demo**：只按[v0.17.0-demo发布页](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)选择其应用、电脑包及SHA256SUMS。该应用不是下表的当前main应用；不要套用main清单。发布页已修正旧升级链接，标签源码和电脑包内的旧升级／部署文档不适用于该版。
+- **当前分支候选版：书院大小姐与稳定性修复**，variant 为 `scholar-skin-stability`。使用该候选构建的源码快照、配套电脑组件和实际交付镜像。安装器[manifest.json](../installer/firmware/manifest.json)记录下列身份；[release-source.json](release-source.json)记录固件输入。此修订没有独立GitHub Release；此候选版仅有本地交付物。
+- **GitHub公开版v0.17.0-demo**：只按[v0.17.0-demo发布页](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)选择其应用、电脑包及SHA256SUMS。该应用不是下表的当前候选版应用；不要套用候选版清单。发布页已修正旧升级链接，标签源码和电脑包内的旧升级／部署文档不适用于该版。
 - **其他历史修订**：使用该修订自己的发布页或原始交付身份与匹配源码。旧版验收文档保留历史，不会随main升级；缺少目标镜像、可信校验值或匹配清单时停止，不用另一个版本替代。
 
-当前main身份（完整哈希必须一致）：
+当前候选版身份（完整哈希必须一致）：
 
 | 文件角色 | 写入位置／用途 | SHA-256 |
 | --- | --- | --- |
-| 完整镜像 `Harness-Whale-ESP32C3-8MB.bin` | 0x0；覆盖存储，不用于保留数据升级 | `4ffe3136e8140c753d61f2ce793967f0d648686e9be5e56ec5d3e08c986b8b57` |
-| 应用镜像（构建原名 `FoloToy-AI-Passport.bin`） | 仅应用0x10000 | `9cb6a743711c24f80f17f286abb4a891125cd8f8aff56e96961fdc8c618fd6cd` |
-| ELF | 只用于匹配本修订的调试，不刷写 | `45da90d0e0deecf765353b090dd546b63bb1a4d78ddd302d24e692bc22a71026` |
+| 完整镜像 `Harness-Whale-ESP32C3-8MB.bin` | 0x0；覆盖存储，不用于保留数据升级 | `81ef3edfc334954abbcbf71deada0126c8dbc6a2f51175e23862c856418dd950` |
+| 应用镜像（构建原名 `FoloToy-AI-Passport.bin`） | 仅应用0x10000 | `529a1c8f804f298dc68eaab55c60dc02568ff61596d203863e63f02482bcdce9` |
+| ELF | 只用于匹配本修订的调试，不刷写 | `5800ca090f0f4e0ac97c0f9f68bac9c94521050530e67aa1679052eb0d09b7ae` |
 
 文件可以在交付时重命名，不能凭文件名判断身份。`installer/firmware/manifest.json`的 `application_sha256` 是当前应用校验值，`sha256`表中则是完整镜像校验值，二者不能互换。
 
@@ -34,11 +34,11 @@ python -m venv .flash-venv
 .\.flash-venv\Scripts\python.exe -m serial.tools.list_ports -v
 ```
 
-下面以**当前main应用**放在 `FoloToy-AI-Passport.bin` 为例，先校验；其他目标修订必须改用该修订自己的文件和可信校验值，不能套用本例哈希：
+下面以**当前候选版应用**放在 `FoloToy-AI-Passport.bin` 为例，先校验；其他目标修订必须改用该修订自己的文件和可信校验值，不能套用本例哈希：
 
 ```powershell
 $appImage = '.\FoloToy-AI-Passport.bin'
-$expectedAppSha = '9cb6a743711c24f80f17f286abb4a891125cd8f8aff56e96961fdc8c618fd6cd'
+$expectedAppSha = '529a1c8f804f298dc68eaab55c60dc02568ff61596d203863e63f02482bcdce9'
 if ((Get-FileHash -LiteralPath $appImage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedAppSha) {
     throw '应用镜像与目标修订不匹配，停止升级'
 }

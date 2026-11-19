@@ -255,13 +255,15 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
     return true;
 }
 bool whale_ble_audio_ready(void) {
-    return audio_subscribed && authorized(peer) && ble_att_mtu(peer) >= 67;
+    uint16_t h = peer;
+    return audio_subscribed && authorized(h) && ble_att_mtu(h) >= 67;
 }
 bool whale_ble_audio_send(const uint8_t *p, size_t n) {
-    if (n != 62 || !whale_ble_audio_ready())
+    uint16_t h = peer;
+    if (n != 62 || !audio_subscribed || !authorized(h) || ble_att_mtu(h) < 67)
         return false;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(p, n);
-    return om && ble_gatts_notify_custom(peer, audio_attr, om) == 0;
+    return om && ble_gatts_notify_custom(h, audio_attr, om) == 0;
 }
 void whale_ble_set_slow(bool slow) {
     if (slow == adv_slow)

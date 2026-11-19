@@ -2,16 +2,16 @@
 
 把 DeepSeek Harness 的多个工作会话变成一只陪你工作的鲸鱼娘。电脑通过 BLE 连接 FoloToy AI Passport，插件自动管理桥接器，无需 Wi-Fi。
 
-当前 `main` 是 **v0.18.0-dev2 / focus-diary-paused-sleep**：包含连续答题、徽章饰品、专注番茄钟、七条每日日记及暂停后离线保留剩余时间修复。多个历史构建使用相同版本字符串，**须按完整镜像、应用和ELF的SHA-256区分修订**；当前身份见[升级说明](docs/UPGRADE.md)，安装器清单以 [manifest.json](installer/firmware/manifest.json) 为准。构建和主机回归已通过，实机验收为部分通过；长期稳定性等未测项不能视为通过。
+当前分支候选版为 **v0.18.0-dev2 / scholar-skin-stability**，包含第五套皮肤、I8 资源和保存失败后重试再休眠的修复。安装器清单与本候选版镜像配套，三个 SHA-256 见[升级说明](docs/UPGRADE.md)。
 
 选择同一套固件与电脑组件：
 
 | 目标 | 固件与电脑组件来源 | 校验依据 |
 | --- | --- | --- |
-| 当前 main 番茄钟／日记修复版 | 使用本仓库同一main提交的源码和该构建实际交付的镜像；运行下方电脑端安装命令 | 本分支manifest及[当前升级说明](docs/UPGRADE.md)中的三个哈希；社区玩法1966是否可下载以实际审核状态为准 |
+| 当前候选版 | 使用本仓库候选版对应的源码快照和该构建实际交付的镜像；运行下方电脑端安装命令 | 本分支manifest及[当前升级说明](docs/UPGRADE.md)中的三个哈希；使用本地交付镜像 |
 | GitHub公开版 v0.17.0-demo | 使用[v0.17.0-demo发布页](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)的固件和同版computer.zip | 该发布页及附件SHA256SUMS；不要使用main的固件清单 |
 
-当前main修订尚无独立GitHub Release。不要把v0.17.0-demo的应用、旧徽章版或初始dev2镜像当作当前main镜像，也不要从旧标签／电脑包的升级文档抄入旧文件名和哈希。旧版公开发布仅使用其对应发布页的说明；标签与附件保留历史原样。
+当前候选版修订尚无独立GitHub Release。不要把v0.17.0-demo的应用、旧徽章版或初始dev2镜像当作当前候选版镜像，也不要从旧标签／电脑包的升级文档抄入旧文件名和哈希。旧版公开发布仅使用其对应发布页的说明；标签与附件保留历史原样。
 
 功能说明见[专注与日记](docs/FOCUS-DIARY.zh_CN.md)、[调度说明](docs/DIRECTOR.zh_CN.md)。[初始dev2验收](docs/RELEASE-v0.18.0-dev2.zh_CN.md)与[徽章版验收](docs/RELEASE-v0.18.0-badges.zh_CN.md)记录的是先前各自哈希的构建，不是当前全部功能已完成实机验收的证明。
 
@@ -41,7 +41,7 @@
 
 后续版本继续通过 USB 更新固件与素材；BLE OTA 方案已取消（[PR #7](https://github.com/Mattewsx/harness-whale/pull/7) 已关闭，未合入）。保持现有单应用分区，素材随应用一起更新，日常蓝牙同步与语音传输不受影响。相同分区布局下仍可使用下述保留配对升级方式。
 
-先按上表确定目标版本：当前main使用同一提交的源码；v0.17.0-demo使用其发布页的电脑包。不要交叉使用电脑包与固件清单。在选定版本的源码／电脑包根目录执行：
+先按上表确定目标版本：当前候选版使用对应源码快照；v0.17.0-demo使用其发布页的电脑包。不要交叉使用电脑包与固件清单。在选定版本的源码／电脑包根目录执行：
 
 ```powershell
 python installer\install_companion.py --non-interactive --skip-key
@@ -49,7 +49,7 @@ python installer\install_companion.py --non-interactive --skip-key
 
 安装器创建独立 `.venv`，安装插件与桥接器，并更新受管 DSH profile 块。安装后完全退出并重启 DSH，输入 `/whale` 查看连接。固件升级时同步更新该版本配套的插件和桥接器；旧桥接器不保证支持新功能。
 
-电脑端安装命令不刷固件。完整固件单独交付；当前main的安装清单只接受本修订完整镜像，详见[部署指南](docs/AI_DEPLOYMENT.md)。使用下方完整刷写器前，将目标版本的完整镜像放入 `installer/firmware/Harness-Whale-ESP32C3-8MB.bin`，同目录manifest必须属于该修订。不要改清单哈希来接受旧文件；无法获得目标修订镜像和匹配清单时停止。以下刷写步骤须在确认设备与数据影响并另获授权后执行：
+电脑端安装命令不刷固件。完整固件单独交付；当前候选版的安装清单只接受本修订完整镜像，详见[部署指南](docs/AI_DEPLOYMENT.md)。使用下方完整刷写器前，将目标版本的完整镜像放入 `installer/firmware/Harness-Whale-ESP32C3-8MB.bin`，同目录manifest必须属于该修订。不要改清单哈希来接受旧文件；无法获得目标修订镜像和匹配清单时停止。以下刷写步骤须在确认设备与数据影响并另获授权后执行：
 
 ```powershell
 python -m venv .flash-venv
@@ -105,7 +105,7 @@ UDP 仅绑定本机回环地址。BLE 传输会话标题、状态、问题选项
 
 ## 验证范围与历史版本
 
-当前main构建的源码输入由[release-source.json](docs/release-source.json)记录，固件身份以安装器manifest及升级说明为准。以下版本化文档和实机记录保留历史范围；其中的文件名、哈希、分支与旧按键不能当作当前安装步骤。
+当前候选版构建的源码输入由[release-source.json](docs/release-source.json)记录，固件身份以安装器manifest及升级说明为准。以下版本化文档和实机记录保留历史范围；其中的文件名、哈希、分支与旧按键不能当作当前安装步骤。
 
 R10.1 已通过构建、主机回归及实机启动/BLE/名单同步；用户确认最新回复、连续滚动、收起与重复展开正常。长时间稳定性、新回复实时替换及缓存请求次数仍需进一步实机验证，详见 [验收说明](docs/RELEASE-v1.2.0.zh_CN.md)。这是个人 Demo，硬件兼容范围有限。
 

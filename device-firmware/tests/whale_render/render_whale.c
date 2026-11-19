@@ -654,6 +654,54 @@ int main(void) {
         snprintf(extra, sizeof extra, "desk-skin-%u-yawn-ribbon", skin);
         save(extra);
     }
+    a.view = WARDROBE;
+    a.unlocked = 30;
+    a.worn = 16;
+    a.worn_acc = 0;
+    a.outfit_choice = 4;
+    a.back_focus = false;
+    a.now = 1000;
+    whale_ui_draw(&a);
+    save("scholar-wardrobe");
+
+    a.view = HOME;
+    a.worn = 16;
+    a.worn_acc = 0;
+    a.feel = WHALE_FEEL_CALM;
+    a.activity = 0;
+    a.night = false;
+    whale_ui_draw(&a);
+    save("scholar-home");
+
+    a.worn_acc = 1;
+    whale_ui_draw(&a);
+    save("scholar-home-w1");
+
+    a.worn_acc = 3;
+    a.view = DESK;
+    a.clock_valid = a.summary_valid = true;
+    a.standby_mode = 0;
+    a.summary_done = 5;
+    a.summary_seconds = 7800;
+    a.page_at = 0;
+    a.now = 1000;
+    whale_ui_draw(&a);
+    save("scholar-desk-w3");
+
+    a.view = DIARY;
+    a.work_day_valid = true;
+    a.work_day = 20773u;
+    a.diary_count = 1;
+    a.diary_choice = 0;
+    a.diary[0] = (whale_diary_entry_t){
+        .day = 20773u,
+        .done = 5,
+        .seconds = 7200,
+        .pomo = 3,
+        .flags = (uint8_t)(whale_diary_pack_skin(4) | (1u << 2))};
+    whale_ui_draw(&a);
+    save("scholar-diary");
+
     a.view = HOME;
     a.worn = 4;
     a.worn_acc = 4;

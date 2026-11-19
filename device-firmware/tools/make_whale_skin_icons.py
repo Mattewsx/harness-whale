@@ -1,11 +1,11 @@
-"""Create four 20px wardrobe alpha masks using Pillow, preserving other icons."""
+"""Create five 20px wardrobe alpha masks using Pillow, preserving other icons."""
 from pathlib import Path
 import re
 
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-ICONS = ("maid", "witch", "pajamas", "lounge")
+ICONS = ("maid", "witch", "pajamas", "lounge", "scholar")
 SCALE = 4
 
 
@@ -54,7 +54,7 @@ def mask(name):
         dot(9, 3.5)
         dot(15, 3.5)
 
-    else:
+    elif name == "lounge":
         shape([(8, 2), (6, 5), (6, 8), (3, 10), (2, 16), (6, 17),
                (7, 14), (6, 22), (11, 22), (12, 17), (13, 22),
                (18, 22), (17, 14), (18, 17), (22, 16), (21, 10),
@@ -63,6 +63,16 @@ def mask(name):
         line([(12, 10), (12, 16)], 1)
         line([(8, 12), (8, 15), (10, 16)], 1)
         line([(16, 12), (16, 15), (14, 16)], 1)
+    else:
+        # Scholar aristocratic dress: ruffled collar + shoulder capelet + cinched corset + flared skirt
+        shape([(9, 3), (4, 6), (2, 11), (8, 11), (9, 13), (4, 21),
+               (20, 21), (15, 13), (16, 11), (22, 11), (20, 6), (15, 3),
+               (12, 5)])
+        line([(8, 11), (16, 11)], 1.2)
+        line([(9, 13), (15, 13)], 1.2)
+        line([(12, 5), (12, 10)], 1.2)
+        dot(12, 4.5)
+        line([(7, 18), (12, 19.5), (17, 18)], 1)
     return image.resize((20, 20), Image.Resampling.LANCZOS)
 
 

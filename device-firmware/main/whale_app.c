@@ -52,12 +52,21 @@ static char title_prefix[73];
 #define WHALE_BOND_DONE 2
 #define WHALE_BOND_VOICE 2
 #define WHALE_BOND_MAX 99
-/* Whole skins unlock independently at 20, 40 and 60 affection. */
+/* Whole skins unlock independently at 20, 40, 60 and 80 affection. */
 #define WHALE_UNLOCK_WITCH 20
 #define WHALE_UNLOCK_PAJAMAS 40
 #define WHALE_UNLOCK_LOUNGE 60
+#define WHALE_UNLOCK_SCHOLAR 80
+#define WHALE_SKIN_MASK 30u
+/* Automatically release an abandoned paused timer after 60 min so offline deep
+ * sleep can still protect the battery overnight. */
+#define WHALE_POMO_PAUSE_MAX_MS (60u * 60u * 1000u)
 static bool room_unsaved, badge_unsaved, diary_unsaved, previous_window;
+#define WHALE_SAVE_RETRY_MS 5000u
 static uint32_t save_retry_at, badge_retry_at, diary_retry_at;
+/* Worker completions must survive a full UI event queue. Publish any failure
+ * before releasing its in-flight count so the app cannot miss it at sleep. */
+static unsigned saves_in_flight, save_failures;
 #define WHALE_DIARY_SNAP_SLOTS 9
 static whale_diary_entry_t diary_save_snaps[WHALE_DIARY_SNAP_SLOTS][WHALE_DIARY_DAYS];
 static uint8_t diary_save_head;
@@ -596,7 +605,8 @@ static void bond_cool(uint32_t day) {
         idle++; /* nothing credited on the previous day itself */
     if (a.bond_undated && idle)
         idle--; /* undated activity happened on some day of the gap */
-    uint8_t floor = a.unlocked & 8 ? WHALE_UNLOCK_LOUNGE
+    uint8_t floor = a.unlocked & 16 ? WHALE_UNLOCK_SCHOLAR
+                    : a.unlocked & 8 ? WHALE_UNLOCK_LOUNGE
                     : a.unlocked & 4 ? WHALE_UNLOCK_PAJAMAS
                     : a.unlocked & 2 ? WHALE_UNLOCK_WITCH : 0;
     uint8_t drop = a.bond > floor ? a.bond - floor : 0;
@@ -633,7 +643,8 @@ static bool sync_bond_day(void) {
 uint8_t whale_unlocks_for(uint8_t bond) {
     return (bond >= WHALE_UNLOCK_WITCH ? 2u : 0u) |
            (bond >= WHALE_UNLOCK_PAJAMAS ? 4u : 0u) |
-           (bond >= WHALE_UNLOCK_LOUNGE ? 8u : 0u);
+           (bond >= WHALE_UNLOCK_LOUNGE ? 8u : 0u) |
+           (bond >= WHALE_UNLOCK_SCHOLAR ? 16u : 0u);
 }
 static void badge_sync_acc(void) {
     a.worn_acc = (a.badge_equipped >= 1 && a.badge_equipped <= WHALE_BADGE_COUNT &&
@@ -720,9 +731,9 @@ static void room_restore(const uint8_t p[11]) {
     if (p[0] > WHALE_BOND_MAX)
         return;
     a.bond = p[0];
-    a.unlocked = (p[1] & 14) | whale_unlocks_for(a.bond);
+    a.unlocked = (p[1] & WHALE_SKIN_MASK) | whale_unlocks_for(a.bond);
     uint8_t worn = p[2] & a.unlocked;
-    a.worn = worn & 8 ? 8 : worn & 4 ? 4 : worn & 2 ? 2 : 0;
+    a.worn = worn & 16 ? 16 : worn & 8 ? 8 : worn & 4 ? 4 : worn & 2 ? 2 : 0;
     a.bond_today = p[3] <= WHALE_BOND_DAILY_MAX ? p[3] : WHALE_BOND_DAILY_MAX;
     a.bond_undated = p[4] <= a.bond_today ? p[4] : a.bond_today;
     a.bond_taps = p[5] <= WHALE_BOND_TAP_MAX ? p[5] : WHALE_BOND_TAP_MAX;
@@ -738,8 +749,8 @@ static void room_restore(const uint8_t p[11]) {
 static void room_profile(whale_audio_cmd_t cmd, uint8_t p[11]) {
     uint64_t g = cmd.generation;
     p[0] = cmd.mode;
-    p[1] = g & 14;
-    p[2] = (g >> 4) & 14;
+    p[1] = (uint8_t)((g & 15u) << 1);
+    p[2] = (uint8_t)(((g >> 4) & 15u) << 1);
     p[3] = (g >> 8) & 15;
     p[4] = (g >> 12) & 15;
     p[5] = (g >> 16) & 7;
@@ -830,15 +841,13 @@ static void badge_load(void) {
     }
     badge_sync_acc();
 }
-static uint8_t diary_skin_bits(void) {
-    return a.worn & 8 ? 3u : a.worn & 4 ? 2u : a.worn & 2 ? 1u : 0u;
-}
+static uint8_t diary_skin_bits(void) { return whale_diary_pack_skin(whale_skin_id(a.worn)); }
 static void diary_touch(uint32_t day, uint16_t done, uint32_t seconds, uint8_t pomo,
                         uint8_t extra_flags) {
     if (!day)
         return;
-    uint8_t flags = (uint8_t)((diary_skin_bits() & 3u) | ((a.worn_acc & 7u) << 2) |
-                              (extra_flags & 0xe0u));
+    uint8_t flags = (uint8_t)(diary_skin_bits() | ((a.worn_acc & 7u) << 2) |
+                              (extra_flags & 0xa0u));
     int idx = -1;
     for (unsigned i = 0; i < a.diary_count && i < WHALE_DIARY_DAYS; i++) {
         if (a.diary[i].day == day) {
@@ -863,7 +872,7 @@ static void diary_touch(uint32_t day, uint16_t done, uint32_t seconds, uint8_t p
     uint16_t ndone = done > e->done ? done : e->done;
     uint32_t nsec = seconds > e->seconds ? seconds : e->seconds;
     uint8_t npomo = pomo > e->pomo ? pomo : e->pomo;
-    uint8_t nflags = (uint8_t)((e->flags & 0xe0u) | flags);
+    uint8_t nflags = (uint8_t)((e->flags & 0xa0u) | flags);
     bool sec_due = e->day != diary_saved_day || nsec >= diary_saved_seconds + 300u;
     bool major = ndone != e->done || npomo != e->pomo || nflags != e->flags || sec_due;
     e->done = ndone;
@@ -980,8 +989,18 @@ static void pomo_step(void) {
         a.pomo_alert = 0;
         dirty = true;
     }
-    if (a.pomo_state == WHALE_POMO_OFF || a.pomo_paused)
+    if (a.pomo_state == WHALE_POMO_OFF)
         return;
+    if (a.pomo_paused) {
+        if (a.now - a.pomo_paused_at >= WHALE_POMO_PAUSE_MAX_MS) {
+            a.pomo_state = WHALE_POMO_OFF;
+            a.pomo_paused = false;
+            a.pomo_rem_ms = 0;
+            a.pomo_choice = 1;
+            dirty = true;
+        }
+        return;
+    }
     uint32_t dt = a.now - a.pomo_tick_at;
     a.pomo_tick_at = a.now;
     if (dt < a.pomo_rem_ms) {
@@ -1007,7 +1026,9 @@ static void pomo_step(void) {
         a.pomo_tick_at = a.now;
         a.pomo_alert = 1;
         a.pomo_alert_at = a.now;
-        whale_power_input(&power, a.now);
+        user_input();
+        if (a.view == DESK)
+            page(HOME);
         queue_cue(3);
     } else {
         a.pomo_state = WHALE_POMO_OFF;
@@ -1015,31 +1036,60 @@ static void pomo_step(void) {
         a.pomo_choice = 1;
         a.pomo_alert = 2;
         a.pomo_alert_at = a.now;
-        whale_power_input(&power, a.now);
+        user_input();
+        if (a.view == DESK)
+            page(HOME);
         queue_cue(2);
     }
     dirty = true;
 }
-static void companion_tick(void) {
-    pomo_step();
-    if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
-        a.companion_action = 0;
-        a.companion_invited = false;
-        dirty = true;
+static void save_completed(uint8_t kind, bool saved) {
+    if (!saved)
+        __atomic_fetch_or(&save_failures, 1u << kind, __ATOMIC_RELEASE);
+    __atomic_fetch_sub(&saves_in_flight, 1u, __ATOMIC_RELEASE);
+}
+
+static void collect_save_failures(void) {
+    unsigned failed = __atomic_exchange_n(&save_failures, 0u, __ATOMIC_ACQ_REL);
+    if (failed & (1u << WHALE_CMD_ROOM_SAVE)) {
+        room_unsaved = true;
+        save_retry_at = a.now + WHALE_SAVE_RETRY_MS;
     }
+    if (failed & (1u << WHALE_CMD_BADGE_SAVE)) {
+        badge_unsaved = true;
+        badge_retry_at = a.now + WHALE_SAVE_RETRY_MS;
+    }
+    if (failed & (1u << WHALE_CMD_DIARY_SAVE)) {
+        diary_unsaved = true;
+        diary_retry_at = a.now + WHALE_SAVE_RETRY_MS;
+    }
+}
+
+static bool queue_save(const whale_audio_cmd_t *cmd) {
+    __atomic_fetch_add(&saves_in_flight, 1u, __ATOMIC_RELAXED);
+    if (xQueueSend(cues, cmd, 0) == pdTRUE)
+        return true;
+    __atomic_fetch_sub(&saves_in_flight, 1u, __ATOMIC_RELEASE);
+    return false;
+}
+
+static void flush_unsaved(void) {
+    collect_save_failures();
     if (room_unsaved && cues && (int32_t)(a.now - save_retry_at) >= 0) {
         /* Snapshot both quotas with the outfit selection for the worker. */
         whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
-                                 (a.unlocked & 14u) | (uint64_t)(a.worn & 14u) << 4 |
+                                 ((a.unlocked >> 1) & 15u) |
+                                     (uint64_t)((a.worn >> 1) & 15u) << 4 |
                                      (uint64_t)a.bond_today << 8 |
                                      (uint64_t)a.bond_undated << 12 |
                                      (uint64_t)a.bond_taps << 16 |
                                      (uint64_t)a.bond_taps_undated << 19 |
                                      (uint64_t)a.bond_day << 22};
-        if (xQueueSend(cues, &cmd, 0) == pdTRUE)
+        if (queue_save(&cmd))
             room_unsaved = false;
     }
-    if (badge_unsaved && cues && (int32_t)(a.now - badge_retry_at) >= 0) {
+    if (badge_unsaved && cues && (int32_t)(a.now - badge_retry_at) >= 0 &&
+        __atomic_load_n(&saves_in_flight, __ATOMIC_ACQUIRE) < WHALE_BADGE_SNAP_SLOTS) {
         uint8_t slot = badge_save_head % WHALE_BADGE_SNAP_SLOTS;
         uint8_t *snap_blob = badge_save_snaps[slot];
         snap_blob[0] = a.badges;
@@ -1055,16 +1105,17 @@ static void companion_tick(void) {
                                      (uint64_t)snap_blob[3] << 24 |
                                      (uint64_t)snap_blob[4] << 32 |
                                      (uint64_t)snap_blob[5] << 40};
-        if (xQueueSend(cues, &cmd, 0) == pdTRUE) {
+        if (queue_save(&cmd)) {
             badge_save_head = (uint8_t)((slot + 1u) % WHALE_BADGE_SNAP_SLOTS);
             badge_unsaved = false;
         }
     }
-    if (diary_unsaved && cues && (int32_t)(a.now - diary_retry_at) >= 0) {
+    if (diary_unsaved && cues && (int32_t)(a.now - diary_retry_at) >= 0 &&
+        __atomic_load_n(&saves_in_flight, __ATOMIC_ACQUIRE) < WHALE_DIARY_SNAP_SLOTS) {
         uint8_t slot = (uint8_t)(diary_save_head % WHALE_DIARY_SNAP_SLOTS);
         memcpy(diary_save_snaps[slot], a.diary, sizeof diary_save_snaps[slot]);
         whale_audio_cmd_t cmd = {WHALE_CMD_DIARY_SAVE, slot, 0};
-        if (xQueueSend(cues, &cmd, 0) == pdTRUE) {
+        if (queue_save(&cmd)) {
             diary_save_head = (uint8_t)((slot + 1u) % WHALE_DIARY_SNAP_SLOTS);
             diary_unsaved = false;
             if (a.diary_count) {
@@ -1073,6 +1124,15 @@ static void companion_tick(void) {
             }
         }
     }
+}
+static void companion_tick(void) {
+    pomo_step();
+    if (a.view == COMPANION && a.companion_action && a.now - a.action_at >= 3000) {
+        a.companion_action = 0;
+        a.companion_invited = false;
+        dirty = true;
+    }
+    flush_unsaved();
     if (a.view == HOME && a.now - a.activity_at >= 9000) {
         uint8_t pick;
         esp_fill_random(&pick, sizeof pick);
@@ -1486,6 +1546,7 @@ static void key(uint32_t code) {
         bool diary_gap = a.work_day_valid && (!a.diary_count || a.diary[0].day != a.work_day);
         unsigned diary_slots = diary_gap ? (unsigned)a.diary_count + 1u : (a.diary_count ? a.diary_count : 1u);
         unsigned count = a.view == COMPANION                  ? 6
+                         : a.view == WARDROBE                 ? WHALE_WARDROBE_COUNT
                          : a.view == BADGES                   ? WHALE_BADGE_COUNT
                          : a.view == POMODORO                 ? 3u
                          : a.view == DIARY                    ? diary_slots
@@ -1542,6 +1603,8 @@ static void key(uint32_t code) {
             } else if (*choice == 0) {
                 a.pomo_paused = !a.pomo_paused;
                 a.pomo_tick_at = a.now;
+                if (a.pomo_paused)
+                    a.pomo_paused_at = a.now;
             } else {
                 a.pomo_state = WHALE_POMO_OFF;
                 a.pomo_paused = false;
@@ -1551,8 +1614,7 @@ static void key(uint32_t code) {
             }
         } else if (a.view == COMPANION) {
             if (*choice == 4) {
-                a.outfit_choice = a.worn & 8 ? 3 : a.worn & 4 ? 2 : a.worn & 2 ? 1 : 0;
-                a.outfit_choice = whale_wardrobe_order[a.outfit_choice];
+                a.outfit_choice = whale_wardrobe_order[whale_skin_id(a.worn)];
                 a.unlock_new = 0;
                 page(WARDROBE);
             } else if (*choice == 5) {
@@ -2462,6 +2524,11 @@ static void power_step(void) {
                   (plan.screen != WHALE_SCREEN_OFF ? WHALE_BATT_SCREEN : 0) |
                   (power.quiet ? WHALE_BATT_TIMER : 0) | (plan.slow_adv ? WHALE_BATT_SLOW_ADV : 0);
     if (plan.sleep && !sleep_requested && (int32_t)(a.now - sleep_retry_at) >= 0) {
+        flush_unsaved();
+        bool saving = __atomic_load_n(&saves_in_flight, __ATOMIC_ACQUIRE) != 0;
+        collect_save_failures();
+        if (saving || room_unsaved || badge_unsaved || diary_unsaved)
+            return;
         whale_audio_cmd_t cmd = {WHALE_CMD_SLEEP, 0, 0};
         sleep_timer_ms = plan.timer_ms;
         sleep_cycles = whale_power_next_cycles(&power);
@@ -2534,6 +2601,24 @@ static void batt_record(int soc) {
         !whale_blob_save("batt_cur", &batt_log, sizeof batt_log))
         ESP_LOGW("whale_batt", "battery log save failed");
 }
+static void persist_save(whale_audio_cmd_t cmd) {
+    bool saved;
+    if (cmd.kind == WHALE_CMD_ROOM_SAVE) {
+        uint8_t profile[11];
+        room_profile(cmd, profile);
+        saved = whale_blob_save("room_v3", profile, sizeof profile);
+    } else if (cmd.kind == WHALE_CMD_BADGE_SAVE) {
+        uint8_t blob[WHALE_BADGE_BLOB_SIZE];
+        badge_blob_pack(cmd, blob);
+        saved = whale_blob_save("badges_v1", blob, sizeof blob);
+    } else {
+        whale_diary_entry_t diary[WHALE_DIARY_DAYS];
+        memcpy(diary, diary_save_snaps[cmd.mode], sizeof diary);
+        saved = whale_blob_save("diary_v1", diary, sizeof diary);
+    }
+    save_completed(cmd.kind, saved);
+}
+
 static void peripheral_task(void *unused) {
     (void)unused;
     bool initialized = false;
@@ -2561,24 +2646,12 @@ static void peripheral_task(void *unused) {
         whale_audio_cmd_t cue;
         if (cues) {
             if (xQueueReceive(cues, &cue, pdMS_TO_TICKS(50)) == pdTRUE) {
-                if (cue.kind == WHALE_CMD_ROOM_SAVE) {
-                    uint8_t profile[11];
-                    room_profile(cue, profile);
-                    if (!whale_blob_save("room_v3", profile, sizeof profile))
-                        whale_post(&(whale_event_t){.kind = 96});
-                } else if (cue.kind == WHALE_CMD_BADGE_SAVE) {
-                    uint8_t blob[WHALE_BADGE_BLOB_SIZE];
-                    badge_blob_pack(cue, blob);
-                    if (!whale_blob_save("badges_v1", blob, sizeof blob))
-                        whale_post(&(whale_event_t){.kind = 95});
-                } else if (cue.kind == WHALE_CMD_DIARY_SAVE) {
-                    uint8_t slot = cue.mode < WHALE_DIARY_SNAP_SLOTS ? cue.mode : 0;
-                    whale_diary_entry_t local_diary[WHALE_DIARY_DAYS];
-                    memcpy(local_diary, diary_save_snaps[slot], sizeof local_diary);
-                    if (!whale_blob_save("diary_v1", local_diary, sizeof local_diary))
-                        whale_post(&(whale_event_t){.kind = 94});
+                if (cue.kind == WHALE_CMD_ROOM_SAVE || cue.kind == WHALE_CMD_BADGE_SAVE ||
+                    cue.kind == WHALE_CMD_DIARY_SAVE) {
+                    persist_save(cue);
                 } else if (cue.kind == WHALE_CMD_SLEEP) {
-                    if (!whale_sleep_enter(sleep_timer_ms, sleep_cycles))
+                    if (__atomic_load_n(&saves_in_flight, __ATOMIC_ACQUIRE) ||
+                        !whale_sleep_enter(sleep_timer_ms, sleep_cycles))
                         whale_post(&(whale_event_t){.kind = 97});
                 } else if (cue.kind == 6 || cue.kind == WHALE_CMD_STANDBY_SAVE) {
                     bool saved = cue.kind == 6 ? whale_sound_save(cue.mode)
@@ -2699,18 +2772,6 @@ static void service(whale_event_t e) {
         }
         break;
     }
-    case 94:
-        diary_unsaved = true;
-        diary_retry_at = a.now + 5000;
-        break;
-    case 95:
-        badge_unsaved = true;
-        badge_retry_at = a.now + 5000;
-        break;
-    case 96:
-        room_unsaved = true;
-        save_retry_at = a.now + 5000;
-        break;
     case 97: /* sleep refused (key held or BLE busy); try again later */
         sleep_requested = false;
         sleep_retry_at = a.now + 30000;
@@ -2745,6 +2806,7 @@ static void unbind_step(void) {
                                  a.bond_taps, a.bond_taps_undated};
             uint8_t bprof[] = {a.badges,       a.badge_unread, a.badge_equipped,
                                a.badge_answers, a.badge_voices, a.badge_taps};
+            uint32_t now_keep = a.now;
             uint32_t bond_day = a.bond_day;
             whale_diary_entry_t diary_keep[WHALE_DIARY_DAYS];
             memcpy(diary_keep, a.diary, sizeof diary_keep);
@@ -2754,6 +2816,7 @@ static void unbind_step(void) {
             bool work_day_valid_keep = a.work_day_valid;
             uint32_t work_day_keep = a.work_day;
             memset(&a, 0, sizeof a);
+            a.now = now_keep;
             memcpy(a.diary, diary_keep, sizeof a.diary);
             a.diary_count = diary_count_keep;
             a.pomo_today = pomo_today_keep;
@@ -2782,6 +2845,8 @@ static void unbind_step(void) {
             a.global_valid = false;
             a.soc = -1;
             a.next = UINT32_MAX;
+            whale_power_link(&power, a.now, false);
+            user_input();
             page(HOME);
         } else
             page(UNBIND_FAILED);

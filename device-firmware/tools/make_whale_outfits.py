@@ -1,12 +1,47 @@
-"""Pack native 196px skin sprites, omitting only fully transparent borders."""
+"""Pack native 196px skin sprites as LVGL I8 (256-color RGBA palette), omitting transparent borders."""
 import struct
 from pathlib import Path
 from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
-SKINS = ("witch", "pajamas", "lounge")
+SKINS = ("witch", "pajamas", "lounge", "scholar")
 SIZE = 196
 POSES = 10
+PALETTE_BYTES = 256 * 4
+
+
+def quantize_i8_bgra(img: Image.Image) -> tuple[bytes, bytes]:
+    """Quantize an RGBA sprite into a 256-entry BGRA palette + 1-byte/px index map."""
+    rgba = img.convert("RGBA")
+    # Reserve index 0 for exact transparent (0,0,0,0) and quantize opaque/semi-opaque pixels into <=255 entries.
+    raw = rgba.tobytes()
+    has_trans = any(a == 0 for a in raw[3::4])
+    colors = 255 if has_trans else 256
+    q = rgba.quantize(colors=colors, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
+    pal_rgba = q.getpalette("RGBA") or []
+    # Pad palette to 256 entries of (r, g, b, a)
+    entries = []
+    for i in range(colors):
+        base = i * 4
+        if base + 4 <= len(pal_rgba):
+            entries.append((pal_rgba[base], pal_rgba[base + 1], pal_rgba[base + 2], pal_rgba[base + 3]))
+        else:
+            entries.append((0, 0, 0, 0))
+    idx_bytes = bytearray(q.tobytes())
+    if has_trans:
+        # Shift quantized indices by +1 and put exact (0,0,0,0) at index 0 for every alpha==0 pixel.
+        entries = [(0, 0, 0, 0)] + entries
+        for i in range(len(idx_bytes)):
+            if raw[i * 4 + 3] == 0:
+                idx_bytes[i] = 0
+            else:
+                idx_bytes[i] = min(255, idx_bytes[i] + 1)
+    pal_bgra = bytearray(PALETTE_BYTES)
+    for i, (r, g, b, a) in enumerate(entries[:256]):
+        if a == 0:
+            r = g = b = 0
+        pal_bgra[i * 4 : i * 4 + 4] = bytes((b, g, r, a))
+    return bytes(pal_bgra), bytes(idx_bytes)
 
 
 def build():
@@ -39,14 +74,13 @@ def build():
             assert restored.getchannel("A").tobytes() == frame.getchannel("A").tobytes()
             blob.extend(bytes((-len(blob)) % 4))
             frames.append((len(blob), *cropped.size, *bounds[:2]))
-            rgba = cropped.tobytes()
-            blob.extend(b"".join(
-                struct.pack("<H", (r >> 3) << 11 | (g >> 2) << 5 | b >> 3)
-                for r, g, b in zip(rgba[::4], rgba[1::4], rgba[2::4])))
-            blob.extend(rgba[3::4])
+            pal_bgra, idx_bytes = quantize_i8_bgra(cropped)
+            blob.extend(pal_bgra)
+            blob.extend(idx_bytes)
+    blob.extend(bytes((-len(blob)) % 4))
     assert len(frames) == len(SKINS) * POSES
     for offset, w, h, x, y in frames:
-        assert offset % 4 == 0 and offset + w * h * 3 <= len(blob)
+        assert offset % 4 == 0 and offset + PALETTE_BYTES + w * h <= len(blob)
         assert x + w <= SIZE and y + h <= SIZE
     (ROOT / "main/outfits.rgb").write_bytes(blob)
     header = (
@@ -54,6 +88,7 @@ def build():
         f"#define WHALE_OUTFIT_SETS {len(SKINS)}\n"
         f"#define WHALE_OUTFIT_SIZE {SIZE}\n"
         f"#define WHALE_OUTFIT_POSES {POSES}\n"
+        f"#define WHALE_OUTFIT_PALETTE_BYTES {PALETTE_BYTES}\n"
         f"#define WHALE_OUTFIT_BYTES {len(blob)}\n"
         "typedef struct { uint32_t offset; uint16_t width, height, x, y; } whale_outfit_frame_t;\n"
         "static const whale_outfit_frame_t whale_outfit_frames[] = {\n"
@@ -61,7 +96,7 @@ def build():
         + "};\n"
     )
     (ROOT / "main/whale_outfits.h").write_text(header, encoding="ascii", newline="\n")
-    print(f"Native {SIZE}px skin sprites: {len(blob)} bytes in {len(frames)} cropped frames")
+    print(f"Native {SIZE}px I8 skin sprites: {len(blob)} bytes in {len(frames)} cropped frames")
 
 
 if __name__ == "__main__":

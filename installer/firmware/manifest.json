@@ -5,9 +5,9 @@
   "offset": "0x0",
   "device_name": "HARNESS-WHALE",
   "sha256": {
-    "Harness-Whale-ESP32C3-8MB.bin": "4ffe3136e8140c753d61f2ce793967f0d648686e9be5e56ec5d3e08c986b8b57"
+    "Harness-Whale-ESP32C3-8MB.bin": "81ef3edfc334954abbcbf71deada0126c8dbc6a2f51175e23862c856418dd950"
   },
-  "variant": "focus-diary-paused-sleep",
-  "app_elf_sha256": "45da90d0e0deecf765353b090dd546b63bb1a4d78ddd302d24e692bc22a71026",
-  "application_sha256": "9cb6a743711c24f80f17f286abb4a891125cd8f8aff56e96961fdc8c618fd6cd"
+  "variant": "scholar-skin-stability",
+  "app_elf_sha256": "5800ca090f0f4e0ac97c0f9f68bac9c94521050530e67aa1679052eb0d09b7ae",
+  "application_sha256": "529a1c8f804f298dc68eaab55c60dc02568ff61596d203863e63f02482bcdce9"
 }

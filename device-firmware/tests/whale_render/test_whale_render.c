@@ -244,8 +244,8 @@ int main(void) {
     }
     /* Each outfit swaps the home and wardrobe poses; a session page keeps
      * the plain work pose. */
-    a.unlocked = 14;
-    for (unsigned worn = 2; worn <= 8; worn <<= 1) {
+    a.unlocked = 30;
+    for (unsigned worn = 2; worn <= 16; worn <<= 1) {
         a.worn = worn;
         a.view = HOME;
         assert(draw(&a) > 0);
@@ -255,7 +255,7 @@ int main(void) {
     }
     /* Feelings change the home and list whale in every outfit, and a
      * repeated frame redraws nothing. */
-    for (unsigned worn = 0; worn <= 8; worn = worn ? worn << 1 : 2) {
+    for (unsigned worn = 0; worn <= 16; worn = worn ? worn << 1 : 2) {
         a.worn = worn;
         a.global_waiting = 2;
         a.view = HOME;
@@ -282,8 +282,8 @@ int main(void) {
     a.worn = 0;
     a.unlocked = 0;
     a.view = WARDROBE;
-    uint32_t preview[4];
-    for (unsigned i = 0; i < 4; i++) {
+    uint32_t preview[WHALE_WARDROBE_COUNT];
+    for (unsigned i = 0; i < WHALE_WARDROBE_COUNT; i++) {
         a.outfit_choice = i;
         draw(&a);
         preview[i] = pose_checksum();
@@ -292,16 +292,16 @@ int main(void) {
         assert(a.worn == 0); /* Preview never equips it. */
     }
     a.back_focus = true; /* Give every clothing icon the same background. */
-    a.unlocked = 14;
+    a.unlocked = 30;
     draw(&a);
-    uint32_t clothing[4] = {0};
-    for (int i = 0; i < 4; i++) {
-        int left = 110 + (2 * i - 3) * 55 / 2;
+    uint32_t clothing[WHALE_WARDROBE_COUNT] = {0};
+    for (int i = 0; i < WHALE_WARDROBE_COUNT; i++) {
+        int left = 110 + (2 * i - (WHALE_WARDROBE_COUNT - 1)) * 43 / 2;
         for (int y = 263; y < 283; y++)
             for (int x = left; x < left + 20; x++)
                 clothing[i] = (clothing[i] ^ screen[y * 240 + x]) * 16777619u;
         for (int j = 0; j < i; j++)
-            assert(clothing[i] != clothing[j]); /* Four actual wardrobe symbols must differ. */
+            assert(clothing[i] != clothing[j]); /* Five actual wardrobe symbols must differ. */
     }
     a.back_focus = false;
     a.view = TASK_DETAIL;
@@ -438,7 +438,7 @@ int main(void) {
     }
     /* All invitation poses/feedback retain the native skin offsets and do not
      * churn LVGL allocations when a still frame is redrawn. */
-    static const uint8_t invitation_skins[] = {0, 2, 4, 8};
+    static const uint8_t invitation_skins[] = {0, 2, 4, 8, 16};
     a.global_unread = 0;
     for (unsigned skin = 0; skin < sizeof invitation_skins; skin++) {
         a.worn = invitation_skins[skin];
@@ -552,7 +552,7 @@ int main(void) {
         a.summary_seconds = mode == 1 ? 3600 : 0;
         for (unsigned frame = 0; frame < sizeof desk_frames / sizeof desk_frames[0]; frame++) {
             a.now = desk_frames[frame];
-            uint32_t desk_poses[4];
+            uint32_t desk_poses[sizeof invitation_skins / sizeof invitation_skins[0]];
             for (unsigned s = 0; s < sizeof invitation_skins; s++) {
                 a.worn = invitation_skins[s];
                 draw(&a);
@@ -651,14 +651,14 @@ int main(void) {
         a.badge_unread = 0;
     }
     /* Equipping a wearable stays visible across skin switches in WARDROBE, HOME, COMPANION, DESK. */
-    a.unlocked = 14;
+    a.unlocked = 30;
     a.badges = 0xff;
     a.badge_equipped = 5;
     a.worn_acc = 3;
-    uint32_t wardrobe_acc[4];
+    uint32_t wardrobe_acc[WHALE_WARDROBE_COUNT];
     a.view = WARDROBE;
     a.now = 1000;
-    for (unsigned i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < WHALE_WARDROBE_COUNT; i++) {
         a.outfit_choice = i;
         draw_and_verify_redraw(&a);
         wardrobe_acc[i] = pose_checksum();
@@ -828,7 +828,11 @@ int main(void) {
     draw_and_verify_redraw(&a);
     a.diary_count = 2;
     a.diary[0] = (whale_diary_entry_t){
-        .day = 20773u, .done = 6, .seconds = 7800, .pomo = 3, .flags = 2u | (1u << 2)};
+        .day = 20773u,
+        .done = 6,
+        .seconds = 7800,
+        .pomo = 3,
+        .flags = (uint8_t)(whale_diary_pack_skin(4) | (1u << 2))};
     a.diary[1] = (whale_diary_entry_t){
         .day = 20763u, .done = 2, .seconds = 2400, .pomo = 1, .flags = 0x20u};
     a.diary_choice = 0;

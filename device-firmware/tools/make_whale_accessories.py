@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ATLAS_PATH = ROOT / "assets/images/accessories-v180.png"
 PLUSH_PATH = ROOT / "assets/images/accessories-v180-plush.png"
 SIZE = 196
-SKINS = 4
+SKINS = 5
 SETS = 4
 POSE_IDS = (1, 3, 10, 15, 16, 17, 18, 19, 20, 21)
 POSES = len(POSE_IDS)
@@ -37,6 +37,10 @@ SUBREGIONS: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {
     (3, 1): [(108, 0, 196, 75), (108, 75, 196, 196)],
     (3, 2): [(0, 0, 196, 196)],
     (3, 3): [(0, 0, 196, 196)],
+    (4, 0): [(0, 0, 196, 108), (0, 108, 196, 196)],
+    (4, 1): [(0, 0, 96, 196), (96, 0, 196, 196)],
+    (4, 2): [(0, 0, 196, 196)],
+    (4, 3): [(0, 0, 196, 196)],
 }
 
 
@@ -79,7 +83,7 @@ def build_pose_placements(
     plan[(0, 2, 15)] = [("T1", 16, -6)]
     plan[(0, 3, 15)] = []
 
-    # Skins 1..3 (Apprentice Witch, Pajamas, Loungewear)
+    # Skins 1..4 (Apprentice Witch, Pajamas, Loungewear, Scholar Ojou-sama)
     head_shifts: dict[tuple[int, int], tuple[int, int]] = {
         (1, 1): (-1, 0), (1, 3): (0, -1),  (1, 10): (-1, 0), (1, 16): (0, 0),
         (1, 17): (0, 0), (1, 18): (0, 0),  (1, 19): (0, 0),  (1, 20): (-1, 0), (1, 21): (4, 0),
@@ -87,20 +91,31 @@ def build_pose_placements(
         (2, 17): (0, 0), (2, 18): (0, 0),  (2, 19): (0, 0),  (2, 20): (0, 0),  (2, 21): (-2, -3),
         (3, 1): (0, 0),  (3, 3): (0, 0),   (3, 10): (0, 0),  (3, 16): (0, 0),
         (3, 17): (0, 0), (3, 18): (0, 0),  (3, 19): (0, 0),  (3, 20): (0, 0),  (3, 21): (-1, -2),
+        (4, 1): (1, 0),  (4, 3): (0, 0),   (4, 10): (-1, -1), (4, 16): (0, 0),
+        (4, 17): (0, 0), (4, 18): (1, -1), (4, 19): (0, 0),  (4, 20): (1, 0),  (4, 21): (1, 2),
     }
     tail_shifts: dict[tuple[int, int], tuple[int, int]] = {
         (1, 21): (5, 1),
         (1, 15): (4, -2),
         (2, 15): (8, -6),
         (3, 15): (8, -6),
+        (4, 1): (-3, -2),
+        (4, 3): (-3, -2),
+        (4, 10): (-1, -3),
+        (4, 15): (1, -3),
+        (4, 18): (0, -2),
+        (4, 19): (-2, -2),
+        (4, 20): (0, -1),
+        (4, 21): (-2, -1),
     }
     nap_hairpin_shifts: dict[int, tuple[int, int]] = {
         1: (-2, 2),
         2: (-12, 8),
         3: (-5, 6),
+        4: (-3, 1),
     }
 
-    for s in (1, 2, 3):
+    for s in (1, 2, 3, 4):
         g, b, h, m, t, p = f"G{s}", f"B{s}", f"H{s}", f"M{s}", f"T{s}", f"P{s}"
         for pid in POSE_IDS:
             tdx, tdy = tail_shifts.get((s, pid), (0, 0))

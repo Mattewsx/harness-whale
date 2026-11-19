@@ -9,6 +9,7 @@ static unsigned cue_count, audio_plays, sleep_commands;
 static bool slow_adv_set;
 static int backlight_level = -1;
 static bool cue_ok, bad_snapshot_crc;
+static bool defer_save_completion, blob_save_ok = true;
 static bool send_ok = true;
 static const char *stored_room_key;
 static uint8_t stored_room[11];
@@ -34,8 +35,12 @@ static whale_audio_cmd_t *last_cue_capture, *last_badge_capture, *last_diary_cap
 int xQueueSend(void *q, const void *in, int wait) {
     if (q == cues) {
         if (*(const uint8_t *)in == WHALE_CMD_ROOM_SAVE) {
+            if (!cue_ok)
+                return 0;
             if (last_cue_capture)
                 *last_cue_capture = *(const whale_audio_cmd_t *)in;
+            if (!defer_save_completion)
+                save_completed(WHALE_CMD_ROOM_SAVE, true);
             return 1;
         }
         if (*(const uint8_t *)in == WHALE_CMD_BADGE_SAVE) {
@@ -43,6 +48,8 @@ int xQueueSend(void *q, const void *in, int wait) {
                 return 0;
             if (last_badge_capture)
                 *last_badge_capture = *(const whale_audio_cmd_t *)in;
+            if (!defer_save_completion)
+                save_completed(WHALE_CMD_BADGE_SAVE, true);
             return 1;
         }
         if (*(const uint8_t *)in == WHALE_CMD_DIARY_SAVE) {
@@ -50,6 +57,8 @@ int xQueueSend(void *q, const void *in, int wait) {
                 return 0;
             if (last_diary_capture)
                 *last_diary_capture = *(const whale_audio_cmd_t *)in;
+            if (!defer_save_completion)
+                save_completed(WHALE_CMD_DIARY_SAVE, true);
             return 1;
         }
         assert(wait == 0 && ((*(const uint8_t *)in >= 1 && *(const uint8_t *)in <= 7) ||
@@ -169,7 +178,10 @@ bool whale_send(uint8_t type, const uint8_t *p, size_t n) {
 }
 static void setup(void) {
     room_unsaved = badge_unsaved = diary_unsaved = previous_window = false;
-    badge_retry_at = diary_retry_at = 0;
+    save_retry_at = badge_retry_at = diary_retry_at = 0;
+    saves_in_flight = save_failures = 0;
+    defer_save_completion = false;
+    blob_save_ok = true;
     stored_room_key = stored_badge_key = stored_diary_key = NULL;
     memset(badge_seen_q, 0, sizeof badge_seen_q);
     memset(badge_save_snaps, 0, sizeof badge_save_snaps);
@@ -2457,7 +2469,8 @@ static void test_badges_and_wearables(void) {
     badge_unsaved = true;
     companion_tick();
     assert(!badge_unsaved && saved_cmd.kind == WHALE_CMD_BADGE_SAVE);
-    service((whale_event_t){.kind = 95});
+    save_failures = 1u << WHALE_CMD_BADGE_SAVE;
+    collect_save_failures();
     assert(badge_unsaved);
     companion_tick();
     assert(badge_unsaved); /* retry backoff active */
@@ -2512,7 +2525,8 @@ static void test_badges_and_wearables(void) {
 
             /* NVS save failure (event 95) -> retry backoff -> cold reboot before write lands:
              * 126-byte NVS record is still intact and reloads all progress without loss. */
-            service((whale_event_t){.kind = 95});
+            save_failures = 1u << WHALE_CMD_BADGE_SAVE;
+            collect_save_failures();
             assert(badge_unsaved);
             a.now += 5000;
             last_badge_capture = &mig_cmd;
@@ -2991,7 +3005,8 @@ static void test_diary(void) {
     last_diary_capture = &cmd_2;
     companion_tick();
     assert(!diary_unsaved);
-    service((whale_event_t){.kind = 94});
+    save_failures = 1u << WHALE_CMD_DIARY_SAVE;
+    collect_save_failures();
     assert(diary_unsaved);
     companion_tick();
     assert(diary_unsaved);
@@ -3232,6 +3247,205 @@ static void test_diary_clock_merge(void) {
          "cycling PASS");
 }
 
+static void test_unbind_preserves_clock_and_power(void) {
+    /* Both online and offline unbinds must preserve a.now and keep screen ON
+     * instead of underflowing unsigned timers into immediate black-screen / deep sleep. */
+    for (int was_linked = 0; was_linked <= 1; was_linked++) {
+        power_reset(was_linked != 0);
+        a.now = 600000;
+        last_input = 599500;
+        power.last_input = 599500;
+        power.offline_since = 599500;
+        a.view = UNBINDING;
+        unbind_at = a.now - 500;
+        unbind_step();
+        assert(a.view == HOME && a.now == 600000 && a.page_at == 600000);
+        assert(last_input == 600000 && !power.linked);
+        companion_tick();
+        power_step();
+        assert(a.view == HOME);
+        assert(screen_applied == WHALE_SCREEN_ON && !dim);
+        assert(!sleep_requested && !sleep_commands);
+    }
+    power_reset(false);
+    puts("Unbind preserves a.now, keeps screen lit, and never triggers underflow sleep PASS");
+}
+
+static void test_pomodoro_completion_wakes_desk(void) {
+    /* Focus and break completion from DESK (or idle HOME) must refresh last_input,
+     * wake the screen, and switch DESK back to HOME so the 4s alert is never swallowed. */
+    power_reset(false);
+    a.ready = false;
+    a.view = HOME;
+    a.dock = WHALE_DOCK_FOCUS;
+    key(BSP_BTN_OK);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.view == HOME && a.pomo_state == WHALE_POMO_FOCUS);
+
+    /* Let idle timer enter DESK and dim/turn off screen during focus. */
+    a.now += WHALE_POWER_OFF_MS;
+    companion_tick();
+    power_step();
+    assert(a.view == DESK && screen_applied == WHALE_SCREEN_OFF);
+
+    /* Focus finishes while on dark DESK -> wakes to HOME with alert == 1. */
+    a.now += a.pomo_rem_ms;
+    companion_tick();
+    power_step();
+    assert(a.pomo_state == WHALE_POMO_BREAK && a.pomo_alert == 1);
+    assert(a.view == HOME && screen_applied == WHALE_SCREEN_ON && !dim);
+    assert(last_input == a.now);
+
+    /* Let idle timer return to DESK during break, then finish break -> wakes to HOME alert == 2. */
+    a.now += WHALE_DESK_IDLE_MS + 1000;
+    companion_tick();
+    power_step();
+    assert(a.view == DESK);
+    a.now += a.pomo_rem_ms;
+    companion_tick();
+    power_step();
+    assert(a.pomo_state == WHALE_POMO_OFF && a.pomo_alert == 2);
+    assert(a.view == HOME && screen_applied == WHALE_SCREEN_ON);
+    assert(last_input == a.now);
+
+    power_reset(false);
+    puts("Pomodoro completion from DESK/off wakes screen and shows 4s alert on HOME PASS");
+}
+
+static void test_pomodoro_paused_timeout(void) {
+    /* Paused offline timer stays awake past WHALE_POWER_OFFLINE_MS, but releases after
+     * WHALE_POMO_PAUSE_MAX_MS so an abandoned overnight pause does not drain the battery. */
+    power_reset(false);
+    a.ready = false;
+    a.view = HOME;
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    key(BSP_BTN_OK);
+    a.now += 1000;
+    companion_tick();
+    key(BSP_BTN_OK);
+    assert(a.pomo_state == WHALE_POMO_FOCUS && a.pomo_paused);
+    a.now += WHALE_POMO_PAUSE_MAX_MS - 1000;
+    companion_tick();
+    power_step();
+    assert(a.pomo_state == WHALE_POMO_FOCUS && a.pomo_paused && !sleep_requested);
+    a.now += 1000;
+    companion_tick();
+    power_step();
+    assert(a.pomo_state == WHALE_POMO_OFF && !a.pomo_paused && sleep_requested && sleep_commands == 1);
+
+    power_reset(false);
+    puts("Paused Pomodoro 60m timeout PASS");
+}
+
+static void test_sleep_waits_for_nvs_retry(void) {
+    const uint8_t kinds[] = {WHALE_CMD_ROOM_SAVE, WHALE_CMD_BADGE_SAVE, WHALE_CMD_DIARY_SAVE};
+    bool *const pending[] = {&room_unsaved, &badge_unsaved, &diary_unsaved};
+    whale_audio_cmd_t **const captures[] = {&last_cue_capture, &last_badge_capture, &last_diary_capture};
+    for (unsigned i = 0; i < sizeof kinds; i++) {
+        power_reset(false);
+        a.ready = false;
+        a.view = HOME;
+        a.now += WHALE_POWER_OFFLINE_MS + 1;
+        whale_audio_cmd_t cmd = {0};
+        *captures[i] = &cmd;
+        *pending[i] = true;
+        defer_save_completion = true;
+        cue_ok = false; /* Full cue queue must retain the dirty flag. */
+        power_step();
+        assert(*pending[i] && !saves_in_flight && !sleep_commands);
+        cue_ok = true;
+        power_step();
+        assert(cmd.kind == kinds[i] && saves_in_flight == 1 && !sleep_commands);
+        power_step();
+        assert(!sleep_commands); /* Accepted is not committed. */
+
+        blob_save_ok = false;
+        persist_save(cmd);
+        cmd.kind = 0;
+        power_step();
+        assert(*pending[i] && !saves_in_flight && !sleep_commands);
+        a.now += WHALE_SAVE_RETRY_MS - 1;
+        power_step();
+        assert(!cmd.kind && !sleep_commands);
+        a.now++;
+        power_step();
+        assert(cmd.kind == kinds[i] && saves_in_flight == 1 && !sleep_commands);
+        persist_save(cmd); /* Another failure must still block sleep. */
+        a.now += 16000;
+        power_step();
+        assert(*pending[i] && !sleep_commands);
+        a.now += WHALE_SAVE_RETRY_MS;
+        cmd.kind = 0;
+        power_step();
+        assert(cmd.kind == kinds[i] && saves_in_flight == 1 && !sleep_commands);
+        blob_save_ok = true;
+        persist_save(cmd);
+        power_step();
+        assert(!*pending[i] && !saves_in_flight && sleep_requested && sleep_commands == 1);
+        *captures[i] = NULL;
+    }
+    power_reset(false);
+    puts("Room, badge and diary NVS retries block sleep until the worker commits PASS");
+}
+
+static void test_scholar_skin_unlock_nvs_and_diary(void) {
+    setup();
+    const int64_t day0 = 1793750400LL;
+    a.bond = 79;
+    assert(whale_unlocks_for(a.bond) == 14);
+    a.bond = WHALE_UNLOCK_SCHOLAR;
+    assert(whale_unlocks_for(a.bond) == 30);
+    a.unlocked = whale_unlocks_for(a.bond);
+
+    /* Bond cools no lower than 80 once scholar is unlocked. */
+    wall_clock(a.epoch, day0 + 3600, 0);
+    a.bond = 85;
+    wall_clock(a.epoch, day0 + 20 * 86400 + 3600, 0);
+    assert(a.bond == WHALE_UNLOCK_SCHOLAR && a.unlocked == 30);
+
+    /* Wardrobe navigates to slot 4 (scholar), equips bit 16, and round-trips through room_v3. */
+    a.view = COMPANION;
+    a.companion_choice = 4;
+    key(BSP_BTN_OK);
+    assert(a.view == WARDROBE && a.outfit_choice == 0);
+    for (int i = 0; i < 4; i++)
+        key(BSP_BTN_DOWN);
+    assert(a.outfit_choice == 4);
+    key(BSP_BTN_OK);
+    assert(a.worn == 16 && whale_skin_id(a.worn) == 4);
+
+    /* room_profile / room_restore round-trip for unlocked=30, worn=16. */
+    whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
+                             ((a.unlocked >> 1) & 15u) |
+                                 (uint64_t)((a.worn >> 1) & 15u) << 4 |
+                                 (uint64_t)a.bond_today << 8 |
+                                 (uint64_t)a.bond_undated << 12 |
+                                 (uint64_t)a.bond_taps << 16 |
+                                 (uint64_t)a.bond_taps_undated << 19 |
+                                 (uint64_t)a.bond_day << 22};
+    uint8_t blob[11];
+    room_profile(cmd, blob);
+    assert(blob[1] == 30 && blob[2] == 16);
+    a.unlocked = a.worn = a.bond = 0;
+    room_restore(blob);
+    assert(a.bond == WHALE_UNLOCK_SCHOLAR && a.unlocked == 30 && a.worn == 16);
+
+    /* Diary flags round-trip skin_id == 4 with worn_acc and night, and clear bit 6 on switch back. */
+    a.worn_acc = 3;
+    diary_touch(21000, 2, 600, 1, 0x20u);
+    assert(a.diary_count >= 1 && whale_diary_skin_id(a.diary[0].flags) == 4);
+    assert(((a.diary[0].flags >> 2) & 7u) == 3 && (a.diary[0].flags & 0x20u));
+    a.worn = 0;
+    diary_touch(21000, 2, 600, 1, 0);
+    assert(whale_diary_skin_id(a.diary[0].flags) == 0 && (a.diary[0].flags & 0x20u));
+
+    puts("Scholar 5th skin unlock (80), room_v3/diary_v1 round-trip, and wardrobe 5-slot PASS");
+}
+
 int main(void) {
     test_random_invitations();
     test_voice_new_task();
@@ -3264,6 +3478,11 @@ int main(void) {
     test_pomodoro();
     test_diary();
     test_diary_clock_merge();
+    test_unbind_preserves_clock_and_power();
+    test_pomodoro_completion_wakes_desk();
+    test_pomodoro_paused_timeout();
+    test_sleep_waits_for_nvs_retry();
+    test_scholar_skin_unlock_nvs_and_diary();
     test_random_app_events();
     puts("Whale R11.1 application state, direct voice entry, completion cue "
          "and power policy tests PASS");
@@ -3322,7 +3541,7 @@ bool whale_blob_save(const char *key, const void *data, size_t size) {
     (void)key;
     (void)data;
     (void)size;
-    return true;
+    return blob_save_ok;
 }
 void whale_ble_set_slow(bool slow) { slow_adv_set = slow; }
 whale_sleep_info_t whale_sleep_boot_info(void) { return (whale_sleep_info_t){0}; }
