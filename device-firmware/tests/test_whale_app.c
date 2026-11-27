@@ -6,6 +6,8 @@ static size_t sent_length;
 static unsigned sends, answers, voice_starts;
 static bool fake_voice_busy, fake_voice_pending;
 static unsigned cue_count, audio_plays, sleep_commands;
+static whale_audio_cmd_t last_sound_cmd;
+static bool sound_write_ok;
 static bool slow_adv_set;
 static int backlight_level = -1;
 static bool cue_ok, bad_snapshot_crc;
@@ -67,6 +69,7 @@ int xQueueSend(void *q, const void *in, int wait) {
             sleep_commands++;
         if (!cue_ok)
             return 0;
+        last_sound_cmd = *(const whale_audio_cmd_t *)in;
         cue_count++;
     }
     (void)q;
@@ -126,10 +129,6 @@ void whale_ble_frame_release(void) { frame_releases++; }
 uint16_t whale_ble_frame_limit(void) { return frame_limit; }
 void whale_ble_set_frame(uint16_t frame) { tx_frame = frame; }
 void whale_ui_init(void) {}
-bool whale_audio_done(void) {
-    audio_plays++;
-    return true;
-}
 void whale_ui_draw(const whale_app_t *app) { (void)app; }
 bool whale_displayable(const char *s) {
     (void)s;
@@ -197,9 +196,10 @@ static void setup(void) {
     memset(sounded, 0, sizeof sounded);
     sounded_next = cue_count = audio_plays = 0;
     cues = (void *)2;
-    cue_ok = true;
+    cue_ok = sound_write_ok = true;
+    sound_result = 0;
     bad_snapshot_crc = false;
-    a = (whale_app_t){.dock = 1,
+    a = (whale_app_t){.dock = 1, .sound = {1, 80},
                       .bond = 12,
                       .soc = -1,
                       .next = UINT32_MAX,
@@ -782,11 +782,66 @@ static void test_companion_and_global_cues(void) {
     assert(a.view == MANAGE);
     key(BSP_BTN_OK);
     assert(a.view == SOUND);
-    a.sound_choice = 1;
+    assert(a.sound_editor == SOUND_OVERVIEW);
     key(BSP_BTN_OK);
-    assert(a.sound_mode == 1 && a.sound_saved == 0);
-    service((whale_event_t){.kind = 98, .value = 1});
-    assert(a.sound_saved == 1);
+    assert(a.sound_editor == SOUND_VOLUME && a.sound_draft == 80);
+    for (int i = 0; i < 6; i++)
+        key(BSP_BTN_UP);
+    assert(a.sound_draft == 100 && a.sound.volume == 80 && !cue_count);
+    key(BSP_BTN_OK | 256);
+    assert(a.sound_editor == SOUND_OVERVIEW && a.sound.volume == 80 && !cue_count);
+    key(BSP_BTN_OK);
+    for (int i = 0; i < 18; i++)
+        key(BSP_BTN_DOWN);
+    assert(!a.sound_draft);
+    cue_ok = false;
+    key(BSP_BTN_OK);
+    assert(a.sound_error && !a.sound_pending && !saves_in_flight && a.sound.volume == 80);
+    cue_ok = true;
+    key(BSP_BTN_OK);
+    key(BSP_BTN_OK); /* No second write while the first is pending. */
+    assert(a.sound_pending && cue_count == 1 && saves_in_flight == 1);
+    sound_write_ok = false;
+    persist_sound(last_sound_cmd);
+    collect_sound_save();
+    assert(!a.sound_pending && a.sound_error && a.sound_editor == SOUND_VOLUME &&
+           a.sound_draft == 0 && a.sound.volume == 80);
+    sound_write_ok = true;
+    key(BSP_BTN_OK);
+    persist_sound(last_sound_cmd);
+    collect_sound_save();
+    assert(!a.sound_error && !saves_in_flight && a.sound.volume == 0 &&
+           a.sound_editor == SOUND_OVERVIEW && cue_count == 2);
+    assert(queue_cue(2) && cue_count == 2);
+    key(BSP_BTN_OK);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
+    persist_sound(last_sound_cmd);
+    cue_ok = false;
+    collect_sound_save();
+    assert(a.sound.volume == 5 && a.sound_preview_due);
+    cue_ok = true;
+    collect_sound_save();
+    assert(!a.sound_preview_due);
+    assert(last_sound_cmd.kind == 3 && last_sound_cmd.mode == 1 && last_sound_cmd.volume == 5);
+    key(BSP_BTN_DOWN);
+    key(BSP_BTN_OK);
+    assert(a.sound_editor == SOUND_MODE && a.sound_draft == 1);
+    key(BSP_BTN_DOWN);
+    assert(a.back_focus);
+    key(BSP_BTN_OK);
+    assert(a.sound_editor == SOUND_OVERVIEW && a.sound.mode == 1);
+    key(BSP_BTN_OK);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_OK);
+    persist_sound(last_sound_cmd);
+    collect_sound_save();
+    assert(a.sound_editor == SOUND_OVERVIEW && !a.sound.mode && a.sound.volume == 5);
+    assert(last_sound_cmd.kind == 3 && !last_sound_cmd.mode && last_sound_cmd.volume == 5);
+    key(BSP_BTN_UP);
+    key(BSP_BTN_UP); /* Top-left return control */
+    assert(a.back_focus);
+    key(BSP_BTN_OK);
     assert(a.view == MANAGE);
     key(BSP_BTN_UP | 256);
     assert(a.view == HOME && a.dock == 1);
@@ -1096,9 +1151,9 @@ static void test_settings_navigation(void) {
     assert(a.view == STANDBY && a.standby_choice == 0 && !a.back_focus);
     key(BSP_BTN_DOWN);
     key(BSP_BTN_OK); /* plain clock */
-    assert(a.view == MANAGE && a.standby_mode == 1 && a.sound_saved == 0);
+    assert(a.view == MANAGE && a.standby_mode == 1 && a.standby_saved == 0);
     service((whale_event_t){.kind = 98, .value = 1});
-    assert(a.sound_saved == 1);
+    assert(a.standby_saved == 1);
     key(BSP_BTN_OK);
     assert(a.view == STANDBY && a.standby_choice == 1);
     key(BSP_BTN_UP);
@@ -3258,7 +3313,9 @@ static void test_unbind_preserves_clock_and_power(void) {
         power.offline_since = 599500;
         a.view = UNBINDING;
         unbind_at = a.now - 500;
+        a.sound = (whale_sound_settings_t){0, 25};
         unbind_step();
+        assert(a.sound.mode == 0 && a.sound.volume == 25);
         assert(a.view == HOME && a.now == 600000 && a.page_at == 600000);
         assert(last_input == 600000 && !power.linked);
         companion_tick();
@@ -3419,8 +3476,8 @@ static void test_scholar_skin_unlock_nvs_and_diary(void) {
     assert(a.worn == 16 && whale_skin_id(a.worn) == 4);
 
     /* room_profile / room_restore round-trip for unlocked=30, worn=16. */
-    whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
-                             ((a.unlocked >> 1) & 15u) |
+    whale_audio_cmd_t cmd = {.kind = WHALE_CMD_ROOM_SAVE, .mode = a.bond,
+                             .generation = ((a.unlocked >> 1) & 15u) |
                                  (uint64_t)((a.worn >> 1) & 15u) << 4 |
                                  (uint64_t)a.bond_today << 8 |
                                  (uint64_t)a.bond_undated << 12 |
@@ -3516,10 +3573,13 @@ void whale_audio_interrupt(void) { fake_audio_generation++; }
 uint32_t whale_audio_generation(void) { return fake_audio_generation; }
 bool whale_audio_play(whale_audio_cmd_t c) {
     (void)c;
+    audio_plays++;
     return true;
 }
-uint8_t whale_sound_load(void) { return 1; }
-bool whale_sound_save(uint8_t mode) { return mode < 2; }
+whale_sound_settings_t whale_sound_load(void) { return (whale_sound_settings_t){1, 80}; }
+bool whale_sound_save(whale_sound_settings_t sound) {
+    return sound_write_ok && sound.mode <= 1 && sound.volume <= 100;
+}
 uint8_t whale_standby_load(void) { return 0; }
 bool whale_standby_save(uint8_t mode) { return mode < 2; }
 bool whale_blob_load(const char *key, void *data, size_t size) {

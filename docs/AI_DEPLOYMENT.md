@@ -6,7 +6,7 @@
 
 要求Windows 10/11、64位Python 3.10～3.13、蓝牙、DeepSeek Harness，无需Wi-Fi配网。检查Python版本与蓝牙可用性，不读取用户真实会话或凭据。
 
-当前候选版为 `v0.18.0-dev2 / scholar-skin-stability`。在对应源码快照的根目录运行下面的命令。按[升级说明](UPGRADE.md)的三个 SHA-256 核对固件身份。
+当前候选版为 `v0.18.0-dev2 / sound-settings`。在对应源码快照的根目录运行下面的命令。按[升级说明](UPGRADE.md)的三个 SHA-256 核对固件身份。
 
 ```powershell
 python installer\install_companion.py --non-interactive --skip-key

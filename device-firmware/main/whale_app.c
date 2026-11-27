@@ -37,6 +37,7 @@ static bool queue_next;
 static whale_page_t queue_from;
 static char title_prefix[73];
 /* Cue-queue command for the peripheral task (1..6 are sounds and settings). */
+#define WHALE_CMD_SOUND_SAVE 6
 #define WHALE_CMD_SLEEP 7
 #define WHALE_CMD_ROOM_SAVE 8
 #define WHALE_CMD_STANDBY_SAVE 9
@@ -67,6 +68,10 @@ static uint32_t save_retry_at, badge_retry_at, diary_retry_at;
 /* Worker completions must survive a full UI event queue. Publish any failure
  * before releasing its in-flight count so the app cannot miss it at sleep. */
 static unsigned saves_in_flight, save_failures;
+/* Only one sound save may be outstanding. The UI owns the snapshot, the worker
+ * publishes its result separately from the lossy BLE/button event queue. */
+static whale_sound_settings_t requested_sound;
+static int sound_result;
 #define WHALE_DIARY_SNAP_SLOTS 9
 static whale_diary_entry_t diary_save_snaps[WHALE_DIARY_SNAP_SLOTS][WHALE_DIARY_DAYS];
 static uint8_t diary_save_head;
@@ -124,7 +129,9 @@ static void log_diag(const char *why) {
     (void)ble_stack;
 }
 static bool queue_cue(uint8_t kind) {
-    whale_audio_cmd_t cmd = {kind, a.sound_mode, whale_audio_generation()};
+    if (!a.sound.volume)
+        return true; /* Consume a muted notification so it cannot replay later. */
+    whale_audio_cmd_t cmd = {kind, a.sound.mode, a.sound.volume, whale_audio_generation()};
     return cues && xQueueSend(cues, &cmd, 0) == pdTRUE;
 }
 static struct {
@@ -214,6 +221,10 @@ static void button(bsp_btn_t key, bsp_btn_ev_t ev, void *unused) {
         whale_post(&(whale_event_t){.kind = WE_KEY, .value = (uint32_t)key | ((unsigned)ev << 8)});
 }
 static void page(whale_page_t v) {
+    if (v != SOUND || a.view != SOUND) {
+        a.sound_editor = SOUND_OVERVIEW;
+        a.sound_error = a.sound_preview_due = false;
+    }
     /* Only entering Interact from the room carries an unanswered invitation. */
     if (v != a.view && !(a.view == HOME && v == COMPANION && !a.invitation_settling))
         invitation_dismiss();
@@ -1073,12 +1084,35 @@ static bool queue_save(const whale_audio_cmd_t *cmd) {
     return false;
 }
 
+static void collect_sound_save(void) {
+    int result = __atomic_exchange_n(&sound_result, 0, __ATOMIC_ACQ_REL);
+    if (result) {
+        a.sound_pending = false;
+        a.sound_error = result < 0;
+        if (result > 0) {
+            a.sound = requested_sound;
+            whale_audio_interrupt();
+            if (a.view == SOUND && a.sound_editor != SOUND_OVERVIEW) {
+                a.sound_editor = SOUND_OVERVIEW;
+                page(SOUND);
+                a.sound_preview_due = true;
+            }
+        }
+        dirty = true;
+    }
+    /* A burst of notifications can fill the worker queue before the UI sees
+     * the save result. Retry the sample while the user stays on this page. */
+    if (a.sound_preview_due && queue_cue(3))
+        a.sound_preview_due = false;
+}
+
 static void flush_unsaved(void) {
+    collect_sound_save();
     collect_save_failures();
     if (room_unsaved && cues && (int32_t)(a.now - save_retry_at) >= 0) {
         /* Snapshot both quotas with the outfit selection for the worker. */
-        whale_audio_cmd_t cmd = {WHALE_CMD_ROOM_SAVE, a.bond,
-                                 ((a.unlocked >> 1) & 15u) |
+        whale_audio_cmd_t cmd = {.kind = WHALE_CMD_ROOM_SAVE, .mode = a.bond,
+                                 .generation = ((a.unlocked >> 1) & 15u) |
                                      (uint64_t)((a.worn >> 1) & 15u) << 4 |
                                      (uint64_t)a.bond_today << 8 |
                                      (uint64_t)a.bond_undated << 12 |
@@ -1099,8 +1133,8 @@ static void flush_unsaved(void) {
         snap_blob[4] = a.badge_voices;
         snap_blob[5] = a.badge_taps;
         memcpy(snap_blob + WHALE_BADGE_BLOB_V1_LEGACY, badge_seen_q, sizeof badge_seen_q);
-        whale_audio_cmd_t cmd = {WHALE_CMD_BADGE_SAVE, slot,
-                                 (uint64_t)snap_blob[0] | (uint64_t)snap_blob[1] << 8 |
+        whale_audio_cmd_t cmd = {.kind = WHALE_CMD_BADGE_SAVE, .mode = slot,
+                                 .generation = (uint64_t)snap_blob[0] | (uint64_t)snap_blob[1] << 8 |
                                      (uint64_t)snap_blob[2] << 16 |
                                      (uint64_t)snap_blob[3] << 24 |
                                      (uint64_t)snap_blob[4] << 32 |
@@ -1114,7 +1148,7 @@ static void flush_unsaved(void) {
         __atomic_load_n(&saves_in_flight, __ATOMIC_ACQUIRE) < WHALE_DIARY_SNAP_SLOTS) {
         uint8_t slot = (uint8_t)(diary_save_head % WHALE_DIARY_SNAP_SLOTS);
         memcpy(diary_save_snaps[slot], a.diary, sizeof diary_save_snaps[slot]);
-        whale_audio_cmd_t cmd = {WHALE_CMD_DIARY_SAVE, slot, 0};
+        whale_audio_cmd_t cmd = {.kind = WHALE_CMD_DIARY_SAVE, .mode = slot};
         if (queue_save(&cmd)) {
             diary_save_head = (uint8_t)((slot + 1u) % WHALE_DIARY_SNAP_SLOTS);
             diary_unsaved = false;
@@ -1467,6 +1501,64 @@ static bool voice_displayable(const uint8_t *p, size_t n) {
     }
     return true;
 }
+static void sound_back(void) {
+    if (a.sound_editor == SOUND_OVERVIEW)
+        page(MANAGE);
+    else {
+        a.sound_editor = SOUND_OVERVIEW;
+        a.sound_error = false;
+        page(SOUND);
+    }
+}
+
+static void sound_key(unsigned key, bool hold) {
+    if (a.sound_pending)
+        return;
+    if (hold) {
+        if (key == BSP_BTN_OK)
+            sound_back();
+        return;
+    }
+    bool overview = a.sound_editor == SOUND_OVERVIEW;
+    if (key != BSP_BTN_OK) {
+        int direction = key == BSP_BTN_UP ? -1 : 1;
+        if (a.sound_editor == SOUND_VOLUME) {
+            int volume = a.sound_draft - direction * 5;
+            a.sound_draft = volume < 0 ? 0 : volume > 100 ? 100 : volume;
+        } else {
+            /* Same two bottom choices and top-left return as standby settings. */
+            uint8_t *choice = overview ? &a.sound_choice : &a.sound_draft;
+            int slot = ((a.back_focus ? 0 : *choice + 1) + direction + 3) % 3;
+            a.back_focus = slot == 0;
+            if (slot)
+                *choice = slot - 1;
+        }
+        a.sound_error = false;
+        return;
+    }
+    if (a.back_focus) {
+        sound_back();
+        return;
+    }
+    if (overview) {
+        a.sound_editor = a.sound_choice ? SOUND_MODE : SOUND_VOLUME;
+        a.sound_draft = a.sound_choice ? a.sound.mode : a.sound.volume;
+        a.sound_error = a.sound_preview_due = false;
+        page(SOUND);
+        return;
+    }
+    requested_sound = a.sound;
+    if (a.sound_editor == SOUND_VOLUME)
+        requested_sound.volume = a.sound_draft;
+    else
+        requested_sound.mode = a.sound_draft;
+    whale_audio_cmd_t cmd = {.kind = WHALE_CMD_SOUND_SAVE, .mode = requested_sound.mode,
+                             .volume = requested_sound.volume};
+    whale_audio_interrupt();
+    a.sound_pending = cues && queue_save(&cmd);
+    a.sound_error = !a.sound_pending;
+}
+
 static void key(uint32_t code) {
     unsigned k = code & 255;
     bool hold = (code >> 8) != 0;
@@ -1486,6 +1578,10 @@ static void key(uint32_t code) {
             voice_cancel();
         a.dock = 1;
         page(HOME);
+        return;
+    }
+    if (a.view == SOUND) {
+        sound_key(k, hold);
         return;
     }
     if (a.view == VOICE) {
@@ -1521,7 +1617,7 @@ static void key(uint32_t code) {
         return;
     }
     if (a.view == COMPANION || a.view == WARDROBE || a.view == BADGES || a.view == POMODORO ||
-        a.view == DIARY || a.view == MANAGE || a.view == SOUND || a.view == STANDBY) {
+        a.view == DIARY || a.view == MANAGE || a.view == STANDBY) {
         if (hold) {
             if (k == BSP_BTN_OK && (a.view == COMPANION || a.view == POMODORO)) {
                 if (a.view == POMODORO && a.pomo_time_select) {
@@ -1550,14 +1646,13 @@ static void key(uint32_t code) {
                          : a.view == BADGES                   ? WHALE_BADGE_COUNT
                          : a.view == POMODORO                 ? 3u
                          : a.view == DIARY                    ? diary_slots
-                         : a.view == SOUND || a.view == STANDBY ? 2
+                         : a.view == STANDBY                  ? 2
                                                               : 4;
         uint8_t *choice = a.view == COMPANION  ? &a.companion_choice
                           : a.view == WARDROBE ? &a.outfit_choice
                           : a.view == BADGES   ? &a.badge_choice
                           : a.view == POMODORO ? &a.pomo_choice
                           : a.view == DIARY    ? &a.diary_choice
-                          : a.view == SOUND    ? &a.sound_choice
                           : a.view == STANDBY  ? &a.standby_choice
                                                : &a.menu_choice;
         if (direction) {
@@ -1584,8 +1679,7 @@ static void key(uint32_t code) {
             page(a.view == DIARY ? POMODORO
                  : a.view == WARDROBE || a.view == BADGES
                      ? COMPANION
-                 : a.view == SOUND || a.view == STANDBY ? MANAGE
-                                                        : HOME);
+                 : a.view == STANDBY ? MANAGE : HOME);
         } else if (a.view == POMODORO) {
             if (a.pomo_state == WHALE_POMO_OFF && a.pomo_time_select) {
                 pomo_start(*choice);
@@ -1680,29 +1774,19 @@ static void key(uint32_t code) {
             badge_unsaved = true;
             diary_touch_today(0);
         } else if (a.view == MANAGE) {
-            a.sound_choice = a.sound_mode;
+            a.sound_choice = 0;
             a.standby_choice = a.standby_mode;
             static const whale_page_t pages[] = {SOUND, KEEP, STANDBY, VERSION};
             page(pages[*choice]);
         } else if (a.view == STANDBY) {
             /* NVS writes run on the peripheral task; the result arrives as 98. */
-            whale_audio_cmd_t cmd = {WHALE_CMD_STANDBY_SAVE, *choice, 0};
+            whale_audio_cmd_t cmd = {.kind = WHALE_CMD_STANDBY_SAVE, .mode = *choice};
             if (cues && xQueueSend(cues, &cmd, 0) == pdTRUE) {
                 a.standby_mode = *choice;
-                a.sound_saved = 0;
+                a.standby_saved = 0;
                 page(MANAGE);
             } else
-                a.sound_saved = -1;
-        } else {
-            whale_audio_interrupt();
-            whale_audio_cmd_t cmd = {6, *choice, 0};
-            if (cues && xQueueSend(cues, &cmd, 0) == pdTRUE) {
-                a.sound_mode = *choice;
-                a.sound_saved = 0;
-                queue_cue(3);
-                page(MANAGE);
-            } else
-                a.sound_saved = -1;
+                a.standby_saved = -1;
         }
         return;
     }
@@ -1711,7 +1795,7 @@ static void key(uint32_t code) {
             return;
         if (a.view == TASK_DETAIL || a.view == LIST)
             return;
-        if (a.view == SOUND || a.view == STANDBY || a.view == KEEP || a.view == REVOKE ||
+        if (a.view == STANDBY || a.view == KEEP || a.view == REVOKE ||
             a.view == VERSION || a.view == UNBIND_FAILED) {
             page(MANAGE);
             return;
@@ -2529,7 +2613,7 @@ static void power_step(void) {
         collect_save_failures();
         if (saving || room_unsaved || badge_unsaved || diary_unsaved)
             return;
-        whale_audio_cmd_t cmd = {WHALE_CMD_SLEEP, 0, 0};
+        whale_audio_cmd_t cmd = {.kind = WHALE_CMD_SLEEP};
         sleep_timer_ms = plan.timer_ms;
         sleep_cycles = whale_power_next_cycles(&power);
         log_diag("sleep");
@@ -2601,6 +2685,11 @@ static void batt_record(int soc) {
         !whale_blob_save("batt_cur", &batt_log, sizeof batt_log))
         ESP_LOGW("whale_batt", "battery log save failed");
 }
+static void persist_sound(whale_audio_cmd_t cmd) {
+    bool saved = whale_sound_save((whale_sound_settings_t){cmd.mode, cmd.volume});
+    __atomic_store_n(&sound_result, saved ? 1 : -1, __ATOMIC_RELEASE);
+    __atomic_fetch_sub(&saves_in_flight, 1u, __ATOMIC_RELEASE);
+}
 static void persist_save(whale_audio_cmd_t cmd) {
     bool saved;
     if (cmd.kind == WHALE_CMD_ROOM_SAVE) {
@@ -2653,9 +2742,10 @@ static void peripheral_task(void *unused) {
                     if (__atomic_load_n(&saves_in_flight, __ATOMIC_ACQUIRE) ||
                         !whale_sleep_enter(sleep_timer_ms, sleep_cycles))
                         whale_post(&(whale_event_t){.kind = 97});
-                } else if (cue.kind == 6 || cue.kind == WHALE_CMD_STANDBY_SAVE) {
-                    bool saved = cue.kind == 6 ? whale_sound_save(cue.mode)
-                                               : whale_standby_save(cue.mode);
+                } else if (cue.kind == WHALE_CMD_SOUND_SAVE) {
+                    persist_sound(cue);
+                } else if (cue.kind == WHALE_CMD_STANDBY_SAVE) {
+                    bool saved = whale_standby_save(cue.mode);
                     whale_post(&(whale_event_t){.kind = 98, .value = saved ? 1 : 0});
                 } else if (!whale_voice_busy()) {
                     bool played = whale_audio_play(cue);
@@ -2777,7 +2867,7 @@ static void service(whale_event_t e) {
         sleep_retry_at = a.now + 30000;
         break;
     case 98:
-        a.sound_saved = e.value ? 1 : -1;
+        a.standby_saved = e.value ? 1 : -1;
         break;
     case 99:
         if (e.value <= 100) {
@@ -2801,7 +2891,9 @@ static void unbind_step(void) {
             whale_reply_cache_clear();
             memset(sounded, 0, sizeof sounded);
             sounded_next = 0;
-            uint8_t mode = a.sound_mode, standby = a.standby_mode;
+            whale_sound_settings_t sound = a.sound;
+            bool sound_pending = a.sound_pending;
+            uint8_t standby = a.standby_mode;
             uint8_t profile[] = {a.bond, a.unlocked, a.worn, a.bond_today, a.bond_undated,
                                  a.bond_taps, a.bond_taps_undated};
             uint8_t bprof[] = {a.badges,       a.badge_unread, a.badge_equipped,
@@ -2839,7 +2931,8 @@ static void unbind_step(void) {
             badge_sync_acc();
             a.bond_day = bond_day;
             a.dock = 1;
-            a.sound_mode = mode;
+            a.sound = sound;
+            a.sound_pending = sound_pending;
             a.standby_mode = standby;
             memset(&reminders, 0, sizeof reminders);
             a.global_valid = false;
@@ -2857,9 +2950,9 @@ void app_main(void) {
     room_load();
     badge_load();
     diary_load();
-    a.sound_mode = whale_sound_load();
+    a.sound = whale_sound_load();
     a.standby_mode = whale_standby_load();
-    a.sound_saved = 1;
+    a.standby_saved = 1;
     events = xQueueCreate(40, sizeof(whale_event_t));
     assert(events);
     ESP_ERROR_CHECK(bsp_display_init());

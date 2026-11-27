@@ -12,7 +12,6 @@ TaskHandle_t xTaskGetHandle(const char*n){return 0;}unsigned uxTaskGetStackHighW
 int nvs_flash_init(void){return 0;}int64_t esp_timer_get_time(void){return 0;}
 void whale_pair(bool y){}bool whale_unbind(void){return true;}void whale_ble_start(void){}
 void whale_ui_init(void){}void whale_ui_draw(const whale_app_t *app){}
-bool whale_audio_done(void){return true;}
 bool whale_displayable(const char *s){return true;}
 /* Long-prompt fixtures use ASCII. Font metrics are covered by the LVGL renderer. */
 bool whale_text_wide(const char *s){return strlen(s)>30;}
@@ -35,6 +34,7 @@ int main(void){
     /* Unbuffered so captured tx lines survive an assert abort or a pipe that closes early. */
     setvbuf(stdout,NULL,_IONBF,0);setvbuf(stderr,NULL,_IONBF,0);
     cues=(void*)2;
+    a.sound=whale_sound_load();
     char line[4096];unsigned val;
     while(fgets(line,sizeof(line),stdin)){
         if(!strncmp(line,"rx ",3)){whale_event_t e={.kind=WE_FRAME};unsigned n=0;
@@ -83,8 +83,8 @@ static uint32_t fake_audio_generation;
 void whale_audio_interrupt(void){fake_audio_generation++;}
 uint32_t whale_audio_generation(void){return fake_audio_generation;}
 bool whale_audio_play(whale_audio_cmd_t c){(void)c;return true;}
-uint8_t whale_sound_load(void){return 1;}
-bool whale_sound_save(uint8_t mode){return mode<2;}
+whale_sound_settings_t whale_sound_load(void){return (whale_sound_settings_t){1,80};}
+bool whale_sound_save(whale_sound_settings_t sound){return sound.mode<2 && sound.volume<=100;}
 uint8_t whale_standby_load(void){return 0;}
 bool whale_standby_save(uint8_t mode){return mode<2;}
 bool whale_blob_load(const char *k,void *d,size_t n){(void)k;(void)d;(void)n;return false;}

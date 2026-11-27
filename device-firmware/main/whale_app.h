@@ -2,6 +2,7 @@
 #include "whale_ble.h"
 #include "whale_clock.h"
 #include "whale_director.h"
+#include "whale_settings.h"
 #include "whale_voice.h"
 
 /* Display slots map to persistent skin IDs. This permutation is its own inverse. */
@@ -21,6 +22,7 @@ static inline uint8_t whale_diary_pack_skin(uint8_t skin_id) {
 #define WHALE_BADGE_COUNT 8
 /* Wearable set (1..4) unlocked by each of the 8 achievement badges. */
 static const uint8_t whale_badge_wear[WHALE_BADGE_COUNT] = {4, 1, 2, 1, 3, 3, 4, 2};
+enum { SOUND_OVERVIEW, SOUND_VOLUME, SOUND_MODE };
 enum { WHALE_POMO_OFF = 0, WHALE_POMO_FOCUS = 1, WHALE_POMO_BREAK = 2 };
 enum {
     WHALE_DOCK_COMPANION = 0,
@@ -82,8 +84,11 @@ typedef struct {
     uint16_t global_running, global_waiting, global_unread;
     uint32_t global_at, global_seq, global_focus;
     uint32_t companion_at, action_at;
-    uint8_t companion_choice, companion_action, sound_mode, menu_choice, sound_choice;
-    int8_t sound_saved;
+    uint8_t companion_choice, companion_action, menu_choice, sound_choice;
+    whale_sound_settings_t sound;
+    uint8_t sound_editor, sound_draft;
+    bool sound_pending, sound_error, sound_preview_due;
+    int8_t standby_saved;
     uint32_t title_session, title_run;
     char full_title[513];
     bool list_back;

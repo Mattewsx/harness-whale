@@ -58,12 +58,46 @@ static void test_standby(void) {
         assert(!whale_standby_save(1));
     failure = 0;
 }
-int main(void){
- assert(whale_sound_load()==1);assert(whale_sound_save(0));assert(whale_sound_load()==0);
- assert(whale_sound_save(1));assert(whale_sound_load()==1);
- stored=255;assert(whale_sound_load()==1);assert(!whale_sound_save(2));
- for(failure=1;failure<=2;failure++)assert(whale_sound_load()==1);
- for(failure=3;failure<=4;failure++)assert(!whale_sound_save(0));
- test_standby();
- test_blobs();assert(closed>=6);puts("Sound and desk display settings and NVS blobs: default, invalid value, persistence and failures PASS");return 0;
+static void check_sound(unsigned mode, unsigned volume) {
+    whale_sound_settings_t sound = whale_sound_load();
+    assert(sound.mode == mode && sound.volume == volume);
+}
+static void test_sound(void) {
+    blob_size = 0;
+    stored = 1;
+    check_sound(1, 80);
+    stored = 0;
+    check_sound(0, 85);
+    stored = 255;
+    check_sound(1, 80);
+    for (unsigned i = 0; i <= 100; i += 5) {
+        whale_sound_settings_t sound = {0, i};
+        assert(whale_sound_save(sound));
+        check_sound(0, i);
+        sound.mode = 1;
+        assert(whale_sound_save(sound));
+        check_sound(1, i);
+    }
+    assert(!whale_sound_save((whale_sound_settings_t){2, 80}));
+    assert(!whale_sound_save((whale_sound_settings_t){0, 101}));
+    assert(!whale_sound_save((whale_sound_settings_t){0, 33}));
+    stored = 0;
+    blob[1] = 250;
+    check_sound(0, 85);
+    blob_size = 1;
+    check_sound(0, 85);
+    for (failure = 1; failure <= 2; failure++)
+        check_sound(1, 80);
+    for (failure = 3; failure <= 4; failure++)
+        assert(!whale_sound_save((whale_sound_settings_t){1, 90}));
+    failure = 0;
+    blob_size = 0;
+}
+int main(void) {
+    test_sound();
+    test_standby();
+    test_blobs();
+    assert(closed >= 6);
+    puts("Sound migration, shared volume, desk settings and NVS failures PASS");
+    return 0;
 }

@@ -1,8 +1,8 @@
 #include "../main/whale_audio.c"
 #include <stdio.h>
 uint8_t test_pcm[WHALE_PCM_BYTES] __asm__("_binary_cues_pcm_start");
-static int fail_at, writes, sleeps, volume, samples, nonzero, interrupt_at;
-esp_err_t bsp_audio_init(void) { return fail_at == 1 ? ESP_FAIL : ESP_OK; }
+static int starts, fail_at, writes, sleeps, volume, samples, nonzero, interrupt_at;
+esp_err_t bsp_audio_init(void) { starts++; return fail_at == 1 ? ESP_FAIL : ESP_OK; }
 esp_err_t bsp_audio_wake(void) { return fail_at == 2 ? ESP_FAIL : ESP_OK; }
 esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch) {
     assert(hz == 16000 && bits == 16 && ch == 1);
@@ -30,7 +30,10 @@ esp_err_t bsp_audio_write(const void *data, size_t size) {
 }
 static void reset(int failure) {
     fail_at = failure;
-    writes = sleeps = volume = samples = nonzero = interrupt_at = 0;
+    starts = writes = sleeps = volume = samples = nonzero = interrupt_at = 0;
+}
+static bool play(unsigned kind, unsigned mode, unsigned volume_percent) {
+    return whale_audio_play((whale_audio_cmd_t){kind, mode, volume_percent, whale_audio_generation()});
 }
 int main(void) {
     FILE *f = fopen("main/cues.pcm", "rb");
@@ -39,26 +42,30 @@ int main(void) {
     for (unsigned mode = 0; mode < 2; mode++)
         for (unsigned kind = 1; kind <= 4; kind++) {
             reset(0);
-            assert(whale_audio_play((whale_audio_cmd_t){kind, mode, whale_audio_generation()}));
+            unsigned level = kind == 4 ? 100 : kind * 5;
+            assert(play(kind, mode, level));
             assert(writes == (int)((whale_pcm_assets[mode * 4 + kind - 1].bytes + 319) / 320 + 10));
-            assert(sleeps == 1 && volume == (mode ? 80 : 85) && nonzero > 0);
+            assert(sleeps == 1 && volume == (int)level && nonzero > 0);
+            reset(0);
+            assert(play(kind, mode, 0));
+            assert(!starts && !writes && !sleeps);
         }
     for (int failure = 1; failure <= 5; failure++) {
         reset(failure);
-        assert(!whale_audio_done());
+        assert(!play(3, 0, 85));
         assert(sleeps == (failure == 1 ? 0 : 1));
         reset(0);
-        assert(whale_audio_done());
+        assert(play(3, 0, 85));
     }
     reset(0);
     interrupt_at = 3;
-    assert(!whale_audio_done());
+    assert(!play(3, 0, 85));
     assert(writes == 3 && sleeps == 1);
     reset(0);
-    whale_audio_cmd_t stale = {3, 1, whale_audio_generation()};
+    whale_audio_cmd_t stale = {3, 1, 80, whale_audio_generation()};
     whale_audio_interrupt();
     assert(!whale_audio_play(stale) && writes == 0 && sleeps == 0);
-    assert(!whale_audio_play((whale_audio_cmd_t){0, 1, whale_audio_generation()}));
+    assert(!play(0, 1, 80));
     assert(!whale_audio_busy());
     puts("Eight real PCM assets, volumes, DMA tail, interrupt, stale command and "
          "recovery PASS");

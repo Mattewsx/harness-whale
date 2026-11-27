@@ -1420,25 +1420,55 @@ void whale_ui_draw(const whale_app_t *a) {
             text_at(8, 290, 224, 20, &lv_font_cn_14, line, low >= 0 ? low : MUT, PAPER,
                     LV_TEXT_ALIGN_CENTER);
         }
-    } else if (a->view == MANAGE || a->view == SOUND || a->view == STANDBY) {
-        bool sound = a->view == SOUND, standby = a->view == STANDBY;
-        parent_icon(sound || standby ? ICON_settings : ICON_home, a->back_focus);
-        center(35, sound ? "声音提醒" : standby ? "待机画面" : "设备设置", NAV, -1);
-        pose_at(sound ? 18 : 9, 22, 60, 245);
+    } else if (a->view == SOUND) {
+        bool overview = a->sound_editor == SOUND_OVERVIEW;
+        bool volume = a->sound_editor == SOUND_VOLUME;
+        static const enum room_icon sound_options[] = {ICON_speaker, ICON_music};
+        static const enum room_icon mode_icons[] = {ICON_music, ICON_voice};
+        static const char *const options[] = {"音量", "提醒方式"};
+        static const char *const modes[] = {"音效", "语音"};
+        center(35, overview ? "声音" : volume ? "音量" : "提醒方式", NAV, -1);
+        if (volume) {
+            pose_at(18, 69, 62, 134);
+            snprintf(value, sizeof value, "%u%%", (unsigned)a->sound_draft);
+            text_at(12, 170, 216, 28, &lv_font_cn_18, value, NAV, -1, LV_TEXT_ALIGN_CENTER);
+            panel(sheet, 30, 204, 180, 12, BAR, 6);
+            if (a->sound_draft)
+                panel(status_box, 30, 204, 180 * a->sound_draft / 100, 12, TEAL, 6);
+            panel(action_bar, 0, 252, 240, 68, BAR, 0);
+            center(263, "↑ +5%     ↓ -5%", NAV, -1);
+            text_at(8, 295, 224, 20, &lv_font_cn_14, "确认保存  长按确认取消", NAV, -1,
+                    LV_TEXT_ALIGN_CENTER);
+        } else {
+            parent_icon(overview ? ICON_settings : ICON_speaker, a->back_focus);
+            pose_at(18, 43, 59, 202);
+            if (overview)
+                snprintf(value, sizeof value, "音量 %u%% · %s", (unsigned)a->sound.volume,
+                         modes[a->sound.mode]);
+            else
+                snprintf(value, sizeof value, "当前：%s", modes[a->sound.mode]);
+            if (!a->sound_error && !a->sound_pending)
+                center(222, value, MUT, -1);
+            strip(overview ? sound_options : mode_icons, overview ? options : modes, 2,
+                  a->back_focus ? -1 : overview ? a->sound_choice : a->sound_draft,
+                  overview ? -1 : a->sound.mode, 0, false);
+        }
+        if (a->sound_error || a->sound_pending)
+            center(225, a->sound_error ? "保存失败，请重试" : "保存中", a->sound_error ? RED : MUT, -1);
+        foot = NULL;
+    } else if (a->view == MANAGE || a->view == STANDBY) {
+        bool standby = a->view == STANDBY;
+        parent_icon(standby ? ICON_settings : ICON_home, a->back_focus);
+        center(35, standby ? "待机画面" : "设备设置", NAV, -1);
+        pose_at(9, 22, 60, 245);
         static const enum room_icon settings[] = {ICON_speaker, ICON_bt, ICON_clock, ICON_info};
-        static const enum room_icon modes[] = {ICON_music, ICON_voice};
         static const enum room_icon screens[] = {ICON_completed, ICON_clock};
-        static const char *const names[] = {"声音提醒", "蓝牙连接", "待机画面", "版本信息"};
-        static const char *const sounds[] = {"音效", "语音"};
+        static const char *const names[] = {"声音", "蓝牙连接", "待机画面", "版本信息"};
         static const char *const desks[] = {"今日小结", "时钟"};
-        strip(sound ? modes : standby ? screens : settings, sound ? sounds : standby ? desks : names,
-              sound || standby ? 2 : 4,
-              a->back_focus ? -1
-              : sound       ? a->sound_choice
-              : standby     ? a->standby_choice
-                            : a->menu_choice,
-              sound ? a->sound_mode : standby ? a->standby_mode : -1, 0, false);
-        if (a->sound_saved < 0)
+        strip(standby ? screens : settings, standby ? desks : names, standby ? 2 : 4,
+              a->back_focus ? -1 : standby ? a->standby_choice : a->menu_choice,
+              standby ? a->standby_mode : -1, 0, false);
+        if (a->standby_saved < 0)
             center(228, "保存失败，请重试", RED, -1);
     } else if (a->view == VOICE) {
         unsigned v = a->voice_phase;
@@ -1815,7 +1845,7 @@ void whale_ui_draw(const whale_app_t *a) {
     if (!painted_pose)
         lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
     if (a->view != HOME && a->view != WARDROBE && a->view != BADGES && a->view != POMODORO &&
-        a->view != DIARY && a->view != LIST && a->view != MANAGE && a->view != SOUND &&
+        a->view != DIARY && a->view != LIST && a->view != MANAGE &&
         a->view != STANDBY && a->view != COMPANION && a->view != TASK_DETAIL && !inline_reply &&
         !desk && foot) {
         panel(action_bar, 0, 292, 240, 28, BAR, 0);

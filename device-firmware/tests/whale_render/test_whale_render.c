@@ -80,7 +80,7 @@ static void summary_stays_inside_card(const whale_app_t *a) {
         }
 }
 /* Check the real visible label, not a duplicate of the caption-selection logic. */
-static void desk_caption(const char *expected) {
+static lv_obj_t *visible_label_fits(const char *expected) {
     lv_obj_t *root = lv_screen_active(), *caption = NULL;
     for (unsigned i = 0; i < lv_obj_get_child_count(root); i++) {
         lv_obj_t *obj = lv_obj_get_child(root, i);
@@ -91,13 +91,14 @@ static void desk_caption(const char *expected) {
             caption = obj;
         }
     }
-    assert(caption && "Expected standby caption is missing or stale");
+    assert(caption && "Expected label is missing or stale");
     lv_point_t size;
     lv_text_get_size(&size, expected, lv_obj_get_style_text_font(caption, 0), 0, 0,
                      LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     assert(size.x <= lv_obj_get_width(caption) && size.y <= lv_obj_get_height(caption));
     assert(lv_obj_get_x(caption) >= 0 &&
            lv_obj_get_x(caption) + lv_obj_get_width(caption) <= 240);
+    return caption;
 }
 static void diary_paragraph_fits(const char *expected) {
     lv_obj_t *root = lv_screen_active(), *paragraph = NULL;
@@ -403,10 +404,33 @@ int main(void) {
         }
     }
     a.view = SOUND;
-    a.sound_mode = 1;
-    a.sound_saved = 1;
-    draw(&a);
-    assert(draw(&a) == 0);
+    a.sound = (whale_sound_settings_t){1, 80};
+    draw_and_verify_redraw(&a);
+    visible_label_fits("音量 80% · 语音");
+    assert(lv_obj_get_y(visible_label_fits("音量")) >= 252);
+    a.sound_choice = 1;
+    draw_and_verify_redraw(&a);
+    assert(lv_obj_get_y(visible_label_fits("提醒方式")) >= 252);
+    a.sound_editor = SOUND_VOLUME;
+    a.sound_draft = 0;
+    draw_and_verify_redraw(&a);
+    visible_label_fits("0%");
+    uint16_t empty_track = screen[209 * 240 + 200];
+    a.sound_draft = 100;
+    draw_and_verify_redraw(&a);
+    visible_label_fits("100%");
+    assert(screen[209 * 240 + 200] != empty_track);
+    a.sound_editor = SOUND_MODE;
+    a.sound_draft = 0;
+    a.sound_error = true;
+    draw_and_verify_redraw(&a);
+    assert(lv_obj_get_y(visible_label_fits("音效")) >= 252);
+    visible_label_fits("保存失败，请重试");
+    a.sound_draft = 1;
+    draw_and_verify_redraw(&a);
+    assert(lv_obj_get_y(visible_label_fits("语音")) >= 252);
+    a.sound_error = false;
+    a.sound_editor = SOUND_OVERVIEW;
     a.view = MANAGE;
     draw(&a);
     assert(draw(&a) == 0);
@@ -538,7 +562,7 @@ int main(void) {
         a.summary_stale = captions[i].stale;
         a.clock.hour = captions[i].hour;
         draw(&a);
-        desk_caption(captions[i].caption);
+        visible_label_fits(captions[i].caption);
         assert(draw(&a) == 0);
     }
     a.summary_stale = false;

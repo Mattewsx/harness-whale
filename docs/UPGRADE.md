@@ -4,7 +4,7 @@
 
 ## 选择目标修订
 
-- **当前分支候选版：书院大小姐与稳定性修复**，variant 为 `scholar-skin-stability`。使用该候选构建的源码快照、配套电脑组件和实际交付镜像。安装器[manifest.json](../installer/firmware/manifest.json)记录下列身份；[release-source.json](release-source.json)记录固件输入。此修订没有独立GitHub Release；此候选版仅有本地交付物。
+- **当前分支候选版：声音设置、书院大小姐与稳定性修复**，variant 为 `sound-settings`。使用该候选构建的源码快照、配套电脑组件和实际交付镜像。安装器[manifest.json](../installer/firmware/manifest.json)记录下列身份；[release-source.json](release-source.json)记录固件输入。此修订没有独立GitHub Release；此候选版仅有本地交付物。
 - **GitHub公开版v0.17.0-demo**：只按[v0.17.0-demo发布页](https://github.com/Mattewsx/harness-whale/releases/tag/v0.17.0-demo)选择其应用、电脑包及SHA256SUMS。该应用不是下表的当前候选版应用；不要套用候选版清单。发布页已修正旧升级链接，标签源码和电脑包内的旧升级／部署文档不适用于该版。
 - **其他历史修订**：使用该修订自己的发布页或原始交付身份与匹配源码。旧版验收文档保留历史，不会随main升级；缺少目标镜像、可信校验值或匹配清单时停止，不用另一个版本替代。
 
@@ -12,9 +12,9 @@
 
 | 文件角色 | 写入位置／用途 | SHA-256 |
 | --- | --- | --- |
-| 完整镜像 `Harness-Whale-ESP32C3-8MB.bin` | 0x0；覆盖存储，不用于保留数据升级 | `81ef3edfc334954abbcbf71deada0126c8dbc6a2f51175e23862c856418dd950` |
-| 应用镜像（构建原名 `FoloToy-AI-Passport.bin`） | 仅应用0x10000 | `529a1c8f804f298dc68eaab55c60dc02568ff61596d203863e63f02482bcdce9` |
-| ELF | 只用于匹配本修订的调试，不刷写 | `5800ca090f0f4e0ac97c0f9f68bac9c94521050530e67aa1679052eb0d09b7ae` |
+| 完整镜像 `Harness-Whale-ESP32C3-8MB.bin` | 0x0；覆盖存储，不用于保留数据升级 | `402b6fc9ea862c908287d630155befcee7ca7bfe288a1bec2e00e0888faa8b97` |
+| 应用镜像（构建原名 `FoloToy-AI-Passport.bin`） | 仅应用0x10000 | `5239298e5f8a8ebde27310d7032543543670813210c6a573421b1b3baf9fcd32` |
+| ELF | 只用于匹配本修订的调试，不刷写 | `3558e9a0e292468e97fadd40abfed3fe8e9909077edec50e8ba5ab3e9f510ec9` |
 
 文件可以在交付时重命名，不能凭文件名判断身份。`installer/firmware/manifest.json`的 `application_sha256` 是当前应用校验值，`sha256`表中则是完整镜像校验值，二者不能互换。
 
@@ -38,7 +38,7 @@ python -m venv .flash-venv
 
 ```powershell
 $appImage = '.\FoloToy-AI-Passport.bin'
-$expectedAppSha = '529a1c8f804f298dc68eaab55c60dc02568ff61596d203863e63f02482bcdce9'
+$expectedAppSha = '5239298e5f8a8ebde27310d7032543543670813210c6a573421b1b3baf9fcd32'
 if ((Get-FileHash -LiteralPath $appImage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedAppSha) {
     throw '应用镜像与目标修订不匹配，停止升级'
 }

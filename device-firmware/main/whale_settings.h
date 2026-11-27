@@ -2,8 +2,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-uint8_t whale_sound_load(void);
-bool whale_sound_save(uint8_t mode);
+typedef struct {
+    uint8_t mode, volume;
+} whale_sound_settings_t;
+whale_sound_settings_t whale_sound_load(void);
+bool whale_sound_save(whale_sound_settings_t sound);
 /* Desk display: 0 = today's summary (default), 1 = plain clock. */
 uint8_t whale_standby_load(void);
 bool whale_standby_save(uint8_t mode);

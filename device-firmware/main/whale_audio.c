@@ -11,8 +11,11 @@ bool whale_audio_busy(void) { return atomic_load(&playing); }
 void whale_audio_interrupt(void) { atomic_fetch_add(&generation, 1); }
 uint32_t whale_audio_generation(void) { return atomic_load(&generation); }
 bool whale_audio_play(whale_audio_cmd_t cue) {
-    if (cue.kind < 1 || cue.kind > 4 || cue.mode > 1 || cue.generation != whale_audio_generation())
+    if (cue.kind < 1 || cue.kind > 4 || cue.mode > 1 || cue.volume > 100 ||
+        cue.generation != whale_audio_generation())
         return false;
+    if (!cue.volume)
+        return true;
     const whale_pcm_asset_t *asset = &whale_pcm_assets[cue.mode * 4 + cue.kind - 1];
     atomic_store(&playing, true);
     esp_err_t err = bsp_audio_init();
@@ -25,9 +28,7 @@ bool whale_audio_play(whale_audio_cmd_t cue) {
         err = bsp_audio_set_format(16000, 16, 1);
     int16_t pcm[160];
     if (err == ESP_OK) {
-        /* Voice assets were level-calibrated separately; verify acoustics on
-         * device. */
-        bsp_audio_set_volume(cue.mode ? 80 : 85);
+        bsp_audio_set_volume(cue.volume);
         for (uint32_t pos = 0; pos < asset->bytes && err == ESP_OK; pos += sizeof pcm) {
             if (cue.generation != whale_audio_generation())
                 break;
@@ -49,7 +50,4 @@ bool whale_audio_play(whale_audio_cmd_t cue) {
         ESP_LOGW("whale_audio", "play=%d sleep=%d", (int)err, (int)sleep);
     atomic_store(&playing, false);
     return err == ESP_OK && sleep == ESP_OK && cue.generation == whale_audio_generation();
-}
-bool whale_audio_done(void) {
-    return whale_audio_play((whale_audio_cmd_t){3, 0, whale_audio_generation()});
 }
